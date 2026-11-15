@@ -98,3 +98,31 @@ async fn shutdown() {
     let term = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = term => {} }
 }
+
+/// Serve HTTPS on `listener` with the PEM chain and key (rustls, ring provider).
+pub async fn serve_tls(
+    listener: std::net::TcpListener,
+    st: Arc<AppState>,
+    cert: &std::path::Path,
+    key: &std::path::Path,
+) -> Result<(), String> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
+        .await
+        .map_err(|e| format!("loading TLS certificate and key: {e}"))?;
+    spawn_sweeper(st.clone());
+    let app = api::router(st).into_make_service_with_connect_info::<SocketAddr>();
+    let handle = axum_server::Handle::new();
+    let h = handle.clone();
+    tokio::spawn(async move {
+        shutdown().await;
+        h.graceful_shutdown(Some(Duration::from_secs(5)));
+    });
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    axum_server::from_tcp_rustls(listener, tls)
+        .map_err(|e| e.to_string())?
+        .handle(handle)
+        .serve(app)
+        .await
+        .map_err(|e| e.to_string())
+}

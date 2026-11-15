@@ -18,6 +18,24 @@ pub struct Relay {
     pub base: String,
     http: reqwest::Client,
     key: Arc<SoftwareKey>,
+    tls: Option<Arc<rustls::ClientConfig>>,
+}
+
+fn rustls_client_config(pem: &[u8]) -> Result<rustls::ClientConfig, String> {
+    use rustls::pki_types::{pem::PemObject, CertificateDer};
+    let mut roots = rustls::RootCertStore::empty();
+    for c in CertificateDer::pem_slice_iter(pem) {
+        roots
+            .add(c.map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| e.to_string())?
+    .with_root_certificates(roots)
+    .with_no_client_auth())
 }
 
 pub struct Reply {
@@ -35,17 +53,45 @@ impl Reply {
 }
 
 impl Relay {
-    pub fn new(base: &str, key: Arc<SoftwareKey>) -> Self {
+    /// `ca_pem`: the relay's trust anchors (PEM). Without it, only plain `http://` is usable.
+    pub fn new(base: &str, key: Arc<SoftwareKey>, ca_pem: Option<&[u8]>) -> Result<Self, String> {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .expect("HTTP client");
-        Relay {
-            base: base.trim_end_matches('/').to_string(),
-            http,
-            key,
+        let mut b = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60));
+        let mut tls = None;
+        if let Some(pem) = ca_pem {
+            b = b.tls_certs_only(
+                reqwest::Certificate::from_pem_bundle(pem).map_err(|e| e.to_string())?,
+            );
+            tls = Some(Arc::new(rustls_client_config(pem)?));
         }
+        Ok(Relay {
+            base: base.trim_end_matches('/').to_string(),
+            http: b.build().map_err(|e| e.to_string())?,
+            key,
+            tls,
+        })
+    }
+
+    /// Open the device WebSocket, over TLS with the same trust anchors when `https`.
+    pub async fn ws_connect(
+        &self,
+        path: &str,
+    ) -> Result<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        String,
+    > {
+        let connector = self.tls.clone().map(tokio_tungstenite::Connector::Rustls);
+        let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(
+            self.ws_request(path)?,
+            None,
+            false,
+            connector,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(ws)
     }
 
     pub fn with_key(&self, key: Arc<SoftwareKey>) -> Self {
@@ -53,6 +99,7 @@ impl Relay {
             base: self.base.clone(),
             http: self.http.clone(),
             key,
+            tls: self.tls.clone(),
         }
     }
 

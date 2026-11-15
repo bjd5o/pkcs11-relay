@@ -26,6 +26,8 @@ use crate::relay::{load_manifest, now, Relay};
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub relay_url: String,
+    /// PEM trust anchors for the relay's TLS certificate.
+    pub relay_ca_file: Option<PathBuf>,
     pub device_id: String,
     /// Holds the device key and the current attestation.
     pub data_dir: PathBuf,
@@ -181,7 +183,11 @@ impl Approver {
                 .collect::<Result<_, _>>()?;
             clients.insert(c.client_id.clone(), Client { key, keys });
         }
-        let relay = Relay::new(&cfg.relay_url, device_key.clone());
+        let ca = match &cfg.relay_ca_file {
+            Some(p) => Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
+            None => None,
+        };
+        let relay = Relay::new(&cfg.relay_url, device_key.clone(), ca.as_deref())?;
         let attestation = Self::attest(
             &cfg,
             &behavior,
@@ -320,9 +326,7 @@ impl Approver {
 
     async fn ws_loop(self: Arc<Self>) -> Result<(), String> {
         let path = format!("/v1/devices/{}/ws", self.cfg.device_id);
-        let (mut ws, _) = tokio_tungstenite::connect_async(self.relay.ws_request(&path)?)
-            .await
-            .map_err(|e| e.to_string())?;
+        let mut ws = self.relay.ws_connect(&path).await?;
         tracing::info!("WebSocket connected");
         self.clone().fetch_and_handle(0).await?;
         while let Some(msg) = ws.next().await {

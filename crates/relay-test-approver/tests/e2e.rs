@@ -35,11 +35,11 @@ async fn gate_in_process() {
         data_dir: dir.join("relay"),
         ..Default::default()
     };
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let st = relay_server::build_state(cfg).await.unwrap();
-    tokio::spawn(relay_server::serve_on(listener, st));
-
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!(
+        "https://localhost:{}",
+        listener.local_addr().unwrap().port()
+    );
     let now = relay_test_approver::relay::now();
     relay_test_approver::fixtures::generate(
         &dir,
@@ -49,6 +49,9 @@ async fn gate_in_process() {
         now,
     )
     .unwrap();
+    let st = relay_server::build_state(cfg).await.unwrap();
+    let (cert, key) = (dir.join("relay-cert.pem"), dir.join("relay-key.pem"));
+    tokio::spawn(async move { relay_server::serve_tls(listener, st, &cert, &key).await });
     approver(&dir, "a", Behavior::default()).await;
     approver(
         &dir,

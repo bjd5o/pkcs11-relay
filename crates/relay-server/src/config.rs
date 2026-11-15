@@ -9,6 +9,10 @@ use serde::Deserialize;
 pub struct Config {
     /// Listener address. TLS is terminated by a reverse proxy in front of the relay.
     pub listen: String,
+    /// PEM certificate chain and key. When both are set the relay serves HTTPS itself;
+    /// otherwise plain HTTP for a TLS-terminating proxy in front.
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
     /// Holds `relay.db` (SQLite, WAL).
     pub data_dir: PathBuf,
     pub skew_secs: u64,
@@ -42,6 +46,8 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             listen: "0.0.0.0:8080".into(),
+            tls_cert: None,
+            tls_key: None,
             data_dir: "/data".into(),
             skew_secs: 60,
             max_ttl_secs: 120,
@@ -78,6 +84,15 @@ impl Config {
         };
         if let Ok(v) = std::env::var("RELAY_LISTEN") {
             cfg.listen = v;
+        }
+        if let Ok(v) = std::env::var("RELAY_TLS_CERT") {
+            cfg.tls_cert = Some(v.into());
+        }
+        if let Ok(v) = std::env::var("RELAY_TLS_KEY") {
+            cfg.tls_key = Some(v.into());
+        }
+        if cfg.tls_cert.is_some() != cfg.tls_key.is_some() {
+            return Err("tls_cert and tls_key must be set together".into());
         }
         if let Ok(v) = std::env::var("RELAY_DATA_DIR") {
             cfg.data_dir = v.into();

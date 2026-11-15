@@ -52,7 +52,7 @@ enum Cmd {
         /// Where `out` is mounted in the containers that read it.
         #[arg(long, default_value = "/fixtures")]
         root: String,
-        #[arg(long, default_value = "http://relay:8080")]
+        #[arg(long, default_value = "https://relay:8443")]
         relay_url: String,
         /// Networks the relay accepts pairing from.
         #[arg(

@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 relay-core.workspace = true
 axum.workspace = true
+axum-server.workspace = true
 tokio.workspace = true
 sqlx.workspace = true
 clap.workspace = true

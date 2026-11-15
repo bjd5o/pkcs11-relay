@@ -99,3 +99,16 @@ Decision:
 - **TLS clients (`reqwest`) use rustls with `ring`,** not aws-lc-rs, so static musl builds need only `cc`.
 - **`tower-http` was approved but is not used:** axum's own body limit covers the need.
 Consequences: wire-format §10 is final for the MVP relay API.
+
+## 2026-11-15: PKCS#11 front end written on cryptoki-sys, not forked from native-pkcs11
+
+Context: milestone 3's first task is a spike: fork google/native-pkcs11's front end, or write one on `cryptoki-sys` types.
+Findings: native-pkcs11 0.2.27 has no `catch_unwind` at any export (CLAUDE.md requires it everywhere). It exposes a single slot, and its `Backend` trait is shaped around keychain search. `C_Decrypt*` are stubbed. It uses the `pkcs11-sys` bindings and pulls in `cached`, `tracing-journald` and a keychain backend. Forking would mean rewriting most of its session and object logic anyway.
+Decision: a small front end of our own in `relay-pkcs11`, on `cryptoki-sys` 0.5.0. That crate has committed bindings keyed by OS and architecture, so it covers Linux glibc and musl on x86_64 and aarch64, and macOS.
+Consequences: we own the C ABI module (the only `unsafe` in the workspace). native-pkcs11 informs the structure but no code is copied.
+
+## 2026-11-15: Relay TLS trust is a CA file only, for the MVP
+
+Context: the spec offers "CA file, or a pinned SPKI hash". `ureq` 3 supports trust anchors in its stable API, but an SPKI pin needs a custom rustls verifier, which `ureq` only allows through its unstable `unversioned` connector API.
+Decision (Brian): the provider ships `relay_ca_file` (PEM trust anchors) only. SPKI-hash pinning is a later addition. The relay terminates TLS itself (`axum-server`, rustls with `ring`), when given `tls_cert` and `tls_key`.
+Consequences: a client trusts exactly the CAs in its file. The test fixtures make a private CA and a relay certificate for `relay`, `localhost` and `127.0.0.1`.

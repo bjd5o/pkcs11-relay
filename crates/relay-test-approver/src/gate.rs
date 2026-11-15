@@ -24,6 +24,7 @@ use crate::relay::{load_manifest, now, Relay};
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub relay_url: String,
+    pub relay_ca_file: Option<PathBuf>,
     pub manifest_url: String,
     pub manifest_signer: PathBuf,
     pub client_key: PathBuf,
@@ -164,7 +165,11 @@ pub async fn run(cfg: Config) -> Result<(), String> {
         &std::fs::read_to_string(&cfg.client_key).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    let relay = Relay::new(&cfg.relay_url, Arc::new(key));
+    let ca = match &cfg.relay_ca_file {
+        Some(p) => Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
+        None => None,
+    };
+    let relay = Relay::new(&cfg.relay_url, Arc::new(key), ca.as_deref())?;
     let mut g = Gate {
         relay,
         manifest,

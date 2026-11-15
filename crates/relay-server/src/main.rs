@@ -29,6 +29,9 @@ enum Cmd {
     Healthcheck {
         #[arg(long, default_value = "http://127.0.0.1:8080/healthz")]
         url: String,
+        /// PEM CA bundle to trust for an https URL.
+        #[arg(long)]
+        ca: Option<PathBuf>,
     },
 }
 
@@ -74,9 +77,22 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), String> {
-    if let Some(Cmd::Healthcheck { url }) = &cli.command {
+    if let Some(Cmd::Healthcheck { url, ca }) = &cli.command {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let r = reqwest::get(url).await.map_err(|e| e.to_string())?;
+        let mut b = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5));
+        if let Some(ca) = ca {
+            let pem = std::fs::read(ca).map_err(|e| format!("{}: {e}", ca.display()))?;
+            b = b.tls_certs_only(
+                reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| e.to_string())?,
+            );
+        }
+        let r = b
+            .build()
+            .map_err(|e| e.to_string())?
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         return if r.status().is_success() {
             Ok(())
         } else {
@@ -93,12 +109,23 @@ async fn run(cli: Cli) -> Result<(), String> {
                         .unwrap_or_else(|_| "info".into()),
                 )
                 .init();
-            let listener = tokio::net::TcpListener::bind(&cfg.listen)
-                .await
-                .map_err(|e| format!("bind {}: {e}", cfg.listen))?;
-            tracing::info!(listen = cfg.listen, data_dir = %cfg.data_dir.display(), "relay starting");
+            tracing::info!(listen = cfg.listen, data_dir = %cfg.data_dir.display(), tls = cfg.tls_cert.is_some(), "relay starting");
+            let tls = cfg.tls_cert.clone().zip(cfg.tls_key.clone());
+            let listen = cfg.listen.clone();
             let st = relay_server::build_state(cfg).await?;
-            relay_server::serve_on(listener, st).await
+            match tls {
+                Some((cert, key)) => {
+                    let listener = std::net::TcpListener::bind(&listen)
+                        .map_err(|e| format!("bind {listen}: {e}"))?;
+                    relay_server::serve_tls(listener, st, &cert, &key).await
+                }
+                None => {
+                    let listener = tokio::net::TcpListener::bind(&listen)
+                        .await
+                        .map_err(|e| format!("bind {listen}: {e}"))?;
+                    relay_server::serve_on(listener, st).await
+                }
+            }
         }
         Cmd::Admin { command } => {
             let db = relay_server::db::open(&cfg.data_dir).await?;
