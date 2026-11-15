@@ -24,6 +24,7 @@ publish = false
 [workspace.dependencies]
 relay-core = { path = "crates/relay-core" }
 relay-softcard = { path = "crates/relay-softcard" }
+relay-server = { path = "crates/relay-server" }
 
 # Spec technology table. pgp 0.21 brings its own older RustCrypto generation
 # (p256 0.13, rsa 0.9, ed25519-dalek 2) for OpenPGP only; no types cross over.
@@ -49,6 +50,23 @@ x509-cert = { version = "=0.3.0", features = ["builder"] }
 proptest = "=1.12.0"
 # Approved 2026-11-15: constant-time primitives for the OAEP decoding vendored from rsa 0.10.
 subtle = "=2.6.1"
+# rand_core 0.6 as pgp 0.21 requires it (already in the tree through pgp): RNG for OpenPGP signing.
+rand_core_06 = { package = "rand_core", version = "=0.6.4", features = ["getrandom"] }
+
+# Approved 2026-11-15 for milestone 2 (axum, tokio, sqlx from the spec's technology table).
+axum = { version = "=0.8.9", features = ["ws"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+# 0.8: sqlx 0.9 needs rustc 1.94 and mise.toml pins 1.93.
+sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
+clap = { version = "=4.6.7", features = ["derive", "env"] }
+toml = "=1.2.1"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["json", "env-filter"] }
+# ring rather than aws-lc-rs: no C toolchain beyond cc for static musl builds.
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-tungstenite = "=0.30.0"
+futures-util = { version = "=0.3.34", default-features = false, features = ["sink", "std"] }
 
 [profile.release]
 panic = "unwind" # relay-pkcs11 relies on catch_unwind at the FFI boundary

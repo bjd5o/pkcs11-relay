@@ -174,7 +174,7 @@ pub fn verify_attestation(
 }
 
 /// Client and device ids: 1–64 characters of `[a-z0-9-]`, not starting or ending with `-`.
-pub(crate) fn check_id(id: &str) -> Result<()> {
+pub fn check_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()
         && id.len() <= 64
         && id

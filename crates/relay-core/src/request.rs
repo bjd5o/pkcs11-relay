@@ -281,3 +281,31 @@ pub fn verify_request(
     check_operation(key.role, key.algorithm, f.op, &f.mechanism, f.input.len())?;
     Ok(VerifiedRequest { request: req, key })
 }
+
+/// The relay's early rejection (spec: relay "Early rejection"): the request is well formed,
+/// signed by the authenticated client, unexpired, and addresses a key the client was approved
+/// for. Hygiene only: the approver and the provider check everything themselves.
+pub fn verify_for_relay(
+    bytes: &[u8],
+    client_id: &str,
+    client_key: &PublicKey,
+    approved_keys: &[Fingerprint],
+    now: u64,
+    skew: u64,
+) -> Result<SignedRequest> {
+    let req = SignedRequest::decode(bytes).map_err(|e| Error::RequestInvalid(e.to_string()))?;
+    let f = &req.fields;
+    if f.client_id != client_id {
+        return Err(Error::RequestSignatureInvalid);
+    }
+    client_key
+        .verify_message(&f.to_be_signed(), &req.client_sig)
+        .map_err(|_| Error::RequestSignatureInvalid)?;
+    if f.created_at > now.saturating_add(skew) || now > f.expires_at {
+        return Err(Error::RequestExpired);
+    }
+    if !approved_keys.contains(&f.key_fingerprint) {
+        return Err(Error::KeyNotApproved);
+    }
+    Ok(req)
+}

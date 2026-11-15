@@ -95,6 +95,8 @@ pub enum Error {
     KeyNotApproved,
     #[error("request invalid: {0}")]
     RequestInvalid(String),
+    #[error("relay authentication failed: {0}")]
+    RelayAuth(String),
 
     // --- Everything else ---
     #[error("decode error: {0}")]
@@ -134,7 +136,8 @@ impl Error {
             | RequestReplayed
             | UnknownKey
             | KeyNotApproved
-            | RequestInvalid(_) => FailureRow::RequestRejected,
+            | RequestInvalid(_)
+            | RelayAuth(_) => FailureRow::RequestRejected,
             Decode(_) | InvalidKey(_) | Card(_) | Crypto(_) => FailureRow::Internal,
         }
     }
@@ -187,6 +190,7 @@ impl Error {
             UnknownKey => "UnknownKey",
             KeyNotApproved => "KeyNotApproved",
             RequestInvalid(_) => "RequestInvalid",
+            RelayAuth(_) => "RelayAuth",
             Decode(_) => "Decode",
             InvalidKey(_) => "InvalidKey",
             Card(_) => "Card",

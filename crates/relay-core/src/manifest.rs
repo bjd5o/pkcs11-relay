@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::io::Cursor;
 
 use base64::Engine as _;
-use pgp::composed::{Deserializable, DetachedSignature, SignedPublicKey};
+use pgp::composed::{Deserializable, DetachedSignature, SignedPublicKey, SignedSecretKey};
 use pgp::crypto::hash::HashAlgorithm;
 use pgp::packet::SignatureType;
 use serde::Deserialize;
@@ -376,5 +376,80 @@ impl ManifestDraft {
         out.push(b'\n');
         parse(&out)?;
         Ok(out)
+    }
+}
+
+/// A software OpenPGP signing key: the fixture generator's throwaway signer, and `relayctl`'s
+/// signer when no OpenPGP card is used. Signatures are detached, binary-document type, SHA-256.
+pub struct PgpSecretKey(SignedSecretKey);
+
+impl PgpSecretKey {
+    /// Generate an Ed25519 (v4, gpg-compatible) key that can certify and sign.
+    pub fn generate(user_id: &str) -> Result<Self> {
+        use pgp::composed::{EncryptionCaps, KeyType, SecretKeyParamsBuilder};
+        let params = SecretKeyParamsBuilder::default()
+            .key_type(KeyType::Ed25519Legacy)
+            .can_certify(true)
+            .can_sign(true)
+            .can_encrypt(EncryptionCaps::None)
+            .primary_user_id(user_id.into())
+            .build()
+            .map_err(|e| Error::Crypto(format!("OpenPGP key parameters: {e}")))?;
+        let key = params
+            .generate(rand_core_06::OsRng)
+            .map_err(|e| Error::Crypto(format!("OpenPGP key generation: {e}")))?;
+        Ok(PgpSecretKey(key))
+    }
+
+    /// Load an armored or binary transferable secret key (unprotected).
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let (key, _) = SignedSecretKey::from_reader_single(Cursor::new(bytes))
+            .map_err(|e| Error::Crypto(format!("OpenPGP secret key: {e}")))?;
+        Ok(PgpSecretKey(key))
+    }
+
+    pub fn to_armored(&self) -> Result<zeroize::Zeroizing<String>> {
+        self.0
+            .to_armored_string(Default::default())
+            .map(zeroize::Zeroizing::new)
+            .map_err(|e| Error::Crypto(e.to_string()))
+    }
+
+    /// The public key, armored: what clients configure as the manifest signer.
+    pub fn public_armored(&self) -> Result<String> {
+        SignedPublicKey::from(self.0.clone())
+            .to_armored_string(Default::default())
+            .map_err(|e| Error::Crypto(e.to_string()))
+    }
+
+    /// An armored detached signature over the exact bytes of `data`.
+    pub fn sign_detached(&self, data: &[u8]) -> Result<String> {
+        let sig = DetachedSignature::sign_binary_data(
+            rand_core_06::OsRng,
+            &self.0.primary_key,
+            &pgp::types::Password::empty(),
+            HashAlgorithm::Sha256,
+            data,
+        )
+        .map_err(|e| Error::Crypto(format!("OpenPGP signing: {e}")))?;
+        sig.to_armored_string(Default::default())
+            .map_err(|e| Error::Crypto(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod pgp_tests {
+    use super::*;
+
+    #[test]
+    fn software_signer_round_trip() {
+        let k = PgpSecretKey::generate("fixture <fixture@test.invalid>").unwrap();
+        let k = PgpSecretKey::from_bytes(k.to_armored().unwrap().as_bytes()).unwrap();
+        let signer = ManifestSigner::from_bytes(k.public_armored().unwrap().as_bytes()).unwrap();
+        let data = b"{}";
+        let sig = k.sign_detached(data).unwrap();
+        let now = std::time::UNIX_EPOCH.elapsed().unwrap().as_secs();
+        signer.verify(data, sig.as_bytes(), now, 60).unwrap();
+        assert!(signer.verify(b"{ }", sig.as_bytes(), now, 60).is_err());
     }
 }

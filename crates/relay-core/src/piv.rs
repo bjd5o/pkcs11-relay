@@ -287,6 +287,22 @@ pub fn read_certificate(t: &mut dyn CardTransport, slot: Slot) -> Result<Vec<u8>
     Ok(find_tlv(&obj, 0x70)?.to_vec())
 }
 
+/// The public key in a slot, from its certificate: how approvers discover what a card holds.
+/// The certificate itself is not trusted; only the key's fingerprint is matched against the
+/// manifest.
+pub fn read_public_key(t: &mut dyn CardTransport, slot: Slot) -> Result<crate::keys::PublicKey> {
+    use x509_cert::der::{Decode, Encode};
+    let der = read_certificate(t, slot)?;
+    let cert = x509_cert::Certificate::from_der(&der)
+        .map_err(|e| PivError::Malformed(format!("certificate: {e}")))?;
+    let spki = cert
+        .tbs_certificate()
+        .subject_public_key_info()
+        .to_der()
+        .map_err(|e| PivError::Malformed(e.to_string()))?;
+    crate::keys::PublicKey::from_spki(&spki).map_err(|e| PivError::Malformed(e.to_string()))
+}
+
 /// GENERAL AUTHENTICATE with a challenge (`81`) and a response request (`82`).
 pub fn general_authenticate(
     t: &mut dyn CardTransport,

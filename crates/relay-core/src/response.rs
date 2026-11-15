@@ -391,3 +391,31 @@ pub fn verify_signature_result(
         Mechanism::RsaPkcsOaep { .. } => Ok(()),
     }
 }
+
+/// The relay's check of a posted response: well formed, signed by the authenticated device's
+/// key, carrying an attestation that names that key, and bound to the pending request. The
+/// relay cannot check the attestation's signer (it has no manifest); clients do.
+pub fn verify_for_relay(
+    bytes: &[u8],
+    request: &SignedRequest,
+    device_key: &crate::keys::PublicKey,
+) -> Result<SignedResponse> {
+    let resp = SignedResponse::decode(bytes)
+        .map_err(|e| Error::ResponseNotBound(format!("undecodable: {e}")))?;
+    let r = &resp.fields;
+    if &r.device_key_fingerprint != device_key.fingerprint() {
+        return Err(Error::ResponseSignerMismatch);
+    }
+    let st = AttestationStatement::decode(&r.attestation)
+        .map_err(|e| Error::AttestationInvalid(e.to_string()))?;
+    if st.fields.device_key.fingerprint() != device_key.fingerprint() {
+        return Err(Error::ResponseSignerMismatch);
+    }
+    device_key
+        .verify_message(&r.to_be_signed(), &resp.device_sig)
+        .map_err(|_| Error::ResponseSignatureInvalid)?;
+    if r.req_id != request.fields.req_id || r.request_hash != request.hash() {
+        return Err(Error::ResponseNotBound("not for this request".into()));
+    }
+    Ok(resp)
+}

@@ -13,17 +13,19 @@ pub mod keys;
 pub mod manifest;
 pub mod mechanism;
 pub mod padding;
+pub mod pairing;
 pub mod piv;
+pub mod relay_auth;
 pub mod request;
 pub mod response;
 pub mod seal;
 pub mod signing;
 
-pub use attestation::verify_attestation;
+pub use attestation::{check_id, verify_attestation};
 pub use error::{Error, FailureRow, Result};
 pub use keys::{Algorithm, Fingerprint, PublicKey, Role};
 pub use manifest::{
-    verify_manifest, DraftKey, Manifest, ManifestDraft, ManifestKey, ManifestSigner,
+    verify_manifest, DraftKey, Manifest, ManifestDraft, ManifestKey, ManifestSigner, PgpSecretKey,
 };
 pub use mechanism::{check_operation, Mechanism, Op};
 pub use request::verify_request;
