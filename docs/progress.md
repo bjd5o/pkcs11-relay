@@ -5,7 +5,7 @@ Update this file as tasks finish. Each milestone's gate is defined in `docs/mile
 ## Milestone 1: protocol and core
 
 - [x] Cargo workspace and CI skeleton (fmt, clippy, test)
-- [ ] `docs/wire-format.md` written and reviewed by Brian
+- [x] `docs/wire-format.md` written and reviewed by Brian (pairing endpoints finalised in milestone 2)
 - [ ] `relay-core::wire` (deterministic CBOR types)
 - [ ] `relay-core::keys` (fingerprints, SPKI, roles)
 - [ ] `relay-core::manifest` (OpenPGP verification, freshness)

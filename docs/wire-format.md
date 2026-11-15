@@ -1,0 +1,455 @@
+# Wire format, v1
+
+Status: **reviewed by Brian, 2026-11-15**; the pairing endpoints (§10) are finalised in milestone 2. Written from `docs/spec.md` ("Keys and messages") and the defaults table in `docs/milestones-1-4.md`. Where this document goes beyond either, the change is listed under "Departures from the spec" at the end with its `docs/decisions.md` entry; anything still marked **[proposal]** is awaiting review.
+
+`relay-core` is the only implementation. Golden vectors for every message live in `crates/relay-core/tests/vectors/`; if this document and the vectors disagree, that is a bug in one of them, and the fix is recorded in `docs/decisions.md`.
+
+## 1. Conventions
+
+### 1.1 Scalars
+
+| Thing | Encoding |
+|---|---|
+| Timestamp | Unix seconds, unsigned 64-bit. CBOR: unsigned integer. JSON: integer. |
+| Request id (`req_id`) | 16 random bytes from the OS CSPRNG. CBOR: byte string. In URL paths: 32 lowercase hex characters. |
+| Client id, device id | UTF-8 text, 1–64 characters from `[a-z0-9-]`, not starting or ending with `-`. |
+| Key fingerprint | `"sha256:"` + 64 lowercase hex characters of SHA-256 over the key's DER SubjectPublicKeyInfo (§2). Text string in both CBOR and JSON. |
+| Public key | DER SubjectPublicKeyInfo (§2). CBOR: byte string. JSON: base64. |
+| Hash | SHA-256, 32 bytes. |
+| Binary in JSON and HTTP headers | Base64, RFC 4648 §4 (standard alphabet, with padding). |
+
+### 1.2 Deterministic CBOR
+
+Every signed message is a CBOR map encoded with RFC 8949 core deterministic encoding (§4.2.1):
+
+- integers, lengths and map sizes in their shortest form;
+- definite lengths only;
+- map keys sorted by the bytewise order of their encoded form. Every key here is a text string under 24 bytes, so the order is **shorter keys first, then bytewise by UTF-8**. The field tables below list fields in that order.
+
+Only these CBOR types appear: unsigned integer (major type 0), byte string (2), text string (3) and map (5). Never negative integers, arrays, tags, floats, `null`, `undefined` or booleans. An optional field that has no value is **left out**, never encoded as `null`.
+
+Decoders are strict. They reject, with no partial result:
+
+- input that is not exactly one CBOR item (trailing bytes included);
+- any type outside the four above;
+- input that is not canonical. The check: decode, re-encode, and compare byte for byte with the input;
+- unknown keys, duplicate keys, missing required keys, or a field of the wrong type;
+- `v` other than `1`;
+- nesting deeper than 3 maps, or a message over 65 536 bytes;
+- text that is not valid UTF-8.
+
+### 1.3 Signed bytes
+
+For a message with signature field `S` and context string `C`:
+
+```
+signed_bytes = C || 0x00 || deterministic_CBOR(message map without S)
+```
+
+The context strings are ASCII, with no terminator besides the `0x00` shown:
+
+| Message | Context string | Signature field | Signer |
+|---|---|---|---|
+| Request | `relay-pkcs11/request/v1` | `client_sig` | client identity key |
+| Attestation statement | `relay-pkcs11/attestation/v1` | `sig` | manifest `attest` key |
+| Response | `relay-pkcs11/response/v1` | `device_sig` | device key |
+| Relay HTTP auth | `relay-pkcs11/relay-auth/v1` | `X-Relay-Signature` header | client or device key (§8) |
+
+The verifier never signs or hashes the bytes it received. It decodes them, which also enforces canonical form, removes the signature field, re-encodes the rest and verifies over that. Because decoding demands canonical input, the result equals the sender's bytes minus the signature entry.
+
+### 1.4 Signature algorithms
+
+The key's type decides the algorithm, and no message carries an algorithm field.
+
+| Key | Algorithm | Signature bytes |
+|---|---|---|
+| Ed25519 | Ed25519 (RFC 8032) over `signed_bytes`. Verified with `verify_strict`. | 64 |
+| P-256 | ECDSA with SHA-256 over `signed_bytes`. | 64: `r ‖ s`, each 32 bytes big-endian, left-padded with zeros |
+
+ECDSA signers may produce high-S values (the Secure Enclave does), and verifiers accept both. No identifier in this protocol is derived from a signature, so malleability does not matter.
+
+Platform note: Security.framework, PIV `GENERAL AUTHENTICATE` and OpenSSL all return DER `ECDSA-Sig-Value`. The signer converts that to `r ‖ s` with `relay_core::padding`, and platform code never does it by hand.
+
+## 2. Keys and fingerprints
+
+`fingerprint(key) = "sha256:" || hex(SHA-256(DER(SubjectPublicKeyInfo)))`
+
+Only one SPKI encoding is accepted per key, so every key has exactly one fingerprint:
+
+| Algorithm name | SPKI | Used for |
+|---|---|---|
+| `rsa-2048`, `rsa-4096` | `rsaEncryption` (1.2.840.113549.1.1.1) with NULL parameters; modulus exactly 2048 or 4096 bits; public exponent 65537 **[proposal: reject other exponents]** | `sign`, `auth`, `encrypt` |
+| `p256` | `id-ecPublicKey` with namedCurve `prime256v1`; **uncompressed** point (65 bytes, leading `0x04`) | `sign`, `auth`, `attest`, device keys, reply keys |
+| `ed25519` | `id-Ed25519` (1.3.101.112), no parameters | client identity keys only |
+
+Any other SPKI form is rejected when parsed: compressed points, explicit curve parameters, RSA-PSS OIDs, or trailing bytes.
+
+Roles each algorithm may take:
+
+| Role | Allowed algorithms |
+|---|---|
+| `sign` | `rsa-2048`, `rsa-4096`, `p256` |
+| `auth` | `rsa-2048`, `rsa-4096`, `p256` |
+| `encrypt` | `rsa-2048`, `rsa-4096` (OAEP is the only decrypt mechanism) |
+| `attest` | `p256` |
+
+Worked example: the P-256 device key from §5's example has this SPKI (91 bytes)
+
+```
+3059301306072a8648ce3d020106082a8648ce3d030107034200048b9432b61c9144081b2eff864829ab0440cbe555b62ada198b8131e4e8fcf1f4226fbd788f8a53a858048fc0751d0e773303972e8a645718d4a3055383456528
+```
+
+and fingerprint `sha256:d2d3e0fc4b057ee2319854654ec5747eb63a3395343c3d9010afaddb0097f786`.
+
+## 3. Mechanisms, roles and inputs
+
+| Role | Key | Mechanism (`name`) | `op` | `input` | Result (sealed plaintext) |
+|---|---|---|---|---|---|
+| `sign` | RSA | `CKM_SHA256_RSA_PKCS` | `sign` | full message, 1–32 768 bytes | PKCS#1 v1.5 signature, modulus length, big-endian |
+| `sign` | P-256 | `CKM_ECDSA_SHA256` | `sign` | full message, 1–32 768 bytes | `r ‖ s`, 64 bytes |
+| `auth` | RSA | `CKM_RSA_PKCS` | `sign` | caller's data as given to `C_Sign` (normally a DigestInfo), 1 to *k*−11 bytes | PKCS#1 v1.5 signature, modulus length |
+| `auth` | P-256 | `CKM_ECDSA` | `sign` | digest as given to `C_Sign`, 1–64 bytes | `r ‖ s`, 64 bytes |
+| `encrypt` | RSA | `CKM_RSA_PKCS_OAEP` | `decrypt` | ciphertext, exactly *k* bytes | plaintext |
+
+*k* is the modulus length in bytes. Multi-part signing (`C_SignUpdate`) buffers locally and sends the concatenated message once. A message over 32 768 bytes is refused locally with `CKR_DATA_LEN_RANGE` **[proposal: the limit keeps the request inside the relay's 64 KiB body cap]**.
+
+For the MVP, OAEP takes only `hash = "sha256"` and `mgf = "mgf1-sha256"`. Any other combination, or a label over 256 bytes, is refused locally with `CKR_MECHANISM_PARAM_INVALID`. A mechanism outside the key's row is refused with `CKR_MECHANISM_INVALID`, and an `op` outside the key's role with `CKR_KEY_FUNCTION_NOT_PERMITTED` (Failure handling table). The approver repeats every one of these checks against its own copy of the manifest.
+
+## 4. Request envelope
+
+Built and signed by the provider. CBOR map, context string `relay-pkcs11/request/v1`, signature field `client_sig`.
+
+| Key (canonical order) | Type | Rules |
+|---|---|---|
+| `v` | uint | `1` |
+| `op` | tstr | `"sign"` or `"decrypt"` |
+| `input` | bstr | §3 |
+| `req_id` | bstr | 16 bytes |
+| `context` | map | §4.1 |
+| `client_id` | tstr | §1.1 |
+| `mechanism` | map | §4.2 |
+| `reply_pub` | bstr | HPKE public key for this request: uncompressed P-256 point, 65 bytes (raw `SerializePublicKey`, **not** SPKI) |
+| `client_sig` | bstr | 64 bytes, §1.4 |
+| `created_at` | uint | Unix seconds |
+| `expires_at` | uint | `created_at < expires_at <= created_at + 120` (the relay's max TTL) |
+| `key_fingerprint` | tstr | the hardware key to use |
+
+### 4.1 `context`
+
+The requester's claims. The approval screen shows them under a heading that says they are claims, separate from what the approver checked itself.
+
+| Key | Type | Rules |
+|---|---|---|
+| `host` | tstr | 1–255 bytes, e.g. `pi5.tailnet` |
+| `purpose` | tstr | 0–255 bytes, from the provider config's purpose text |
+| `consumer` | tstr | 0–255 bytes, the loading process's executable name if known, e.g. `bao` |
+
+### 4.2 `mechanism`
+
+| Key | Type | Rules |
+|---|---|---|
+| `mgf` | tstr | OAEP only: `"mgf1-sha256"` |
+| `hash` | tstr | OAEP only: `"sha256"` |
+| `name` | tstr | a PKCS#11 mechanism name from §3 |
+| `label` | bstr | OAEP only: the label (`pSourceData`), 0–256 bytes; present, possibly empty |
+
+All three of `mgf`, `hash` and `label` are present for `CKM_RSA_PKCS_OAEP` and absent for every other mechanism.
+
+### 4.3 `request_hash`
+
+`request_hash = SHA-256(exact CBOR bytes of the request as sent, including client_sig)`. Because decoders enforce canonical form, every party that accepted the request computes the same hash.
+
+### 4.4 Example (diagnostic notation)
+
+```
+{
+  "v": 1,
+  "op": "decrypt",
+  "input": h'5c1e…(512 bytes)',
+  "req_id": h'9f2c4e1a7b3d5f60a1b2c3d4e5f60718',
+  "context": {"host": "pi5.tailnet", "purpose": "OpenBao unseal on pi5", "consumer": "bao"},
+  "client_id": "openbao-pi5",
+  "mechanism": {"mgf": "mgf1-sha256", "hash": "sha256", "name": "CKM_RSA_PKCS_OAEP", "label": h''},
+  "reply_pub": h'04…(65 bytes)',
+  "client_sig": h'…(64 bytes)',
+  "created_at": 1794744000,
+  "expires_at": 1794744090,
+  "key_fingerprint": "sha256:4f1c…"
+}
+```
+
+The byte-exact version is the golden vector `request/decrypt-oaep.cbor`. Building it needs a real RSA ciphertext, so it is generated by `relay-core` rather than by hand.
+
+## 5. Attestation statement
+
+Signed by a manifest `attest` key (ECDSA P-256). Context string `relay-pkcs11/attestation/v1`, signature field `sig`. Reused across responses until it expires.
+
+| Key (canonical order) | Type | Rules |
+|---|---|---|
+| `v` | uint | `1` |
+| `sig` | bstr | 64 bytes, ECDSA P-256 `r ‖ s` |
+| `device_id` | tstr | §1.1 |
+| `not_after` | uint | Unix seconds |
+| `device_key` | bstr | P-256 SPKI of the device key (§2) |
+| `not_before` | uint | `not_before < not_after` |
+| `attest_key_fingerprint` | tstr | fingerprint of the signing attest key |
+| `device_key_fingerprint` | tstr | must equal `fingerprint(device_key)`; the decoder rejects a mismatch |
+
+On a YubiKey the attest key signs a digest: the approver computes `SHA-256(signed_bytes)`, sends it with `GENERAL AUTHENTICATE`, and converts the card's DER signature to `r ‖ s`.
+
+### 5.1 Verification (`verify_attestation(statement, manifest, now, skew)`)
+
+1. Decode strictly (§1.2), including the `device_key_fingerprint` consistency check.
+2. Look up `attest_key_fingerprint` in the manifest. It must exist with role `attest`; otherwise fail with "not signed by a manifest attest key".
+3. Verify `sig` over `signed_bytes` with that key's public key, taken from the manifest's `keys[].public_key`.
+4. Require `not_before − skew <= now <= not_after + skew`; otherwise fail as expired or not yet valid.
+
+### 5.2 Worked example (byte-exact)
+
+Keys generated with OpenSSL for this document and signed with `openssl dgst -sha256 -sign`; the signature verifies with `openssl dgst -verify`. This example becomes golden vector `attestation/valid.cbor`.
+
+- attest key fingerprint: `sha256:ea4e871a4792bc891653e2e47e983fee8a0aaca42153951eb89379002574d159`
+- device key: the SPKI in §2
+- window: `not_before = 1794700800` (2026-11-15T00:00:00Z), `not_after = 1797292800` (2026-12-15T00:00:00Z)
+
+Diagnostic:
+
+```
+{
+  "v": 1,
+  "sig": h'13e38ddd96420e845f36e445709f416c9227410d28b5c08fe48fc4b60196fd61c82c595e14d8c90453a94fb0557f32bf171420a70834b7d5ca0bd3e03b997624',
+  "device_id": "brian-iphone",
+  "not_after": 1797292800,
+  "device_key": h'3059…6528',
+  "not_before": 1794700800,
+  "attest_key_fingerprint": "sha256:ea4e…d159",
+  "device_key_fingerprint": "sha256:d2d3…f786"
+}
+```
+
+Signed bytes, annotated (the context string, `00`, then a 7-entry map without `sig`):
+
+```
+72656c61792d706b637331312f6174746573746174696f6e2f7631   "relay-pkcs11/attestation/v1"
+00                                                       separator
+a7                                                       map(7)
+  61 76  01                                              "v": 1
+  69 6465766963655f6964  6c 627269616e2d6970686f6e65     "device_id": "brian-iphone"
+  69 6e6f745f6166746572  1a 6b208300                     "not_after": 1797292800
+  6a 6465766963655f6b6579  58 5b 3059…6528               "device_key": bstr(91)
+  6a 6e6f745f6265666f7265  1a 6af8f600                   "not_before": 1794700800
+  76 6174746573745f6b65795f66696e6765727072696e74        "attest_key_fingerprint"
+     78 47 7368613235363a6561…                           tstr(71) "sha256:ea4e…"
+  76 6465766963655f6b65795f66696e6765727072696e74        "device_key_fingerprint"
+     78 47 7368613235363a6432…                           tstr(71) "sha256:d2d3…"
+```
+
+The full statement is 424 bytes: `a8 6176 01 63736967 5840 13e3…7624 …` (the same map with `"sig"` in second place).
+
+## 6. Response envelope
+
+Signed by the device key (ECDSA P-256). Context string `relay-pkcs11/response/v1`, signature field `device_sig`. Per the spec, `device_sig` covers every field except `attestation`.
+
+| Key (canonical order) | Type | Rules |
+|---|---|---|
+| `v` | uint | `1` |
+| `reason` | tstr | only with `denied` or `error`; optional; one of the codes in §6.1; covered by `device_sig` |
+| `req_id` | bstr | 16 bytes; must equal the request's |
+| `status` | tstr | `"approved"`, `"denied"` or `"error"` |
+| `device_sig` | bstr | 64 bytes, ECDSA P-256 `r ‖ s` |
+| `attestation` | bstr | the attestation statement's exact CBOR bytes (§5), wrapped as a byte string so it is verified over the bytes its signer produced; **not** covered by `device_sig` |
+| `request_hash` | bstr | 32 bytes, §4.3 |
+| `responded_at` | uint | Unix seconds; informational and logged, not checked |
+| `sealed_result` | bstr | present if and only if `status = "approved"`; §7 |
+| `device_key_fingerprint` | tstr | fingerprint of the key that made `device_sig` |
+
+### 6.1 Reason codes
+
+`user_denied`, `policy` (the approver's checks refused the request), `expired`, `card_absent`, `wrong_pin`, `pin_blocked`, `card_error`, `internal`. The provider logs the code and maps every `denied` to `CKR_FUNCTION_REJECTED` and every `error` to `CKR_DEVICE_ERROR`, as the Failure handling table requires. A code is a hint from an attested device, nothing more.
+
+### 6.2 Verification (`verify_response(response, request_bytes, manifest, now, skew)`)
+
+The spec's five checks, in the spec's order, stopping at the first failure. Every failure discards the response and returns `CKR_DEVICE_ERROR`.
+
+1. Decode the response strictly. Run `verify_attestation` (§5.1, steps 1–3) on `attestation`: its signature verifies against a manifest `attest` key.
+2. §5.1 step 4: `now` is inside the statement's window, allowing `skew`.
+3. `response.device_key_fingerprint == statement.device_key_fingerprint`.
+4. `device_sig` verifies over `signed_bytes` with `statement.device_key`. Then `req_id == request.req_id` and `request_hash == SHA-256(request_bytes)`. The request hash covers the request's `key_fingerprint` and `mechanism`, so binding the hash binds both (the spec's "echoes this request's id, key and mechanism").
+Only after checks 1–4 pass, and only for `approved`: open `sealed_result` (§7) and zero the reply private key.
+
+5. For a signature result: verify the opened signature against the hardware key's public key from the manifest, for the request's mechanism and input. On failure, zero the plaintext and return `CKR_DEVICE_ERROR`. Check 5 needs the opened result, so it runs after the open; nothing is decrypted before the attestation and device signature have been checked. For `denied` or `error`, the checks run the same way; a `denied` that passes them returns `CKR_FUNCTION_REJECTED`, and an `error` that passes them returns `CKR_DEVICE_ERROR`.
+
+### 6.3 Example (diagnostic notation)
+
+```
+{
+  "v": 1,
+  "req_id": h'9f2c4e1a7b3d5f60a1b2c3d4e5f60718',
+  "status": "approved",
+  "device_sig": h'…(64 bytes)',
+  "attestation": h'a8617601…(424 bytes, §5.2)',
+  "request_hash": h'…(32 bytes)',
+  "responded_at": 1794744031,
+  "sealed_result": h'04…(65-byte enc)…(ciphertext + 16-byte tag)',
+  "device_key_fingerprint": "sha256:d2d3e0fc4b057ee2319854654ec5747eb63a3395343c3d9010afaddb0097f786"
+}
+```
+
+A denial is the same without `sealed_result`, with `"status": "denied"` and `"reason": "user_denied"`. The byte-exact versions are golden vectors under `response/`.
+
+## 7. Sealed results (HPKE)
+
+RFC 9180, base mode (`mode_base`, no PSK, no sender authentication):
+
+| Parameter | Value |
+|---|---|
+| KEM | DHKEM(P-256, HKDF-SHA256), `0x0010` |
+| KDF | HKDF-SHA256, `0x0001` |
+| AEAD | AES-256-GCM, `0x0002` |
+| `info` | ASCII `relay-pkcs11/result/v1` followed directly by the 16-byte `req_id` (38 bytes; no separator needed, since `req_id` has a fixed length) |
+| `aad` | the 16-byte `req_id` |
+| plaintext | the result bytes in the format the PKCS#11 mechanism returns (§3) |
+| `sealed_result` | `enc ‖ ciphertext`: 65-byte encapsulated key (uncompressed point) followed by the AEAD output, which ends with the 16-byte tag. Total = 65 + len(plaintext) + 16. |
+
+Single-shot `Seal` / `Open`, one message per context. The provider generates the reply key pair with `GenerateKeyPair` from the OS CSPRNG for each request, keeps the private key in a `Zeroizing` buffer, and drops it after a successful open, a verification failure or the deadline. Whichever comes first, it never reuses one.
+
+## 8. Relay HTTP authentication
+
+Every authenticated relay call carries:
+
+| Header | Value |
+|---|---|
+| `X-Relay-Key` | fingerprint of the signing key (a client identity key or a device key) |
+| `X-Relay-Time` | Unix seconds, ASCII decimal, no leading zeros |
+| `X-Relay-Nonce` | 16 random bytes from the OS CSPRNG, base64 (24 characters) |
+| `X-Relay-Signature` | base64 of the 64-byte signature (§1.4) |
+
+Signed bytes (`hash(body)` is SHA-256 of the exact body bytes; an empty body hashes to SHA-256 of the empty string):
+
+```
+"relay-pkcs11/relay-auth/v1" || 0x00 || METHOD || 0x00 || path-and-query || 0x00
+  || time || 0x00 || nonce(16 raw bytes) || 0x00 || SHA-256(body)
+```
+
+- `METHOD`: uppercase ASCII, e.g. `GET`.
+- `path-and-query`: the request target in origin form exactly as sent, e.g. `/v1/requests/9f2c…/result?wait=30`; no scheme or host.
+- `time`: the header's ASCII digits.
+
+The relay rejects:
+
+- an unknown key;
+- `|now − time| > 60 s`;
+- a bad signature;
+- a nonce already seen for that key within the last 120 s (twice the skew, so a nonce cannot be reused while its timestamp is still acceptable).
+
+Example: an empty-body `GET /v1/requests/9f2c4e1a7b3d5f60a1b2c3d4e5f60718/result?wait=30` at time `1794744000` (2026-11-15T12:00:00Z) with nonce `00112233445566778899aabbccddeeff` (header `ABEiM0RVZneImaq7zN3u/w==`) signs these 152 bytes:
+
+```
+72656c61792d706b637331312f72656c61792d617574682f7631 00   "relay-pkcs11/relay-auth/v1" 00
+474554 00                                                 "GET" 00
+2f76312f72657175657374732f39663263346531613762336435663630613162326333643465356636303731382f726573756c743f776169743d3330 00
+                                                          path-and-query 00
+31373934373434303030 00                                   "1794744000" 00
+00112233445566778899aabbccddeeff 00                       nonce 00
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+                                                          SHA-256("")
+```
+
+Envelope bodies (`POST /v1/requests`, `POST /v1/requests/{id}/response`, and the result of `GET …/result`) are `application/cbor`, carrying the envelope's exact bytes. The relay stores and forwards them byte for byte.
+
+## 9. Manifest
+
+### 9.1 Files
+
+- `manifest.json`: UTF-8 JSON, at most 1 MiB.
+- `manifest.json.asc` (armored) or `manifest.json.sig` (binary): an OpenPGP detached signature over the **exact bytes** of `manifest.json`.
+
+The signature is checked **before** any JSON parsing. Rules for it:
+
+- exactly one signature packet, of signature type `0x00` (binary document). `gpg --detach-sign` produces this. Type `0x01` (canonical text) is rejected, because it signs line-ending-normalised text rather than the exact bytes;
+- made by the configured signer's primary key, or by a subkey that has the signing flag and a valid binding signature from that primary;
+- hash algorithm SHA-256, SHA-384 or SHA-512 (SHA-1 and MD5 are rejected);
+- signature creation time not later than `now + skew`;
+- no revocation check, as the spec says. **[proposal]** The signer key's own expiry is also ignored, for the same reason: headless clients cannot learn about a new key anyway, and `valid_until` already bounds staleness.
+
+### 9.2 JSON schema
+
+```json
+{
+  "v": 1,
+  "version": 7,
+  "issued_at": 1794700800,
+  "valid_until": 1797292800,
+  "keys": [
+    {
+      "fingerprint": "sha256:4f1c…",
+      "role": "encrypt",
+      "label": "openbao-unseal",
+      "id": "01",
+      "token": "yubikey-12345678",
+      "algorithm": "rsa-4096",
+      "public_key": "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA…"
+    }
+  ]
+}
+```
+
+| Field | Type | Rules |
+|---|---|---|
+| `v` | integer | `1` |
+| `version` | integer | ≥ 1; monotonic |
+| `issued_at`, `valid_until` | integer | Unix seconds, `issued_at < valid_until`. The spec's table shows dates, which `relayctl manifest show` displays; on the wire they are integers, per the defaults table. |
+| `keys` | array | 0–64 entries; no two with the same `fingerprint` |
+| `keys[].fingerprint` | string | §1.1 |
+| `keys[].role` | string | `sign`, `auth`, `encrypt` or `attest`; anything else is rejected |
+| `keys[].label` | string | 1–128 bytes UTF-8; becomes `CKA_LABEL`; unique within its token |
+| `keys[].id` | string | 2–128 lowercase hex characters (1–64 bytes); becomes `CKA_ID` as raw bytes (`"01"` → `0x01`); unique within its token |
+| `keys[].token` | string | 1–32 bytes UTF-8 (the `CK_TOKEN_INFO.label` limit); groups keys into slots |
+| `keys[].algorithm` | string | §2; must match `public_key` and be allowed for `role` |
+| `keys[].public_key` | string | base64 DER SPKI (§2); `fingerprint` must equal `fingerprint(public_key)` |
+
+Parsing is strict: unknown fields, duplicate JSON object keys, non-integer numbers, and integers outside 0–2⁶⁴−1 are all rejected.
+
+### 9.3 Freshness (`verify_manifest(bytes, signature, signer, cached, now, skew)`)
+
+1. Verify the OpenPGP signature (§9.1).
+2. Parse and validate the JSON (§9.2), including `fingerprint(public_key) == fingerprint` and `algorithm` against `public_key` for every key.
+3. Reject `now > valid_until + skew` as expired.
+4. With a cached copy, reject `version < cached.version` as a rollback, and `version == cached.version` with different bytes as an error. The same version with identical bytes is accepted, which is the normal refetch.
+
+On any failure the caller keeps a valid cached copy if it has one (Failure handling table). The cached copy is re-checked against step 3 every time it is used.
+
+## 10. Relay JSON bodies (sketch)
+
+These are not signed messages: the relay is untrusted and every field is a hint. They are finalised in milestone 2 and listed here so the provider and the approver agree on shape.
+
+- `GET /v1/keys` returns `{"keys": [{"public_key": b64, "token": str, "devices": int, "last_seen": ts}]}`. The provider recomputes each fingerprint from `public_key`, keeps only keys the manifest also lists, ignores `token`, and uses the manifest's copy of the public key from then on.
+- `POST /v1/clients/pending` takes `{"client_id": str, "public_key": b64, "host": str}`, authenticated by §8 with the key in the body (proof of possession).
+- `POST /v1/devices` takes `{"device_id": str, "device_key": b64, "attestation": b64 CBOR, "keys": [b64 SPKI], "push": {...}}`, authenticated by §8 with the device key.
+- `GET /v1/devices/{id}/pending` returns `{"requests": [b64 CBOR], "pairings": [{"client_id", "public_key", "host", "code", "received_at"}]}`.
+
+### 10.1 Pairing code
+
+The pairing code is a diceware-style phrase derived from the client's identity key, so a person can read it from a log and compare it on the approval screen.
+
+- Wordlist: the EFF large wordlist (7 776 words, CC BY 3.0), vendored as `crates/relay-core/data/eff_large_wordlist.txt` and checked against its published SHA-256 at build time.
+- Derivation: let `n` be the first 8 bytes of `SHA-256(client SPKI)` read as a big-endian u64. For `i` in 0..4: `word[i] = list[n mod 7776]`, then `n = n div 7776`.
+- Display: the four words in that order, lowercase, joined by `-`, such as `word-word-word-word`; golden vectors carry real examples.
+- Strength: 4 × log₂ 7776 ≈ 51.7 bits, above the 50-bit minimum. 2⁶⁴ is not a multiple of 7776⁴, which biases the first word by less than one part in 5 000, a negligible loss.
+- The approver compares the whole phrase. Any change that drops the derived strength below 50 bits needs a new decision.
+
+## Departures from the spec
+
+Each departure was approved by Brian on 2026-11-15 and is recorded in `docs/decisions.md`. `docs/spec.md` has not been edited.
+
+1. **Manifest keys carry `public_key`** (§9.2). The manifest is now where the attestation's verifier gets the attest public key (§5.1), and where the provider gets every hardware key's public key. The relay's advertisement only says which manifest keys are reachable.
+2. **Responses carry an optional `reason`** (§6, §6.1), covered by `device_sig`.
+3. **Relay auth carries `X-Relay-Nonce`** (§8), and the relay tracks replays per (key, nonce).
+4. **Check 5 runs after opening the result** (§6.2): checks 1–4, then open, then check 5.
+5. **The pairing code is a four-word diceware phrase** (§10.1), at least 50 bits, instead of the defaults table's 40-bit base32 code.
+
+## Open points for review
+
+1. **Pairing endpoints** (§10, milestone 2): the API table has no call for the approver to approve a pending client, or for the client to learn it was approved. To be proposed with the milestone 2 API.
+
+Smaller choices made here, which are recorded in `docs/decisions.md`: RSA exponent 65537 only; uncompressed P-256 points only; OAEP SHA-256/MGF1-SHA256 only; `input` capped at 32 KiB, with `CKR_DATA_LEN_RANGE` beyond that; exactly one OpenPGP signature packet of type `0x00`; SHA-256 or stronger in OpenPGP; signer-key expiry ignored; `responded_at` informational only; the attestation embedded as a byte string; manifest timestamps as integers; strict decoding (unknown fields rejected) everywhere.
