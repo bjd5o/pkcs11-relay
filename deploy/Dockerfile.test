@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1.7
+# Test tooling: the headless approver, the gate client and the fixture generator.
+# Milestone 3 adds the PKCS#11 provider, pkcs11-tool, OpenSSL's pkcs11-provider and OpenSSH.
+FROM rust:1.93-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target,id=relay-gnu-target \
+    cargo build --release --locked -p relay-test-approver \
+ && cp target/release/relay-test-approver /usr/local/bin/
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --create-home --uid 1000 tester \
+ && mkdir -p /fixtures && chown tester:tester /fixtures
+COPY --from=build /usr/local/bin/relay-test-approver /usr/local/bin/
+USER tester
+ENTRYPOINT ["relay-test-approver"]

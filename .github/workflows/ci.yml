@@ -10,3 +10,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo check --manifest-path fuzz/Cargo.toml
+  integration:
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f deploy/compose.test.yml up --build --exit-code-from client
+      - if: always()
+        run: docker compose -f deploy/compose.test.yml logs --no-color relay approver-a approver-b approver-c
+      - if: always()
+        run: docker compose -f deploy/compose.test.yml down -v

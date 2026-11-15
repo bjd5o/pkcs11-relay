@@ -1,0 +1,79 @@
+# Integration environment: relay, three test approvers and a gate client.
+#   docker compose -f deploy/compose.test.yml up --build --exit-code-from client
+# Approver A approves (and pairs the client), B denies after a delay, C has an expired
+# attestation. Fixtures are generated fresh on every run.
+name: pkcs11-relay-test
+
+# One image for all test tooling, built once (by `fixtures`) and reused by the rest.
+x-test-image: &test-image
+  image: pkcs11-relay-test:dev
+  pull_policy: never
+  init: true # forward SIGTERM so `down` does not have to kill
+
+services:
+  # Stays up after generating: a one-shot container exiting makes `--exit-code-from` abort.
+  fixtures:
+    image: pkcs11-relay-test:dev
+    init: true
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.test
+    entrypoint: ["sh", "-c"]
+    command:
+      - relay-test-approver gen-fixtures --out /fixtures --root /fixtures --relay-url http://relay:8080
+        && touch /fixtures/.ready && exec sleep infinity
+    volumes: ["fixtures:/fixtures"]
+    healthcheck:
+      test: ["CMD", "test", "-f", "/fixtures/.ready"]
+      interval: 1s
+      retries: 60
+
+  relay:
+    image: pkcs11-relay:dev
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.relay
+    command: ["--config", "/fixtures/relay.toml", "serve"]
+    volumes: ["fixtures:/fixtures:ro", "relay-data:/data"]
+    depends_on:
+      fixtures: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "/relay-server", "healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  approver-a:
+    <<: *test-image
+    command: ["run", "--config", "/fixtures/approver-a.toml", "--auto-approve"]
+    volumes: ["fixtures:/fixtures"]
+    depends_on:
+      relay: { condition: service_healthy }
+
+  approver-b:
+    <<: *test-image
+    command: ["run", "--config", "/fixtures/approver-b.toml", "--deny", "--delay", "3", "--long-poll"]
+    volumes: ["fixtures:/fixtures"]
+    depends_on:
+      relay: { condition: service_healthy }
+
+  approver-c:
+    <<: *test-image
+    command: ["run", "--config", "/fixtures/approver-c.toml", "--auto-approve", "--expired-attestation"]
+    volumes: ["fixtures:/fixtures"]
+    depends_on:
+      relay: { condition: service_healthy }
+
+  client:
+    <<: *test-image
+    command: ["gate", "--config", "/fixtures/gate.toml"]
+    volumes: ["fixtures:/fixtures:ro"]
+    depends_on:
+      relay: { condition: service_healthy }
+      approver-a: { condition: service_started }
+      approver-b: { condition: service_started }
+      approver-c: { condition: service_started }
+
+volumes:
+  fixtures:
+  relay-data:

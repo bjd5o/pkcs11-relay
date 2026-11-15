@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.7
+# The relay: one static musl binary in a distroless image, running as non-root.
+# Multi-arch: docker buildx build --platform linux/amd64,linux/arm64 -f deploy/Dockerfile.relay .
+FROM rust:1.93-alpine AS build
+RUN apk add --no-cache musl-dev
+WORKDIR /src
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target,id=relay-musl-target \
+    cargo build --release --locked -p relay-server \
+ && cp target/release/relay-server /relay-server \
+ && mkdir -p /data-dir
+# Fail the build if the binary is not static.
+RUN ! ldd /relay-server 2>/dev/null | grep -q '=>'
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /relay-server /relay-server
+# A fresh named volume copies this directory, ownership included.
+COPY --from=build --chown=65532:65532 /data-dir /data
+VOLUME ["/data"]
+EXPOSE 8080
+USER 65532:65532
+HEALTHCHECK --interval=10s --timeout=3s CMD ["/relay-server", "healthcheck"]
+ENTRYPOINT ["/relay-server"]
+CMD ["serve"]
