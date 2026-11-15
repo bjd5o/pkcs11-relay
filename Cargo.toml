@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/relay-core",
+    "crates/relay-softcard",
+    "crates/relay-pkcs11",
+    "crates/relay-server",
+    "crates/relay-test-approver",
+    "crates/relayctl",
+]
+# cargo-fuzz targets build with a nightly toolchain and their own lockfile.
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"
+license = "Apache-2.0"
+publish = false
+
+# Every dependency version is pinned here; crates use `{ workspace = true }`.
+# Only crates named in docs/spec.md or docs/milestones-1-4.md may be added
+# without asking first.
+[workspace.dependencies]
+relay-core = { path = "crates/relay-core" }
+relay-softcard = { path = "crates/relay-softcard" }
+
+[profile.release]
+panic = "unwind" # relay-pkcs11 relies on catch_unwind at the FFI boundary

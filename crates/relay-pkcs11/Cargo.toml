@@ -1,0 +1,12 @@
+[package]
+name = "relay-pkcs11"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "relay_pkcs11"
+# cdylib: loadable module (.so/.dylib); staticlib: iPadOS XCFramework; rlib: tests.
+crate-type = ["cdylib", "staticlib", "rlib"]
