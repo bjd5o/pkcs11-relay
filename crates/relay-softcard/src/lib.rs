@@ -206,6 +206,52 @@ impl SoftCard {
         Ok(self.insert(slot, key, cert.to_der().expect("certificate DER")))
     }
 
+    /// Load a card from a directory of `slot-XX.key.pem` / `slot-XX.cert.pem` pairs.
+    pub fn load_dir(dir: &std::path::Path, pin: &[u8]) -> Result<Self, PivError> {
+        let mut card = SoftCard::new(pin);
+        let entries = std::fs::read_dir(dir)
+            .map_err(|e| PivError::InvalidArgument(format!("{}: {e}", dir.display())))?;
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(slot) = name
+                .strip_prefix("slot-")
+                .and_then(|n| n.strip_suffix(".key.pem"))
+            else {
+                continue;
+            };
+            let slot = Slot::parse(slot)?;
+            let read = |p: std::path::PathBuf| {
+                std::fs::read_to_string(&p)
+                    .map_err(|e| PivError::InvalidArgument(format!("{}: {e}", p.display())))
+            };
+            let key = read(e.path())?;
+            let cert = read(dir.join(format!("slot-{:02x}.cert.pem", slot.id())))?;
+            card.load_pem(slot, &key, &cert)?;
+        }
+        Ok(card)
+    }
+
+    /// Write a slot's key and certificate as `slot-XX.key.pem` / `slot-XX.cert.pem`.
+    pub fn write_slot(
+        dir: &std::path::Path,
+        slot: Slot,
+        key: &SlotKey,
+        certificate_der: &[u8],
+    ) -> std::io::Result<()> {
+        use x509_cert::der::EncodePem;
+        std::fs::create_dir_all(dir)?;
+        let cert =
+            x509_cert::Certificate::from_der(certificate_der).map_err(std::io::Error::other)?;
+        std::fs::write(
+            dir.join(format!("slot-{:02x}.key.pem", slot.id())),
+            key.to_pkcs8_pem().as_bytes(),
+        )?;
+        std::fs::write(
+            dir.join(format!("slot-{:02x}.cert.pem", slot.id())),
+            cert.to_pem(LineEnding::LF).map_err(std::io::Error::other)?,
+        )
+    }
+
     pub fn public_key(&self, slot: Slot) -> Option<PublicKey> {
         self.slots.get(&slot.id()).map(|e| e.key.public_key())
     }
