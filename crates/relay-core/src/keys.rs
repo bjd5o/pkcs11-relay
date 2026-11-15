@@ -173,6 +173,9 @@ impl PartialEq for PublicKey {
 }
 impl Eq for PublicKey {}
 
+/// DER of the `prime256v1` named-curve OID: `CKA_EC_PARAMS` for P-256 keys.
+pub const P256_EC_PARAMS: [u8; 10] = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+
 const OID_RSA: &str = "1.2.840.113549.1.1.1";
 const OID_EC: &str = "1.2.840.10045.2.1";
 const OID_ED25519: &str = "1.3.101.112";
@@ -285,6 +288,27 @@ impl PublicKey {
                 "RSA keys do not sign protocol messages".into(),
             )),
         }
+    }
+
+    /// RSA modulus, big-endian without leading zeros (`CKA_MODULUS`).
+    pub fn rsa_modulus(&self) -> Option<Vec<u8>> {
+        use rsa::traits::PublicKeyParts;
+        self.rsa()
+            .map(|k| k.n().to_be_bytes_trimmed_vartime().to_vec())
+    }
+
+    /// RSA public exponent, big-endian without leading zeros (`CKA_PUBLIC_EXPONENT`).
+    pub fn rsa_public_exponent(&self) -> Option<Vec<u8>> {
+        use rsa::traits::PublicKeyParts;
+        self.rsa()
+            .map(|k| k.e().to_be_bytes_trimmed_vartime().to_vec())
+    }
+
+    /// The uncompressed P-256 point (65 bytes); `CKA_EC_POINT` is this wrapped in a DER
+    /// OCTET STRING.
+    pub fn ec_point(&self) -> Option<Vec<u8>> {
+        self.p256()
+            .map(|k| k.to_sec1_point(false).as_bytes().to_vec())
     }
 
     pub(crate) fn rsa(&self) -> Option<&rsa::PublicKey> {

@@ -32,12 +32,14 @@ Update this file as tasks finish. Each milestone's gate is defined in `docs/mile
 
 ## Milestone 3: provider on Linux
 
-- [ ] Front-end spike and decision recorded
-- [ ] Discovery and role enforcement
-- [ ] Sign and decrypt through the relay, response verification
-- [ ] Client pairing from the provider
+- [x] Front-end spike and decision recorded (own front end on `cryptoki-sys`)
+- [~] Discovery and role enforcement (written, compiles; not yet exercised by any test)
+- [~] Sign and decrypt through the relay, response verification (written, compiles; untested)
+- [~] Client pairing from the provider (written; untested)
 - [ ] glibc and musl builds; p11-kit module file
 - [ ] `deploy/compose.test.yml` and `tests/` scripts
+- [x] Relay terminates TLS (axum-server); test clients trust a private CA
+- [ ] Next: in-process provider test through the C function table, then client image (pkcs11-tool, pkcs11-provider, ssh) and compose gate
 - [ ] Gate passed (`pkcs11-tool`, OpenSSL `pkcs11-provider`, `ssh -I`)
 
 ## Milestone 4: relayctl and real hardware

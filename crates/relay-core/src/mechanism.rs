@@ -160,16 +160,13 @@ pub struct OaepParams {
     pub label: Vec<u8>,
 }
 
-/// The local check run before any request is sent, and again by the approver: the role
-/// permits `op`, the mechanism fits the role and algorithm, and the input length fits the
-/// mechanism. Failure handling rows "Operation outside the key's role" and "Mechanism not
-/// allowed for the key".
-pub fn check_operation(
+/// The role and mechanism half of [`check_operation`], for `C_SignInit` / `C_DecryptInit`
+/// where the input length is not yet known.
+pub fn check_key_mechanism(
     role: Role,
     alg: Algorithm,
     op: Op,
     mechanism: &Mechanism,
-    input_len: usize,
 ) -> Result<()> {
     let role_op_ok = matches!(
         (role, op),
@@ -181,6 +178,21 @@ pub fn check_operation(
     if !Mechanism::allowed_for(role, alg).contains(&mechanism.ckm()) {
         return Err(Error::MechanismInvalid);
     }
+    Ok(())
+}
+
+/// The local check run before any request is sent, and again by the approver: the role
+/// permits `op`, the mechanism fits the role and algorithm, and the input length fits the
+/// mechanism. Failure handling rows "Operation outside the key's role" and "Mechanism not
+/// allowed for the key".
+pub fn check_operation(
+    role: Role,
+    alg: Algorithm,
+    op: Op,
+    mechanism: &Mechanism,
+    input_len: usize,
+) -> Result<()> {
+    check_key_mechanism(role, alg, op, mechanism)?;
     let k = alg.rsa_modulus_len();
     let len_ok = match mechanism {
         Mechanism::RsaPkcsOaep { .. } => Some(input_len) == k,

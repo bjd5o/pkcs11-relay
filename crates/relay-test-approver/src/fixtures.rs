@@ -211,6 +211,23 @@ pub fn generate(
              client_key = \"{root}/client.pem\"\nclient_id = \"{CLIENT_ID}\"\n"
         ),
     )?;
+    // The PKCS#11 provider's config (RELAY_PKCS11_CONFIG) for the client container.
+    w(
+        &out.join("provider.toml"),
+        format!(
+            "relay_url = {relay_url:?}\nrelay_ca_file = \"{root}/relay-ca.pem\"\nmanifest_url = \"file://{root}/manifest.json\"\n\
+             manifest_signer = \"{root}/signer.asc\"\nmanifest_cache = \"{root}/state/client/manifest.json\"\n\
+             client_id = \"{CLIENT_ID}\"\nclient_key = \"{root}/client.pem\"\npurpose = \"milestone 3 gate\"\ntimeout_secs = 30\nlog_level = \"info\"\n"
+        ),
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            out.join("client.pem"),
+            std::fs::Permissions::from_mode(0o600),
+        );
+    }
     Ok(())
 }
 
