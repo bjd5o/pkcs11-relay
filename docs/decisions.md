@@ -76,3 +76,26 @@ Decision:
 - `Manifest::tokens()` (one slot per token) ignores tokens that contain only `attest` keys, since those are never exposed.
 - `fuzz/` sits outside the workspace with `libfuzzer-sys` 0.4.13. CI only compile-checks it on stable.
 Consequences: none on the wire format.
+
+## 2026-11-15: ECC `encrypt` keys deferred
+
+Context: Brian asked whether `encrypt` keys could be EC as well as RSA.
+Decision (Brian): defer until after the MVP. PKCS#11 has no `C_Decrypt` for EC keys. The equivalent is ECDH through `C_DeriveKey` (`CKM_ECDH1_DERIVE`), which needs a `derive` operation, secret-key session objects and KDF parameters, and the motivating consumer (OpenBao's seal) supports only RSA-OAEP and AES-GCM.
+Consequences: `encrypt` stays RSA-only with `CKM_RSA_PKCS_OAEP`. Adding ECDH later means a spec change, a new wire `op`, the card's ECDH command and `C_DeriveKey` in the provider. The role and mechanism checks all live in `relay_core::mechanism`.
+
+## 2026-11-15: Milestone 2 implementation choices
+
+Context: details the spec and milestone doc left open for the relay and the test approver.
+Decision:
+- **Pairing endpoints:** `POST /v1/clients/{id}/approval` (device-authenticated, naming the pending key's fingerprint and the approved keys) and `GET /v1/clients/self` (the client polls its status). The approved keys come from the manifest and need not be on the approving device, so one approval can cover keys on several devices. Bodies are in `docs/wire-format.md` §10.
+- **Device registration is open** (no admin step), as the spec's enrollment flow implies. It is bounded by `max_devices`, rate limits, and a device id staying bound to its first key until `admin devices revoke`. A rogue device gains nothing: clients reject unattested responses.
+- **The relay serves plain HTTP.** TLS is terminated by a reverse proxy, one of the two options the spec allows. Whether the relay should terminate TLS itself is decided in milestone 3, when the provider's TLS trust settings are built.
+- **Relay hygiene checks are in the core:** `request::verify_for_relay` and `response::verify_for_relay`, called by the server.
+- **Software OpenPGP signing is in the core** (`PgpSecretKey`): the fixture generator uses it, and `relayctl` will use it when no card is involved. rPGP 0.21 needs a `rand_core` 0.6 RNG, so the core names `rand_core` 0.6.4 directly (already in the tree through `pgp`).
+- **The fixture generator is `relay-test-approver gen-fixtures`,** not `relayctl dev`, so the shipped admin CLI does not depend on the test-only softcard.
+- **Fixtures model three devices:** A approves and pairs the client, B denies after a delay, C has an expired attestation. All share one attest key, and each operates its own keys. That gives every negative path a distinct key.
+- **The test approver enters the PIN before every operation, and stops after one wrong PIN** (CLAUDE.md hardware safety). Requests that fail checks get a signed denial with reason `policy` (`expired` for expired requests).
+- **`sqlx` 0.8.6, not 0.9:** 0.9 needs rustc 1.94 and `mise.toml` pins 1.93.
+- **TLS clients (`reqwest`) use rustls with `ring`,** not aws-lc-rs, so static musl builds need only `cc`.
+- **`tower-http` was approved but is not used:** axum's own body limit covers the need.
+Consequences: wire-format §10 is final for the MVP relay API.

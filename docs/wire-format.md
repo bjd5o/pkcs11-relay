@@ -1,6 +1,6 @@
 # Wire format, v1
 
-Status: **reviewed by Brian, 2026-11-15**; the pairing endpoints (§10) are finalised in milestone 2. Written from `docs/spec.md` ("Keys and messages") and the defaults table in `docs/milestones-1-4.md`. Where this document goes beyond either, the change is listed under "Departures from the spec" at the end with its `docs/decisions.md` entry; anything still marked **[proposal]** is awaiting review.
+Status: **reviewed by Brian, 2026-11-15**; §10 (relay API bodies) added in milestone 2. Written from `docs/spec.md` ("Keys and messages") and the defaults table in `docs/milestones-1-4.md`. Where this document goes beyond either, the change is listed under "Departures from the spec" at the end with its `docs/decisions.md` entry; anything still marked **[proposal]** is awaiting review.
 
 `relay-core` is the only implementation. Golden vectors for every message live in `crates/relay-core/tests/vectors/`; if this document and the vectors disagree, that is a bug in one of them, and the fix is recorded in `docs/decisions.md`.
 
@@ -419,14 +419,22 @@ Parsing is strict: unknown fields, duplicate JSON object keys, non-integer numbe
 
 On any failure the caller keeps a valid cached copy if it has one (Failure handling table). The cached copy is re-checked against step 3 every time it is used.
 
-## 10. Relay JSON bodies (sketch)
+## 10. Relay API bodies
 
-These are not signed messages: the relay is untrusted and every field is a hint. They are finalised in milestone 2 and listed here so the provider and the approver agree on shape.
+These are not signed messages: the relay is untrusted and every field is a hint. Every call except `/healthz` and `/metrics` carries relay-auth headers (§8). Binary values in JSON are base64 (§1.1). Errors are `{"error": "<Kind>", "detail": "<text>"}` with the HTTP status shown.
 
-- `GET /v1/keys` returns `{"keys": [{"public_key": b64, "token": str, "devices": int, "last_seen": ts}]}`. The provider recomputes each fingerprint from `public_key`, keeps only keys the manifest also lists, ignores `token`, and uses the manifest's copy of the public key from then on.
-- `POST /v1/clients/pending` takes `{"client_id": str, "public_key": b64, "host": str}`, authenticated by §8 with the key in the body (proof of possession).
-- `POST /v1/devices` takes `{"device_id": str, "device_key": b64, "attestation": b64 CBOR, "keys": [b64 SPKI], "push": {...}}`, authenticated by §8 with the device key.
-- `GET /v1/devices/{id}/pending` returns `{"requests": [b64 CBOR], "pairings": [{"client_id", "public_key", "host", "code", "received_at"}]}`.
+| Call | Caller (auth key) | Body → response |
+|---|---|---|
+| `GET /v1/keys` | paired client | → `{"keys": [{"public_key", "token", "devices", "last_seen"}]}`, only the keys this client was approved for. The provider recomputes each fingerprint, keeps only manifest keys, and ignores `token`. |
+| `POST /v1/requests` | paired client | request envelope (`application/cbor`) → `202 {"req_id"}`. Rejections: 401 `RequestSignatureInvalid` or relay auth, 403 `UnpairedClient` / `KeyNotApproved`, 409 `DuplicateRequestId`, 410 `RequestExpired`, 422 `NoDevice`, 429 `TooManyPending` / `RateLimited`. |
+| `GET /v1/requests/{id}/result?wait=N` | the submitting client | → `200` response envelope (`application/cbor`), delivered once, after which the request is deleted; `204` if nothing yet after `N` ≤ 30 s; `404` once expired. |
+| `POST /v1/requests/{id}/response` | a device addressed by the request | response envelope → `204`; 409 `AlreadyAnswered` (the first response wins); 404 if expired. |
+| `POST /v1/clients/pending` | the new client's key, which is in the body (proof of possession) | `{"client_id", "public_key", "host"}` → `202 {"status": "pending", "code"}`, or `200 {"status": "approved"}` if already paired. Allowed networks only, at most 4 pending, dropped after 10 min. |
+| `GET /v1/clients/self` | a pending or paired client | → `{"status": "pending", "client_id", "code"}` or `{"status": "approved", "client_id", "approved_keys"}`. |
+| `POST /v1/clients/{id}/approval` | any registered device | `{"fingerprint", "keys": [fingerprint]}` → `204`. `fingerprint` must be that of the pending client key whose code the person compared; `keys` (1–64) are chosen from the manifest and need not be on this device. |
+| `POST /v1/devices` | the device key in the body | `{"device_id", "device_key", "attestation", "keys": [{"public_key", "token"}], "push": {"kind": "none" \| "ntfy", "topic"}}` → `204`. A device id stays bound to its first key until `relay-server admin devices revoke`. The relay checks only that the attestation decodes and names this device and key; clients check its signer. |
+| `GET /v1/devices/{id}/pending?wait=N` | that device | → `{"requests": [envelope], "pairings": [{"client_id", "public_key", "fingerprint", "host", "code", "received_at"}]}`. |
+| `GET /v1/devices/{id}/ws` | that device (headers on the upgrade) | WebSocket. The relay sends `{"type": "pending"}` when there may be something to fetch. |
 
 ### 10.1 Pairing code
 
@@ -447,9 +455,5 @@ Each departure was approved by Brian on 2026-11-15 and is recorded in `docs/deci
 3. **Relay auth carries `X-Relay-Nonce`** (§8), and the relay tracks replays per (key, nonce).
 4. **Check 5 runs after opening the result** (§6.2): checks 1–4, then open, then check 5.
 5. **The pairing code is a four-word diceware phrase** (§10.1), at least 50 bits, instead of the defaults table's 40-bit base32 code.
-
-## Open points for review
-
-1. **Pairing endpoints** (§10, milestone 2): the API table has no call for the approver to approve a pending client, or for the client to learn it was approved. To be proposed with the milestone 2 API.
 
 Smaller choices made here, which are recorded in `docs/decisions.md`: RSA exponent 65537 only; uncompressed P-256 points only; OAEP SHA-256/MGF1-SHA256 only; `input` capped at 32 KiB, with `CKR_DATA_LEN_RANGE` beyond that; exactly one OpenPGP signature packet of type `0x00`; SHA-256 or stronger in OpenPGP; signer-key expiry ignored; `responded_at` informational only; the attestation embedded as a byte string; manifest timestamps as integers; strict decoding (unknown fields rejected) everywhere.

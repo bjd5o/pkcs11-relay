@@ -21,14 +21,14 @@ Update this file as tasks finish. Each milestone's gate is defined in `docs/mile
 
 ## Milestone 2: relay and test approver
 
-- [ ] `relay-server` API, auth, registries, pairing
-- [ ] Pending queue, long-poll, WebSocket
-- [ ] Audit log, rate limits, health and metrics, admin subcommands
-- [ ] ntfy and no-op notifiers
-- [ ] `relay-test-approver`
-- [ ] Fixture generator
-- [ ] `deploy/Dockerfile.relay` (multi-arch, distroless)
-- [ ] Gate passed
+- [x] `relay-server` API, auth, registries, pairing (endpoints in `docs/wire-format.md` §10)
+- [x] Pending queue, long-poll, WebSocket
+- [x] Audit log, rate limits, health and metrics, admin subcommands
+- [x] ntfy and no-op notifiers (APNs/FCM stubs behind `Notifier`)
+- [x] `relay-test-approver` (softcard; `--pcsc` in milestone 4)
+- [x] Fixture generator (`relay-test-approver gen-fixtures`)
+- [x] `deploy/Dockerfile.relay` (static musl, distroless, non-root; built and run on arm64 only so far, amd64 not yet built)
+- [x] Gate passed (2026-11-15): `docker compose -f deploy/compose.test.yml up --build --exit-code-from client` exits 0 on colima, and the same gate runs in-process in `cargo test`. Not yet run in GitHub Actions (no remote).
 
 ## Milestone 3: provider on Linux
 
