@@ -1,0 +1,13 @@
+# Project toolchain. Activate the default flox environment first: it provides mise itself,
+# rustup, gpg (GnuPG 2.4) and the docker / docker compose CLIs, none of which mise's
+# registry carries in a usable form (no gpg package at all).
+
+[tools]
+# Pinned stable toolchain, installed through rustup by mise's built-in rust backend.
+# Linux targets are added in milestone 3, when the provider builds for glibc and musl.
+rust = { version = "1.93.0", components = "rustfmt,clippy" }
+
+[env]
+# The machine's current Docker context points at a remote host; every docker and
+# docker compose command in this project must run against the local colima VM.
+DOCKER_CONTEXT = "colima"
