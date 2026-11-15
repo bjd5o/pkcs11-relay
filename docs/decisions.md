@@ -57,3 +57,22 @@ Consequences: nothing is decrypted before the attestation and device signature h
 Context: the defaults table's 40-bit base32 code is hard to compare and somewhat weak against an attacker who sees the code and grinds keys within the pending window.
 Decision (Brian): four words from the EFF large wordlist (7 776 words, about 51.7 bits), derived from the first 8 bytes of SHA-256 over the client SPKI. The minimum is 50 bits.
 Consequences: supersedes the "Pairing code" row of the defaults table. The wordlist is vendored into `relay-core` (to be downloaded with Brian's OK). `docs/wire-format.md` §10.1.
+
+## 2026-11-15: OAEP decoding and PKCS#1 v1.5 signature padding vendored from rsa 0.10
+
+Context: the spec puts OAEP decoding and DigestInfo padding around the card's raw RSA in `relay-core`, but `rsa` 0.10 keeps both `pub(crate)` and no other audited crate exposes them. CLAUDE.md forbids custom cryptography.
+Decision (Brian): copy `rsa` 0.10's OAEP decoding (`decrypt_inner`, MGF1) and `pkcs1v15_sign_pad` into `relay_core::padding`, with attribution (MIT OR Apache-2.0). Adapt it to `subtle` for constant-time operations (`subtle` added as a direct dependency) and restore the RFC 8017 leading-zero-byte check, also in constant time. Cross-test against `rsa`'s own OAEP encryption and PKCS#1 v1.5 verification. Ask upstream to expose these under `hazmat`.
+Consequences: an OAEP decoding failure is reported exactly like any other card failure (`status = error`, `reason = card_error`), so the relay never sees a distinguishable padding oracle. Human approval already makes each oracle query cost an approval.
+
+## 2026-11-15: Milestone 1 implementation choices
+
+Context: details the spec, the milestone doc and the wire format left to implementation.
+Decision:
+- `relay-core` has a `test-util` feature exposing `Manifest::from_json_unverified` and reply-key import/export, for tests, vectors and fuzzing only. No production crate enables it.
+- `ManifestDraft` (an editable manifest that serialises to validated JSON) lives in the core, so `relayctl manifest add|remove` and the fixture generator share the manifest validation.
+- The golden-vector fixture's private keys are committed under `crates/relay-core/tests/vectors/fixture/`. They are throwaway test keys and protect nothing.
+- OpenPGP vectors are made by `tests/vectors/pgp/make.sh` with gpg 2.4 in a temporary `GNUPGHOME`, with `--faked-system-time` set to the fixture's `issued_at`. A YubiKey OpenPGP card signature is added in milestone 4.
+- PIV ECDSA takes a 32-byte digest: a longer input is truncated to its leftmost 32 bytes (FIPS 186-4) and a shorter one is left-padded with zeros (the same integer).
+- `Manifest::tokens()` (one slot per token) ignores tokens that contain only `attest` keys, since those are never exposed.
+- `fuzz/` sits outside the workspace with `libfuzzer-sys` 0.4.13. CI only compile-checks it on stable.
+Consequences: none on the wire format.

@@ -6,18 +6,18 @@ Update this file as tasks finish. Each milestone's gate is defined in `docs/mile
 
 - [x] Cargo workspace and CI skeleton (fmt, clippy, test)
 - [x] `docs/wire-format.md` written and reviewed by Brian (pairing endpoints finalised in milestone 2)
-- [ ] `relay-core::wire` (deterministic CBOR types)
-- [ ] `relay-core::keys` (fingerprints, SPKI, roles)
-- [ ] `relay-core::manifest` (OpenPGP verification, freshness)
-- [ ] `relay-core::attestation`
-- [ ] `relay-core::request` / `response` (five-step verification)
-- [ ] `relay-core::seal` (HPKE)
-- [ ] `relay-core::piv` and `padding`
-- [ ] `relay-core::content` (hex-and-hash view)
-- [ ] `relay-softcard`
-- [ ] Test vectors, including `gpg`-made OpenPGP signatures
-- [ ] Fuzz targets
-- [ ] Gate passed
+- [x] `relay-core::wire` (deterministic CBOR types; modules `cbor`, `attestation`, `request`, `response`)
+- [x] `relay-core::keys` (fingerprints, SPKI, roles)
+- [x] `relay-core::manifest` (OpenPGP verification, freshness)
+- [x] `relay-core::attestation`
+- [x] `relay-core::request` / `response` (five-step verification)
+- [x] `relay-core::seal` (HPKE)
+- [x] `relay-core::piv` and `padding` (OAEP and PKCS#1 v1.5 padding vendored from `rsa` 0.10)
+- [x] `relay-core::content` (hex-and-hash view)
+- [x] `relay-softcard`
+- [x] Test vectors, including `gpg`-made OpenPGP signatures (a signature made on a YubiKey OpenPGP card comes in milestone 4)
+- [x] Fuzz targets (compile-checked on stable; not yet run: needs nightly and `cargo-fuzz`)
+- [x] Gate passed (2026-11-15): `cargo test -p relay-core`, with a named negative test for every core-detectable failure row (`tests/failure_table.rs`, `tests/manifest_pgp.rs`)
 
 ## Milestone 2: relay and test approver
 
