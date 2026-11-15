@@ -1,5 +1,30 @@
 //! Shared core for pkcs11-relay: wire format, verification, crypto and PIV over APDUs.
 //!
 //! Every security check lives here. Other crates call the `verify_*` functions and never
-//! re-implement parsing, signing or verification.
+//! re-implement parsing, signing or verification. The format is specified in
+//! `docs/wire-format.md`.
 #![forbid(unsafe_code)]
+
+pub mod attestation;
+pub mod cbor;
+pub mod content;
+pub mod error;
+pub mod keys;
+pub mod manifest;
+pub mod mechanism;
+pub mod padding;
+pub mod piv;
+pub mod request;
+pub mod response;
+pub mod seal;
+pub mod signing;
+
+pub use attestation::verify_attestation;
+pub use error::{Error, FailureRow, Result};
+pub use keys::{Algorithm, Fingerprint, PublicKey, Role};
+pub use manifest::{
+    verify_manifest, DraftKey, Manifest, ManifestDraft, ManifestKey, ManifestSigner,
+};
+pub use mechanism::{check_operation, Mechanism, Op};
+pub use request::verify_request;
+pub use response::{verify_response, Outcome};

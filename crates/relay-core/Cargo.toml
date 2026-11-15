@@ -5,3 +5,32 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[features]
+# Exposes constructors that skip the OpenPGP check, for tests and vector generation only.
+test-util = []
+
+[dependencies]
+ciborium.workspace = true
+p256.workspace = true
+ed25519-dalek.workspace = true
+hpke.workspace = true
+sha2.workspace = true
+pgp.workspace = true
+rsa.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+rand_core.workspace = true
+getrandom.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+base64.workspace = true
+data-encoding.workspace = true
+subtle.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+# Enables test-util for this crate's own integration tests.
+relay-core = { path = ".", features = ["test-util"] }
+serde_json.workspace = true

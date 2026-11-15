@@ -25,5 +25,30 @@ publish = false
 relay-core = { path = "crates/relay-core" }
 relay-softcard = { path = "crates/relay-softcard" }
 
+# Spec technology table. pgp 0.21 brings its own older RustCrypto generation
+# (p256 0.13, rsa 0.9, ed25519-dalek 2) for OpenPGP only; no types cross over.
+ciborium = "=0.2.2"
+p256 = { version = "=0.14.0", features = ["ecdsa", "pkcs8", "ecdh"] }
+ed25519-dalek = { version = "=3.0.0", features = ["pkcs8", "pem", "rand_core"] }
+hpke = { version = "=0.15.1", default-features = false, features = ["alloc", "getrandom", "nistp", "aes"] }
+sha2 = "=0.11.1"
+pgp = "=0.21.1"
+
+# Approved 2026-11-15 for milestone 1.
+rsa = { version = "=0.10.0", features = ["hazmat", "pkcs1v15"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+zeroize = { version = "=1.9.1", features = ["derive"] }
+rand_core = "=0.10.1"
+getrandom = { version = "=0.4.3", features = ["sys_rng"] }
+thiserror = "=2.0.21"
+hex = "=0.4.3"
+base64 = "=0.23.1"
+data-encoding = "=2.11.1"
+x509-cert = { version = "=0.3.0", features = ["builder"] }
+proptest = "=1.12.0"
+# Approved 2026-11-15: constant-time primitives for the OAEP decoding vendored from rsa 0.10.
+subtle = "=2.6.1"
+
 [profile.release]
 panic = "unwind" # relay-pkcs11 relies on catch_unwind at the FFI boundary
