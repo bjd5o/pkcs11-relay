@@ -7,6 +7,7 @@ members = [
     "crates/relay-server",
     "crates/relay-test-approver",
     "crates/relayctl",
+    "crates/relay-pcsc",
 ]
 # cargo-fuzz targets build with a nightly toolchain and their own lockfile.
 exclude = ["fuzz"]
@@ -25,6 +26,7 @@ publish = false
 relay-core = { path = "crates/relay-core" }
 relay-softcard = { path = "crates/relay-softcard" }
 relay-server = { path = "crates/relay-server" }
+relay-pcsc = { path = "crates/relay-pcsc" }
 
 # Spec technology table. pgp 0.21 brings its own older RustCrypto generation
 # (p256 0.13, rsa 0.9, ed25519-dalek 2) for OpenPGP only; no types cross over.
@@ -71,6 +73,17 @@ p384 = { version = "=0.14.0", features = ["ecdsa", "pkcs8", "ecdh"] }
 x25519-dalek = { version = "=3.0.0", features = ["static_secrets"] }
 aes-gcm = { version = "=0.11.1", features = ["zeroize"] }
 ansi-x963-kdf = "=0.1.0"
+
+# Approved 2026-11-15 for milestone 4. yubikey 0.8 (stable): RSA-2048 and P-256/P-384 key
+# generation and 3DES management keys only; other keys are generated with ykman and imported.
+# relayctl uses it for admin operations only; the renamed crates are its older-generation
+# types (already in the tree), needed to call its certificate API.
+yubikey = { version = "=0.8.0", features = ["untested"] }
+p256-013 = { package = "p256", version = "=0.13.2" }
+p384-013 = { package = "p384", version = "=0.13.1" }
+x509-cert-02 = { package = "x509-cert", version = "=0.2.5" }
+pcsc = "=2.9.0"
+rpassword = "=7.5.5"
 
 # Approved 2026-11-15 for milestone 3.
 axum-server = { version = "=0.9.2", features = ["tls-rustls-ring"] }

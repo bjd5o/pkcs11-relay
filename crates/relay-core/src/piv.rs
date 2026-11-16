@@ -244,6 +244,16 @@ pub fn select(t: &mut dyn CardTransport) -> Result<()> {
     exchange(t, 0xa4, 0x04, 0x00, &PIV_AID).map(|_| ())
 }
 
+/// The YubiKey's serial number (PIV `GET SERIAL`, INS `F8`, firmware 5 and later).
+pub fn get_serial(t: &mut dyn CardTransport) -> Result<u32> {
+    let r = exchange(t, 0xf8, 0x00, 0x00, &[])?;
+    let b: [u8; 4] = r
+        .as_slice()
+        .try_into()
+        .map_err(|_| PivError::Malformed("serial must be 4 bytes".into()))?;
+    Ok(u32::from_be_bytes(b))
+}
+
 /// VERIFY the PIV application PIN. Sends it once and never retries: the caller stops after
 /// one failure (CLAUDE.md hardware safety).
 pub fn verify_pin(t: &mut dyn CardTransport, pin: &[u8]) -> Result<()> {
