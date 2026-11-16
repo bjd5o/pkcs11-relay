@@ -1,7 +1,508 @@
-//! Admin CLI: YubiKey keys, manifest editing and signing, offline attestation, relay admin.
+//! `relayctl` command line.
 #![forbid(unsafe_code)]
 
+use std::path::PathBuf;
+use std::process::Command;
+
+use clap::{Parser, Subcommand, ValueEnum};
+use relay_core::piv::Slot;
+use relay_core::{Algorithm, Role};
+use relayctl::keygen::{self, Pin, Touch};
+use relayctl::{card, manifest, util};
+
+#[derive(Parser)]
+#[command(
+    version,
+    about = "pkcs11-relay admin CLI: keys, manifest, attestation, relay admin"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Keys on a YubiKey (PIV). Every command needs RELAY_TEST_YUBIKEY_SERIAL=<serial>.
+    Key {
+        #[command(subcommand)]
+        command: KeyCmd,
+    },
+    /// Edit, sign and verify the trust manifest.
+    Manifest {
+        #[command(subcommand)]
+        command: ManifestCmd,
+    },
+    /// Device attestation with an attest key on a YubiKey.
+    Attest {
+        #[command(subcommand)]
+        command: AttestCmd,
+    },
+    /// The relay's admin commands (runs `relay-server admin`).
+    Relay {
+        /// The relay-server binary.
+        #[arg(long, default_value = "relay-server")]
+        relay_server: String,
+        /// The relay's config file.
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[command(subcommand)]
+        command: RelayCmd,
+    },
+}
+
+fn slot(s: &str) -> Result<Slot, String> {
+    Slot::parse(s).map_err(|e| e.to_string())
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum RoleArg {
+    Sign,
+    Auth,
+    Encrypt,
+    Attest,
+}
+
+impl From<RoleArg> for Role {
+    fn from(r: RoleArg) -> Role {
+        match r {
+            RoleArg::Sign => Role::Sign,
+            RoleArg::Auth => Role::Auth,
+            RoleArg::Encrypt => Role::Encrypt,
+            RoleArg::Attest => Role::Attest,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum AlgArg {
+    #[value(name = "rsa2048")]
+    Rsa2048,
+    #[value(name = "rsa4096")]
+    Rsa4096,
+    P256,
+    P384,
+    Ed25519,
+    X25519,
+}
+
+impl From<AlgArg> for Algorithm {
+    fn from(a: AlgArg) -> Algorithm {
+        match a {
+            AlgArg::Rsa2048 => Algorithm::Rsa2048,
+            AlgArg::Rsa4096 => Algorithm::Rsa4096,
+            AlgArg::P256 => Algorithm::P256,
+            AlgArg::P384 => Algorithm::P384,
+            AlgArg::Ed25519 => Algorithm::Ed25519,
+            AlgArg::X25519 => Algorithm::X25519,
+        }
+    }
+}
+
+/// PIN policy `never` is deliberately not offered (spec: never use it on these keys).
+#[derive(Clone, Copy, ValueEnum)]
+enum PinArg {
+    Once,
+    Always,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum TouchArg {
+    Never,
+    Always,
+    Cached,
+}
+
+#[derive(Subcommand)]
+enum KeyCmd {
+    /// Generate a key in a slot, write its certificate, print the fingerprint.
+    Generate {
+        #[arg(long)]
+        serial: u32,
+        #[arg(long, value_parser = slot)]
+        slot: Slot,
+        #[arg(long, value_enum)]
+        role: RoleArg,
+        #[arg(long, value_enum)]
+        alg: AlgArg,
+        #[arg(long, value_enum, default_value = "once")]
+        pin_policy: PinArg,
+        /// Default: `always` for attest keys, `never` otherwise.
+        #[arg(long, value_enum)]
+        touch_policy: Option<TouchArg>,
+        /// Replace a key already in the slot (asks for a typed confirmation too).
+        #[arg(long)]
+        force: bool,
+        /// Write the public key here (PEM).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value = "pkcs11-relay key")]
+        common_name: String,
+    },
+    /// List the keys (with certificates) on a YubiKey.
+    List {
+        #[arg(long)]
+        serial: u32,
+    },
+    /// Export a slot's public key (PEM).
+    Export {
+        #[arg(long)]
+        serial: u32,
+        #[arg(long, value_parser = slot)]
+        slot: Slot,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ManifestCmd {
+    /// Start an empty manifest.
+    Init {
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+    /// Add a key, from a public-key file or a YubiKey slot.
+    Add {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long, conflicts_with_all = ["serial", "slot"])]
+        public_key: Option<PathBuf>,
+        #[arg(long, requires = "slot")]
+        serial: Option<u32>,
+        #[arg(long, value_parser = slot, requires = "serial")]
+        slot: Option<Slot>,
+        #[arg(long, value_enum)]
+        role: RoleArg,
+        #[arg(long)]
+        label: String,
+        /// CKA_ID, hex.
+        #[arg(long)]
+        id: String,
+        /// The hardware token the key lives on (one PKCS#11 slot per token).
+        #[arg(long)]
+        token: String,
+    },
+    /// Remove keys by fingerprint or label.
+    Remove {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long, conflicts_with = "label")]
+        fingerprint: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    Show {
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+    /// Increase the version, set the validity, write the detached signature.
+    Sign {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long, default_value_t = 30)]
+        valid_days: u64,
+        /// Sign with gpg using this key (e.g. your OpenPGP card's key id).
+        #[arg(long, conflicts_with = "pgp_secret")]
+        gpg_key: Option<String>,
+        #[arg(long, default_value = "gpg")]
+        gpg: String,
+        /// Sign with this unprotected software OpenPGP secret key instead (test setups).
+        #[arg(long)]
+        pgp_secret: Option<PathBuf>,
+        /// Verify the result against this signer public key, as clients would.
+        #[arg(long)]
+        verify_with: Option<PathBuf>,
+    },
+    /// Check a manifest exactly as clients do.
+    Verify {
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Default: <manifest>.asc
+        #[arg(long)]
+        signature: Option<PathBuf>,
+        #[arg(long)]
+        signer: PathBuf,
+        /// A previously accepted manifest (with its .asc), for the rollback check.
+        #[arg(long)]
+        cached: Option<PathBuf>,
+        #[arg(long, default_value_t = 60)]
+        skew: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum AttestCmd {
+    /// Sign a device's attestation with the attest key (offline-attest-key flow).
+    Sign {
+        #[arg(long)]
+        serial: u32,
+        #[arg(long, value_parser = slot)]
+        slot: Slot,
+        #[arg(long)]
+        device_id: String,
+        /// The device's public key (PEM or DER SubjectPublicKeyInfo, P-256).
+        #[arg(long)]
+        device_key: PathBuf,
+        #[arg(long, default_value_t = 30)]
+        days: u64,
+        #[arg(long)]
+        out: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum RelayCmd {
+    Clients {
+        #[command(subcommand)]
+        command: ListRevoke,
+    },
+    Devices {
+        #[command(subcommand)]
+        command: ListRevoke,
+    },
+    /// Export the audit log as JSON lines.
+    Audit {
+        #[arg(long, default_value_t = 0)]
+        since: i64,
+    },
+}
+
+#[derive(Subcommand)]
+enum ListRevoke {
+    List,
+    Revoke { id: String },
+}
+
 fn main() {
-    eprintln!("not implemented yet");
-    std::process::exit(2);
+    if let Err(e) = run(Cli::parse()) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn run(cli: Cli) -> Result<(), String> {
+    match cli.command {
+        Cmd::Key { command } => match command {
+            KeyCmd::Generate {
+                serial,
+                slot,
+                role,
+                alg,
+                pin_policy,
+                touch_policy,
+                force,
+                out,
+                common_name,
+            } => {
+                let role: Role = role.into();
+                let touch = match touch_policy {
+                    Some(TouchArg::Never) => Touch::Never,
+                    Some(TouchArg::Always) => Touch::Always,
+                    Some(TouchArg::Cached) => Touch::Cached,
+                    None if role == Role::Attest => Touch::Always,
+                    None => Touch::Never,
+                };
+                let pin = match pin_policy {
+                    PinArg::Once => Pin::Once,
+                    PinArg::Always => Pin::Always,
+                };
+                let g = keygen::Generate {
+                    serial,
+                    slot,
+                    role,
+                    alg: alg.into(),
+                    pin,
+                    touch,
+                    force,
+                    common_name,
+                };
+                let pk = keygen::generate(&g)?;
+                println!("{}", card::fingerprint_line(slot, &pk));
+                if let Some(out) = out {
+                    util::write(&out, util::public_key_pem(&pk))?;
+                }
+                Ok(())
+            }
+            KeyCmd::List { serial } => {
+                let mut c = relay_pcsc::open(serial)?;
+                for (s, k) in card::list(&mut c)? {
+                    println!("{}", card::fingerprint_line(s, &k));
+                }
+                Ok(())
+            }
+            KeyCmd::Export { serial, slot, out } => {
+                let mut c = relay_pcsc::open(serial)?;
+                let pem = util::public_key_pem(&card::export(&mut c, slot)?);
+                match out {
+                    Some(p) => util::write(&p, pem),
+                    None => {
+                        print!("{pem}");
+                        Ok(())
+                    }
+                }
+            }
+        },
+        Cmd::Manifest { command } => match command {
+            ManifestCmd::Init { manifest: m } => manifest::init(&m),
+            ManifestCmd::Add {
+                manifest: m,
+                public_key,
+                serial,
+                slot,
+                role,
+                label,
+                id,
+                token,
+            } => {
+                let key = match (public_key, serial, slot) {
+                    (Some(p), _, _) => util::read_public_key(&p)?,
+                    (None, Some(serial), Some(slot)) => {
+                        card::export(&mut relay_pcsc::open(serial)?, slot)?
+                    }
+                    _ => return Err("give --public-key, or --serial and --slot".into()),
+                };
+                let fp = manifest::add(&m, key, role.into(), &label, &id, &token)?;
+                println!("added {fp}");
+                Ok(())
+            }
+            ManifestCmd::Remove {
+                manifest: m,
+                fingerprint,
+                label,
+                token,
+            } => {
+                let n = manifest::remove(
+                    &m,
+                    fingerprint.as_deref(),
+                    label.as_deref(),
+                    token.as_deref(),
+                )?;
+                println!("removed {n} key(s)");
+                Ok(())
+            }
+            ManifestCmd::Show { manifest: m } => {
+                print!("{}", manifest::show(&m)?);
+                Ok(())
+            }
+            ManifestCmd::Sign {
+                manifest: m,
+                valid_days,
+                gpg_key,
+                gpg,
+                pgp_secret,
+                verify_with,
+            } => {
+                let signer = match (&gpg_key, &pgp_secret) {
+                    (Some(k), None) => manifest::Signer::Gpg {
+                        key: k,
+                        program: &gpg,
+                    },
+                    (None, Some(p)) => manifest::Signer::Software(p),
+                    _ => return Err("give --gpg-key or --pgp-secret".into()),
+                };
+                let v = manifest::sign(&m, valid_days, signer, verify_with.as_deref())?;
+                println!(
+                    "signed version {v}; wrote {} and {}",
+                    m.display(),
+                    manifest::sig_path(&m).display()
+                );
+                Ok(())
+            }
+            ManifestCmd::Verify {
+                manifest: m,
+                signature,
+                signer,
+                cached,
+                skew,
+            } => {
+                let sig = signature.unwrap_or_else(|| manifest::sig_path(&m));
+                let v = manifest::verify(&m, &sig, &signer, cached.as_deref(), skew)?;
+                println!(
+                    "OK: version {}, valid until {}, {} keys",
+                    v.version,
+                    util::utc(v.valid_until),
+                    v.keys.len()
+                );
+                Ok(())
+            }
+        },
+        Cmd::Attest {
+            command:
+                AttestCmd::Sign {
+                    serial,
+                    slot,
+                    device_id,
+                    device_key,
+                    days,
+                    out,
+                },
+        } => {
+            let device = util::read_public_key(&device_key)?;
+            let mut c = relay_pcsc::open(serial)?;
+            let pin = util::prompt_secret("PIV PIN: ")?;
+            eprintln!("Touch the YubiKey if it blinks...");
+            let t = util::now();
+            let st = card::attest(
+                &mut c,
+                slot,
+                pin.as_bytes(),
+                &device_id,
+                device,
+                t,
+                t + days * 86_400,
+            )?;
+            util::write(&out, st.bytes())?;
+            println!(
+                "attestation for {device_id} valid until {}; wrote {}",
+                util::utc(t + days * 86_400),
+                out.display()
+            );
+            Ok(())
+        }
+        Cmd::Relay {
+            relay_server,
+            config,
+            command,
+        } => {
+            let mut args: Vec<String> = Vec::new();
+            if let Some(c) = config {
+                args.extend(["--config".into(), c.display().to_string()]);
+            }
+            args.push("admin".into());
+            match command {
+                RelayCmd::Clients { command } => {
+                    args.push("clients".into());
+                    push_lr(&mut args, command);
+                }
+                RelayCmd::Devices { command } => {
+                    args.push("devices".into());
+                    push_lr(&mut args, command);
+                }
+                RelayCmd::Audit { since } => args.extend([
+                    "audit".into(),
+                    "export".into(),
+                    "--since".into(),
+                    since.to_string(),
+                ]),
+            }
+            let status = Command::new(&relay_server)
+                .args(&args)
+                .status()
+                .map_err(|e| format!("running {relay_server}: {e}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("{relay_server} failed ({status})"))
+            }
+        }
+    }
+}
+
+fn push_lr(args: &mut Vec<String>, c: ListRevoke) {
+    match c {
+        ListRevoke::List => args.push("list".into()),
+        ListRevoke::Revoke { id } => args.extend(["revoke".into(), id]),
+    }
 }

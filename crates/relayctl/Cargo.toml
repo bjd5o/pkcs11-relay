@@ -5,3 +5,24 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+relay-core.workspace = true
+relay-pcsc.workspace = true
+yubikey.workspace = true
+p256-013.workspace = true
+p384-013.workspace = true
+x509-cert-02.workspace = true
+rpassword.workspace = true
+clap.workspace = true
+base64.workspace = true
+hex.workspace = true
+p256.workspace = true
+x509-cert.workspace = true
+zeroize.workspace = true
+getrandom.workspace = true
+rand_core.workspace = true
+
+[dev-dependencies]
+relay-core = { workspace = true, features = ["test-util"] }
+relay-softcard.workspace = true
