@@ -40,3 +40,6 @@ proptest.workspace = true
 # Enables test-util for this crate's own integration tests.
 relay-core = { path = ".", features = ["test-util"] }
 serde_json.workspace = true
+ansi-x963-kdf.workspace = true
+sha2.workspace = true
+p256.workspace = true

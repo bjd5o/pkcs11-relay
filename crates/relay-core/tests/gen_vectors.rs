@@ -235,6 +235,19 @@ fn request_vectors(fx: &Fx) {
         NOW,
         "UnknownKey",
     );
+    // ECDH (op = derive) on the P-256 encrypt key.
+    let (d, _, _) = fx.derive_request(relay_core::mechanism::ckm::CKD_NULL, b"", 32);
+    r("valid-derive-null", "ECDH with CKD_NULL on the P-256 encrypt key", d.bytes(), NOW, "ok");
+    let (d2, _, _) = fx.derive_request(relay_core::mechanism::ckm::CKD_SHA256_KDF, b"shared info", 16);
+    r("valid-derive-sha256", "ECDH with the X9.63 SHA-256 KDF and shared info", d2.bytes(), NOW, "ok");
+    let mut off = d.fields.clone();
+    off.input[20] ^= 1;
+    let off = off.clone().with_signature(fx.client.sign(&off.to_be_signed()));
+    r("derive-peer-off-curve", "ECDH peer key not on the curve", off.bytes(), NOW, "MechanismParamInvalid");
+    let mut on_sign = d.fields.clone();
+    on_sign.key_fingerprint = fx.key(Role::Sign).fingerprint.clone();
+    let on_sign = on_sign.clone().with_signature(fx.client.sign(&on_sign.to_be_signed()));
+    r("derive-on-sign-key", "ECDH addressed to a sign key", on_sign.bytes(), NOW, "KeyFunctionNotPermitted");
     let _ = UnsignedRequest::new; // documented above
 }
 
@@ -374,6 +387,10 @@ fn response_vectors(fx: &Fx) {
         "ResponseNotBound",
         json!({}),
     );
+
+    let (der, dk, dres) = fx.derive_request(relay_core::mechanism::ckm::CKD_SHA256_KDF, b"ctx", 32);
+    let resp = fx.approve(&der, &dres, &att, &fx.device);
+    v("approved-derive", "approved ECDH (X9.63 KDF): the derived key, sealed", der.bytes(), &resp, &dk.private_bytes(), NOW, "approved", json!({"result": h(&dres)}));
 
     let mut wrong = sig.clone();
     wrong[0] ^= 1;

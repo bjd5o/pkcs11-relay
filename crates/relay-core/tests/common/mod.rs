@@ -32,6 +32,8 @@ pub struct Fx {
     pub attest: SoftwareKey,
     /// A P-256 key the manifest does not list.
     pub rogue_attest: SoftwareKey,
+    /// The P-256 ECDH `encrypt` key.
+    pub ecdh: SoftwareKey,
     pub device: SoftwareKey,
     pub rogue_device: SoftwareKey,
     pub client: SoftwareKey,
@@ -83,6 +85,7 @@ pub fn generate_fixture() {
         "auth",
         "attest",
         "rogue-attest",
+        "ecdh",
         "device",
         "rogue-device",
     ] {
@@ -124,12 +127,18 @@ fn manifest_keys(
         (Role::Sign, "code-signing", 2, s.public_key()),
         (Role::Auth, "ssh", 3, a.public_key()),
         (Role::Attest, "attest", 4, at.public_key()),
+        (Role::Encrypt, "ecdh", 5, ecdh_key().public_key()),
     ]
 }
 
 fn read(name: &str) -> String {
     std::fs::read_to_string(dir().join("fixture").join(name))
         .unwrap_or_else(|e| panic!("fixture {name}: {e}"))
+}
+
+/// The P-256 ECDH `encrypt` key (a software stand-in for the card's).
+fn ecdh_key() -> SoftwareKey {
+    SoftwareKey::from_pkcs8_pem(&read("ecdh.pem")).unwrap()
 }
 
 fn load_keys() -> (rsa::PrivateKey, SoftwareKey, SoftwareKey, SoftwareKey) {
@@ -152,6 +161,7 @@ pub fn load() -> Fx {
         auth,
         attest,
         rogue_attest: p("rogue-attest.pem"),
+        ecdh: p("ecdh.pem"),
         device: p("device.pem"),
         rogue_device: p("rogue-device.pem"),
         client: p("client.pem"),
@@ -233,6 +243,34 @@ impl Fx {
     }
 
     /// A `sign`-role ECDSA-SHA256 request and the correct signature result.
+    pub fn key_by_label(&self, label: &str) -> &ManifestKey {
+        self.manifest.keys.iter().find(|k| k.label == label).unwrap()
+    }
+
+    /// An ECDH request on the `ecdh` key from a fresh peer key, and the derived result the
+    /// approver would return (computed here in software).
+    pub fn derive_request(&self, kdf: u64, shared: &[u8], out_len: u32) -> (SignedRequest, ReplyKey, Vec<u8>) {
+        let SoftwareKey::P256(card) = &self.ecdh else { panic!("ecdh key is P-256") };
+        let peer = SoftwareKey::generate_p256();
+        let SoftwareKey::P256(peer_sk) = &peer else { unreachable!() };
+        let peer_point = peer.public_key().ec_point().unwrap();
+        let secret = p256::ecdh::diffie_hellman(peer_sk.as_nonzero_scalar(), card.verifying_key().as_affine());
+        let mech = Mechanism::ecdh_from_pkcs11(kdf, shared.to_vec(), out_len).unwrap();
+        let result = match kdf {
+            relay_core::mechanism::ckm::CKD_NULL => secret.raw_secret_bytes()[..out_len as usize].to_vec(),
+            _ => {
+                let mut out = vec![0u8; out_len as usize];
+                ansi_x963_kdf::derive_key_into::<sha2::Sha256>(secret.raw_secret_bytes(), shared, &mut out).unwrap();
+                out
+            }
+        };
+        let reply = ReplyKey::generate();
+        let ctx = RequestContext { host: "pi5.tailnet".into(), purpose: "ECDH".into(), consumer: "test".into() };
+        let r = UnsignedRequest::new(CLIENT_ID, self.key_by_label("ecdh"), Op::Derive, mech, peer_point, ctx, reply.public_bytes(), NOW, NOW + 90).unwrap();
+        let sig = self.client.sign(&r.to_be_signed());
+        (r.with_signature(sig), reply, result)
+    }
+
     pub fn sign_request(&self, msg: &[u8]) -> (SignedRequest, ReplyKey, Vec<u8>) {
         let (r, k) = self.request(Role::Sign, Op::Sign, Mechanism::EcdsaSha256, msg.to_vec());
         (r, k, self.sign.sign(msg).to_vec())

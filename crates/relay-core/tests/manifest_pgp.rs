@@ -39,7 +39,7 @@ fn assert_zero_slots(e: &Error) {
 fn gpg_armored_and_binary_signatures_verify() {
     let m = verify("manifest.json.asc", None, NOW).unwrap();
     assert_eq!(m.version, 1);
-    assert_eq!(m.keys.len(), 4);
+    assert_eq!(m.keys.len(), 5);
     verify("manifest.json.sig", None, NOW).unwrap();
 }
 
