@@ -16,7 +16,7 @@ Update this file as tasks finish. Each milestone's gate is defined in `docs/mile
 - [x] `relay-core::content` (hex-and-hash view)
 - [x] `relay-softcard`
 - [x] Test vectors, including `gpg`-made OpenPGP signatures (a signature made on a YubiKey OpenPGP card comes in milestone 4)
-- [x] Fuzz targets (compile-checked on stable; not yet run: needs nightly and `cargo-fuzz`)
+- [x] Fuzz targets (`mise run fuzz <target>`; each ran 60 s on 2026-11-15 with no crashes)
 - [x] Gate passed (2026-11-15): `cargo test -p relay-core`, with a named negative test for every core-detectable failure row (`tests/failure_table.rs`, `tests/manifest_pgp.rs`)
 
 ## Milestone 2: relay and test approver
@@ -33,14 +33,14 @@ Update this file as tasks finish. Each milestone's gate is defined in `docs/mile
 ## Milestone 3: provider on Linux
 
 - [x] Front-end spike and decision recorded (own front end on `cryptoki-sys`)
-- [~] Discovery and role enforcement (written, compiles; not yet exercised by any test)
-- [~] Sign and decrypt through the relay, response verification (written, compiles; untested)
-- [~] Client pairing from the provider (written; untested)
-- [ ] glibc and musl builds; p11-kit module file
-- [ ] `deploy/compose.test.yml` and `tests/` scripts
+- [x] Discovery and role enforcement
+- [x] Sign and decrypt through the relay, response verification; `C_Encrypt` in software
+- [x] Client pairing from the provider
+- [x] glibc and musl builds; p11-kit module file (aarch64 glibc and musl built and loaded locally; x86_64 only in the CI matrix, which has not run yet; musl needs `libgcc` at run time)
+- [x] `deploy/compose.test.yml` and `tests/` scripts
 - [x] Relay terminates TLS (axum-server); test clients trust a private CA
-- [ ] Next: in-process provider test through the C function table, then client image (pkcs11-tool, pkcs11-provider, ssh) and compose gate
-- [ ] Gate passed (`pkcs11-tool`, OpenSSL `pkcs11-provider`, `ssh -I`)
+- [x] In-process provider test through the C function table (`crates/relay-pkcs11/tests/module.rs`)
+- [x] Gate passed (2026-11-15): `docker compose -f deploy/compose.test.yml up --build --exit-code-from client` exits 0 on colima (arm64), running the milestone 2 and 3 gates: `pkcs11-tool`, OpenSSL `pkcs11-provider`, `ssh -I`. Not yet run in GitHub Actions.
 
 ## Milestone 4: relayctl and real hardware
 

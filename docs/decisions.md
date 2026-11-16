@@ -118,3 +118,15 @@ Consequences: a client trusts exactly the CAs in its file. The test fixtures mak
 Context: the spec's role table exposes `encrypt` public keys with `CKA_ENCRYPT`, saying encryption runs in software, but its function table did not list `C_Encrypt`. OpenBao's seal may call it.
 Decision (Brian): `C_EncryptInit` / `C_Encrypt` with `CKM_RSA_PKCS_OAEP` (SHA-256) on the public object of an `encrypt` key, using the `rsa` crate's OAEP encryption through `relay_core::padding::encrypt_oaep_sha256`. No request and no approval are involved. Brian also approved updating `docs/spec.md` with every departure approved so far: manifest public keys, reason codes, the relay-auth nonce, check-5 order, the diceware pairing code, the pairing endpoints, relay trust as a CA file for the MVP, C_Encrypt, and ECC `encrypt` deferred.
 Consequences: `docs/spec.md` now matches `docs/wire-format.md` on these points.
+
+## 2026-11-15: Milestone 3 implementation choices
+
+Context: details that came up while building the provider and running third-party callers.
+Decision:
+- **Two client rate limits at the relay.** `client_requests_per_minute` (default 30) counts only submitted requests, which is what bounds approval prompts. `client_calls_per_minute` (default 600) covers discovery and long-polls. A single limit counting every call starved ordinary `pkcs11-tool` runs.
+- **`C_SignUpdate` accepts raw mechanisms too** (`CKM_ECDSA`, `CKM_RSA_PKCS`). They are single-part in PKCS#11, but `pkcs11-tool` retries a failed `C_Sign` as Update/Final. Refusing that retry hid the real error (for example `CKR_FUNCTION_REJECTED`) behind `CKR_FUNCTION_NOT_SUPPORTED`. Length limits still apply when the request is built, and each retry is a new request, as the spec allows.
+- **Slots are the manifest's tokens.** A slot shows only the keys the relay also lists. Slot ids are stable, ordered by token name.
+- **One exported symbol.** The module exports only `C_GetFunctionList`, and the other 67 entries are reachable through the table. The 41 unsupported entries are stubs generated from cryptoki-sys's `CK_C_*` types.
+- **Linux builds.** glibc builds come from Debian bookworm (glibc 2.36 baseline). musl builds come from Alpine, linked dynamically against musl (`-C target-feature=-crt-static`), because a statically linked musl target cannot produce a `cdylib`. The musl module therefore needs Alpine's `libgcc` package at run time (`libgcc_s.so.1`, the unwinder behind `catch_unwind`). `-static-libgcc` does not help, because Rust's unwind crate links `gcc_s` explicitly. Dropping the dependency would mean `panic=abort` with `-Zbuild-std`, which loses the panic guard CLAUDE.md requires. Both are built natively for x86_64 and aarch64 in CI, and locally with `deploy/build-provider.sh`.
+- **p11-kit registration** is `deploy/relay-pkcs11.module`, installed to `/usr/share/p11-kit/modules/`, with `trust-policy: no`.
+Consequences: none on the wire format.

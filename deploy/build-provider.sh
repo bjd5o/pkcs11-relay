@@ -2,6 +2,8 @@
 # Build librelay_pkcs11.so for Linux in a container, for this machine's architecture:
 #   deploy/build-provider.sh gnu    # Debian bookworm: glibc 2.36 and newer
 #   deploy/build-provider.sh musl   # Alpine: musl, for Alpine-based processes
+#     (needs Alpine's libgcc package at run time: `apk add libgcc`, for the unwinder that
+#     catch_unwind at the FFI boundary depends on)
 # Output: dist/librelay_pkcs11-<arch>-<libc>.so. CI builds x86_64 and aarch64 natively.
 set -euo pipefail
 libc="${1:?usage: deploy/build-provider.sh gnu|musl}"
