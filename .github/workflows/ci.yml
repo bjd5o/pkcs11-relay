@@ -20,3 +20,28 @@ jobs:
         run: docker compose -f deploy/compose.test.yml logs --no-color relay approver-a approver-b approver-c
       - if: always()
         run: docker compose -f deploy/compose.test.yml down -v
+  provider:
+    needs: rust
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, libc: gnu, runner: ubuntu-24.04, image: "rust:1.93-bookworm" }
+          - { arch: aarch64, libc: gnu, runner: ubuntu-24.04-arm, image: "rust:1.93-bookworm" }
+          - { arch: x86_64, libc: musl, runner: ubuntu-24.04, image: "rust:1.93-alpine" }
+          - { arch: aarch64, libc: musl, runner: ubuntu-24.04-arm, image: "rust:1.93-alpine" }
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    env:
+      # musl targets link statically by default, which rules out a cdylib.
+      RUSTFLAGS: ${{ matrix.libc == 'musl' && '-C target-feature=-crt-static' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: matrix.libc == 'musl'
+        run: apk add --no-cache musl-dev
+      - run: cargo build --release --locked -p relay-pkcs11
+      - run: cp target/release/librelay_pkcs11.so librelay_pkcs11-${{ matrix.arch }}-${{ matrix.libc }}.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: librelay_pkcs11-${{ matrix.arch }}-${{ matrix.libc }}
+          path: librelay_pkcs11-*.so

@@ -1,4 +1,5 @@
-# Integration environment: relay, three test approvers and a gate client.
+# Integration environment: relay (TLS), three test approvers, a test sshd and a client that
+# runs the milestone 2 and 3 gates.
 #   docker compose -f deploy/compose.test.yml up --build --exit-code-from client
 # Approver A approves (and pairs the client), B denies after a delay, C has an expired
 # attestation. Fixtures are generated fresh on every run.
@@ -20,7 +21,7 @@ services:
       dockerfile: deploy/Dockerfile.test
     entrypoint: ["sh", "-c"]
     command:
-      - relay-test-approver gen-fixtures --out /fixtures --root /fixtures --relay-url http://relay:8080
+      - relay-test-approver gen-fixtures --out /fixtures --root /fixtures --relay-url https://relay:8443
         && touch /fixtures/.ready && exec sleep infinity
     volumes: ["fixtures:/fixtures"]
     healthcheck:
@@ -38,7 +39,7 @@ services:
     depends_on:
       fixtures: { condition: service_healthy }
     healthcheck:
-      test: ["CMD", "/relay-server", "healthcheck"]
+      test: ["CMD", "/relay-server", "healthcheck", "--url", "https://localhost:8443/healthz", "--ca", "/fixtures/relay-ca.pem"]
       interval: 2s
       timeout: 2s
       retries: 30
@@ -64,12 +65,28 @@ services:
     depends_on:
       relay: { condition: service_healthy }
 
-  client:
+  # A test sshd that trusts only the fixture auth-ec key (for `ssh -I`).
+  sshd:
     <<: *test-image
-    command: ["gate", "--config", "/fixtures/gate.toml"]
+    user: root
+    entrypoint: ["sh", "-c"]
+    command:
+      - ssh-keygen -A && exec /usr/sbin/sshd -D -e -p 2222 -o StrictModes=no
+        -o AuthorizedKeysFile=/fixtures/ssh_authorized_keys -o PasswordAuthentication=no
     volumes: ["fixtures:/fixtures:ro"]
     depends_on:
+      fixtures: { condition: service_healthy }
+
+  # Milestone 2 gate (relay protocol), then milestone 3 (pkcs11-tool, OpenSSL, OpenSSH).
+  client:
+    <<: *test-image
+    entrypoint: ["sh", "-c"]
+    command:
+      - relay-test-approver gate --config /fixtures/gate.toml && /tests/m3-gate.sh
+    volumes: ["fixtures:/fixtures"]
+    depends_on:
       relay: { condition: service_healthy }
+      sshd: { condition: service_started }
       approver-a: { condition: service_started }
       approver-b: { condition: service_started }
       approver-c: { condition: service_started }

@@ -5,3 +5,4 @@
 /fuzz/artifacts
 .DS_Store
 /deploy/fixtures/
+/dist

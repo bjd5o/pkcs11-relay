@@ -1,0 +1,8 @@
+# p11-kit module registration for the pkcs11-relay provider.
+# Installed to /usr/share/p11-kit/modules/. The provider reads its configuration from the
+# file named by RELAY_PKCS11_CONFIG in the environment of the process that loads it.
+module: /usr/lib/pkcs11/librelay_pkcs11.so
+# Not trusted for certificate anchors; only for the keys the signed manifest lists.
+trust-policy: no
+# Let applications that enumerate every p11-kit module see the relay keys.
+critical: no
