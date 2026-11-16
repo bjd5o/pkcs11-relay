@@ -37,7 +37,9 @@ pub struct Config {
     pub softcard_dir: Option<PathBuf>,
     /// With `--pcsc`: the YubiKey serial to use. It must equal `RELAY_TEST_YUBIKEY_SERIAL`.
     pub pcsc_serial: Option<u32>,
-    pub pin_file: PathBuf,
+    /// The PIV PIN, read at startup. Leave it out and pass `--pin-stdin` to keep the PIN off
+    /// disk.
+    pub pin_file: Option<PathBuf>,
     pub attest_slot: String,
     #[serde(default = "default_window")]
     pub attestation_window_secs: u64,
@@ -150,7 +152,28 @@ impl Approver {
     pub async fn start(
         cfg: Config,
         behavior: Behavior,
+        card: Box<dyn CardTransport + Send>,
+    ) -> Result<Arc<Self>, String> {
+        let path = cfg
+            .pin_file
+            .clone()
+            .ok_or("pin_file is not set (use --pin-stdin)")?;
+        let pin = Zeroizing::new(
+            std::fs::read_to_string(path)
+                .map_err(|e| e.to_string())?
+                .trim()
+                .as_bytes()
+                .to_vec(),
+        );
+        Self::start_with_pin(cfg, behavior, card, pin).await
+    }
+
+    /// `start` with a PIN the caller already holds (read from stdin, never written to disk).
+    pub async fn start_with_pin(
+        cfg: Config,
+        behavior: Behavior,
         mut card: Box<dyn CardTransport + Send>,
+        pin: Zeroizing<Vec<u8>>,
     ) -> Result<Arc<Self>, String> {
         let signer = ManifestSigner::from_bytes(
             &std::fs::read(&cfg.manifest_signer).map_err(|e| e.to_string())?,
@@ -158,13 +181,6 @@ impl Approver {
         .map_err(|e| e.to_string())?;
         let manifest = load_manifest(&cfg.manifest_url, &signer, cfg.skew_secs).await?;
         let device_key = Arc::new(load_or_create_device_key(&cfg.data_dir)?);
-        let pin = Zeroizing::new(
-            std::fs::read_to_string(&cfg.pin_file)
-                .map_err(|e| e.to_string())?
-                .trim()
-                .as_bytes()
-                .to_vec(),
-        );
         piv::select(card.as_mut()).map_err(|e| e.to_string())?;
         let key_map = discover_keys(card.as_mut(), &manifest);
         let attest_slot = Slot::parse(&cfg.attest_slot).map_err(|e| e.to_string())?;

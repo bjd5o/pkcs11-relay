@@ -88,8 +88,8 @@ async fn gate_in_process() {
     let mut cfg: Config =
         toml::from_str(&std::fs::read_to_string(dir.join("approver-a.toml")).unwrap()).unwrap();
     cfg.data_dir = dir.join("fresh-device"); // no stored attestation: the card must sign one
-    cfg.pin_file = dir.join("wrong-pin");
-    std::fs::write(&cfg.pin_file, "000000").unwrap();
+    cfg.pin_file = Some(dir.join("wrong-pin"));
+    std::fs::write(cfg.pin_file.as_ref().unwrap(), "000000").unwrap();
     let card =
         relay_softcard::SoftCard::load_dir(cfg.softcard_dir.as_ref().unwrap(), b"123456").unwrap();
     let e = match Approver::start(cfg, Behavior::default(), Box::new(card)).await {

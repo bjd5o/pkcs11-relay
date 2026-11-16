@@ -3014,6 +3014,7 @@ dependencies = [
  "relay-server",
  "relay-softcard",
  "reqwest",
+ "rpassword",
  "rsa 0.10.0",
  "rustls",
  "serde",

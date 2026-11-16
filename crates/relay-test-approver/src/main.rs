@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use relay_test_approver::approver::{Approver, Behavior, Config, FATAL};
+use zeroize::Zeroizing;
 
 #[derive(Parser)]
 #[command(version, about = "Headless approver for pkcs11-relay tests")]
@@ -40,6 +41,9 @@ enum Cmd {
         /// RELAY_TEST_YUBIKEY_SERIAL.
         #[arg(long)]
         pcsc: bool,
+        /// Read the PIN from stdin (prompted without echo on a terminal) instead of `pin_file`.
+        #[arg(long)]
+        pin_stdin: bool,
     },
     /// Run the milestone 2 gate as a client.
     Gate {
@@ -89,11 +93,12 @@ async fn run(cli: Cli) -> Result<(), String> {
             expired_attestation,
             long_poll,
             pcsc,
+            pin_stdin,
         } => {
             let cfg: Config =
                 toml::from_str(&std::fs::read_to_string(&config).map_err(|e| e.to_string())?)
                     .map_err(|e| e.to_string())?;
-            let pin = std::fs::read_to_string(&cfg.pin_file).map_err(|e| e.to_string())?;
+            let pin = read_pin(&cfg, pin_stdin)?;
             // Opens the card afresh for each startup attempt.
             let open = || -> Result<Box<dyn relay_core::piv::CardTransport + Send>, String> {
                 if pcsc {
@@ -107,8 +112,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                         .as_ref()
                         .ok_or("softcard_dir is required without --pcsc")?;
                     Ok(Box::new(
-                        relay_softcard::SoftCard::load_dir(dir, pin.trim().as_bytes())
-                            .map_err(|e| e.to_string())?,
+                        relay_softcard::SoftCard::load_dir(dir, &pin).map_err(|e| e.to_string())?,
                     ))
                 }
             };
@@ -120,7 +124,9 @@ async fn run(cli: Cli) -> Result<(), String> {
             };
             // Retry startup until the relay is reachable, but never after a rejected PIN.
             loop {
-                match Approver::start(cfg.clone(), behavior.clone(), open()?).await {
+                match Approver::start_with_pin(cfg.clone(), behavior.clone(), open()?, pin.clone())
+                    .await
+                {
                     Ok(a) => {
                         a.run().await;
                         return Ok(());
@@ -153,4 +159,27 @@ async fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// The PIN from stdin (no echo on a terminal) or from `pin_file`; surrounding whitespace removed.
+fn read_pin(cfg: &Config, from_stdin: bool) -> Result<Zeroizing<Vec<u8>>, String> {
+    use std::io::IsTerminal;
+    let text = if from_stdin {
+        if std::io::stdin().is_terminal() {
+            Zeroizing::new(rpassword::prompt_password("PIV PIN: ").map_err(|e| e.to_string())?)
+        } else {
+            let mut line = Zeroizing::new(String::new());
+            std::io::stdin()
+                .read_line(&mut line)
+                .map_err(|e| e.to_string())?;
+            line
+        }
+    } else {
+        let path = cfg
+            .pin_file
+            .as_ref()
+            .ok_or("set pin_file in the config or pass --pin-stdin")?;
+        Zeroizing::new(std::fs::read_to_string(path).map_err(|e| e.to_string())?)
+    };
+    Ok(Zeroizing::new(text.trim().as_bytes().to_vec()))
 }
