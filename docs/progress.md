@@ -51,8 +51,11 @@ Update this file as tasks finish. Each milestone's gate is defined in `docs/mile
 
 ## Milestone 4: relayctl and real hardware
 
-- [ ] `relayctl key`
-- [ ] `relayctl manifest` (sign with OpenPGP card)
-- [ ] `relayctl attest sign`
-- [ ] `relay-test-approver --pcsc`
-- [ ] Gate passed on Brian's Mac with a real YubiKey
+- [x] `relay-pcsc`: PC/SC `CardTransport` behind the `RELAY_TEST_YUBIKEY_SERIAL` interlock, selecting the reader by PIV serial
+- [x] `relayctl key generate|list|export` (generate: RSA-2048, P-256, P-384 with yubikey 0.8 and a 3DES management key; other algorithms print ykman commands, see decisions)
+- [x] `relayctl manifest init|add|remove|show|sign|verify` (sign through `gpg --detach-sign`, so an OpenPGP card works through gpg-agent, or a software rPGP key)
+- [x] `relayctl attest sign`
+- [x] `relayctl relay clients|devices|audit` (wraps `relay-server admin`)
+- [x] `relay-test-approver run --pcsc` (`pcsc_serial` in the config)
+- [x] Tests without hardware: manifest round trip, rollback and tamper checks, attestation through the softcard, one-PIN-attempt rule, gpg signing in a throwaway `GNUPGHOME` (`crates/relayctl/tests/flows.rs`); fatal startup PIN (`crates/relay-test-approver/tests/e2e.rs`)
+- [ ] Gate on Brian's Mac with a real YubiKey (waiting for the serial number and slots)
