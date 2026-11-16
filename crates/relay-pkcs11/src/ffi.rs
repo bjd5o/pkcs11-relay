@@ -865,13 +865,12 @@ pub unsafe extern "C" fn C_SignUpdate(
             .get_mut(&hSession)
             .ok_or(CKR_SESSION_HANDLE_INVALID)?;
         let o = s.sign.as_mut().ok_or(CKR_OPERATION_NOT_INITIALIZED)?;
-        if !matches!(
-            o.mechanism,
-            Mechanism::Sha256RsaPkcs | Mechanism::EcdsaSha256
-        ) || o.result.is_some()
-        {
+        // Raw mechanisms are single-part in PKCS#11, but callers such as pkcs11-tool retry a
+        // failed C_Sign as Update/Final; buffering keeps their real error code visible. The
+        // length limits still apply when the request is built.
+        if o.result.is_some() {
             s.sign = None;
-            return Err(CKR_FUNCTION_NOT_SUPPORTED); // raw mechanisms are single-part only
+            return Err(CKR_OPERATION_ACTIVE);
         }
         if o.data.len() + part.len() > MAX_SIGN_MESSAGE_LEN {
             s.sign = None;

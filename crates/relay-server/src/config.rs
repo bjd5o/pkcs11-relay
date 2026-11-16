@@ -19,7 +19,10 @@ pub struct Config {
     pub max_ttl_secs: u64,
     pub max_pending_per_client: usize,
     pub max_body_bytes: usize,
+    /// Signed requests a client may submit per minute: what bounds approval prompts.
     pub client_requests_per_minute: u32,
+    /// All other authenticated client calls (discovery, long-polls) per minute.
+    pub client_calls_per_minute: u32,
     pub device_calls_per_minute: u32,
     /// Source networks allowed to start pairing (spec: tailnet only).
     pub pairing_allowed_cidrs: Vec<String>,
@@ -54,6 +57,7 @@ impl Default for Config {
             max_pending_per_client: 4,
             max_body_bytes: 64 * 1024,
             client_requests_per_minute: 30,
+            client_calls_per_minute: 600,
             device_calls_per_minute: 240,
             // Tailscale's IPv4 CGNAT and IPv6 ULA ranges, plus loopback.
             pairing_allowed_cidrs: vec![

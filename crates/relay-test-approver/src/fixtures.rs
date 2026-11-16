@@ -194,7 +194,7 @@ pub fn generate(
         .map(|c| format!("{c:?}"))
         .collect::<Vec<_>>()
         .join(", ");
-    w(&out.join("relay.toml"), format!("listen = \"0.0.0.0:8443\"\ntls_cert = \"{root}/relay-cert.pem\"\ntls_key = \"{root}/relay-key.pem\"\ndata_dir = \"/data\"\npairing_allowed_cidrs = [{cidrs}]\n\n[notify]\nkind = \"log\"\n"))?;
+    w(&out.join("relay.toml"), format!("listen = \"0.0.0.0:8443\"\ntls_cert = \"{root}/relay-cert.pem\"\ntls_key = \"{root}/relay-key.pem\"\ndata_dir = \"/data\"\n# Two gates in one minute: above the default of 30 requests per minute.\nclient_requests_per_minute = 120\npairing_allowed_cidrs = [{cidrs}]\n\n[notify]\nkind = \"log\"\n"))?;
     for (card, approve) in [("a", true), ("b", false), ("c", false)] {
         let cfg = format!(
             "relay_url = {relay_url:?}\nrelay_ca_file = \"{root}/relay-ca.pem\"\ndevice_id = \"approver-{card}\"\ndata_dir = \"{root}/state/approver-{card}\"\n\
@@ -210,6 +210,12 @@ pub fn generate(
             "relay_url = {relay_url:?}\nrelay_ca_file = \"{root}/relay-ca.pem\"\nmanifest_url = \"file://{root}/manifest.json\"\nmanifest_signer = \"{root}/signer.asc\"\n\
              client_key = \"{root}/client.pem\"\nclient_id = \"{CLIENT_ID}\"\n"
         ),
+    )?;
+    // authorized_keys for the test sshd: the auth-ec key in OpenSSH wire format.
+    let auth_ec = keys.iter().find(|k| k.label == "auth-ec").expect("auth-ec");
+    w(
+        &out.join("ssh_authorized_keys"),
+        format!("{}\n", ssh_ecdsa_public(&auth_ec.public_key)),
     )?;
     // The PKCS#11 provider's config (RELAY_PKCS11_CONFIG) for the client container.
     w(
@@ -361,4 +367,20 @@ pub fn tls_material(out: &Path) -> Result<(), String> {
             .map_err(|x| e(&x))?;
     w(&out.join("relay-key.pem"), key_pem.as_bytes())?;
     Ok(())
+}
+
+/// `ecdsa-sha2-nistp256 <base64>` for a P-256 key (RFC 5656 §3.1).
+pub fn ssh_ecdsa_public(pk: &PublicKey) -> String {
+    fn string(out: &mut Vec<u8>, b: &[u8]) {
+        out.extend_from_slice(&(b.len() as u32).to_be_bytes());
+        out.extend_from_slice(b);
+    }
+    let mut blob = Vec::new();
+    string(&mut blob, b"ecdsa-sha2-nistp256");
+    string(&mut blob, b"nistp256");
+    string(&mut blob, &pk.ec_point().expect("P-256 key"));
+    format!(
+        "ecdsa-sha2-nistp256 {}",
+        base64::engine::general_purpose::STANDARD.encode(blob)
+    )
 }

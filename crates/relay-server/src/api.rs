@@ -170,7 +170,7 @@ async fn authenticate_client(
     check_auth(st, &a, m, uri, body, &key)?;
     if !st.lock().allow(
         &format!("client:{}", c.client_id),
-        st.cfg.client_requests_per_minute,
+        st.cfg.client_calls_per_minute,
         now(),
     ) {
         return Err(err(
@@ -361,6 +361,18 @@ async fn submit_request(
     body: Bytes,
 ) -> ApiResult<Response> {
     let c = authenticate_client(&st, &h, &m, &uri, &body).await?;
+    if !st.lock().allow(
+        &format!("client-requests:{}", c.client_id),
+        st.cfg.client_requests_per_minute,
+        now(),
+    ) {
+        Metrics::inc(&st.metrics.requests_rejected);
+        return Err(err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "RateLimited",
+            "client request rate limit",
+        ));
+    }
     let approved: Vec<Fingerprint> = c
         .approved_keys
         .iter()
