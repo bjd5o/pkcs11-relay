@@ -20,6 +20,7 @@ pub mod request;
 pub mod response;
 pub mod seal;
 pub mod signing;
+pub mod symmetric;
 
 pub use attestation::{check_id, verify_attestation};
 pub use error::{Error, FailureRow, Result};

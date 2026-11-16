@@ -164,6 +164,19 @@ pub fn encrypt_oaep_sha256(
         .map_err(|e| Error::Crypto(e.to_string()))
 }
 
+/// DER `ECDSA-Sig-Value` to `r || s` for a P-256 (64 bytes) or P-384 (96 bytes) key.
+pub fn ecdsa_der_to_raw_for(alg: crate::keys::Algorithm, der: &[u8]) -> Result<Vec<u8>> {
+    let bad = || Error::Card("invalid DER ECDSA signature".into());
+    match alg {
+        crate::keys::Algorithm::P256 => Ok(ecdsa_der_to_raw(der)?.to_vec()),
+        crate::keys::Algorithm::P384 => {
+            let sig = p384::ecdsa::Signature::from_der(der).map_err(|_| bad())?;
+            Ok(sig.to_bytes().to_vec())
+        }
+        _ => Err(bad()),
+    }
+}
+
 /// Convert a DER `ECDSA-Sig-Value` (what PIV, Security.framework and OpenSSL return) to the
 /// raw `r || s` form `CKM_ECDSA` callers and the wire format use.
 pub fn ecdsa_der_to_raw(der: &[u8]) -> Result<[u8; 64]> {

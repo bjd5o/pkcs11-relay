@@ -30,6 +30,10 @@ data-encoding.workspace = true
 subtle.workspace = true
 rand_core_06.workspace = true
 x509-cert.workspace = true
+p384.workspace = true
+x25519-dalek.workspace = true
+aes-gcm.workspace = true
+ansi-x963-kdf.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

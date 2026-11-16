@@ -275,8 +275,8 @@ mod json {
         v["keys"][0]["algorithm"] = "rsa-4096".into();
         reject(v, "algorithm does not match public_key");
         let mut v = base();
-        v["keys"][1]["role"] = "encrypt".into();
-        reject(v, "P-256 key with role encrypt");
+        v["keys"][0]["role"] = "attest".into();
+        reject(v, "RSA key with role attest");
         let mut v = base();
         let k0 = v["keys"][0].clone();
         v["keys"].as_array_mut().unwrap().push(k0);

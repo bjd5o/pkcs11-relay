@@ -96,9 +96,11 @@ pub fn algorithm_id(alg: Algorithm) -> Result<u8> {
         Algorithm::Rsa2048 => Ok(0x07),
         Algorithm::Rsa4096 => Ok(0x16),
         Algorithm::P256 => Ok(0x11),
-        Algorithm::Ed25519 => Err(PivError::InvalidArgument(
-            "Ed25519 is not a hardware key algorithm here".into(),
-        )),
+        Algorithm::P384 => Ok(0x14),
+        // YubiKey firmware 5.7 and later.
+        Algorithm::X25519 => Ok(0xe1),
+        // YubiKey firmware 5.7 and later.
+        Algorithm::Ed25519 => Ok(0xe0),
     }
 }
 
@@ -310,8 +312,20 @@ pub fn general_authenticate(
     slot: Slot,
     input: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>> {
+    general_authenticate_tagged(t, alg, slot, 0x81, input)
+}
+
+/// GENERAL AUTHENTICATE with the input under `tag`: `81` (challenge) or `85` (ECDH peer
+/// public key).
+pub fn general_authenticate_tagged(
+    t: &mut dyn CardTransport,
+    alg: u8,
+    slot: Slot,
+    tag: u8,
+    input: &[u8],
+) -> Result<Zeroizing<Vec<u8>>> {
     let mut inner = vec![0x82, 0x00];
-    inner.extend_from_slice(&tlv(0x81, input));
+    inner.extend_from_slice(&tlv(tag, input));
     let req = Zeroizing::new(tlv(0x7c, &inner));
     let resp = exchange(t, 0x87, alg, slot.id(), &req)?;
     let outer = find_tlv(&resp, 0x7c)?;
@@ -384,6 +398,100 @@ pub fn sign_ecdsa_p256(t: &mut dyn CardTransport, slot: Slot, digest: &[u8]) -> 
         .map_err(|_| PivError::Malformed("invalid ECDSA signature from card".into()))
 }
 
+/// ECDSA over a digest with a P-256 or P-384 key: the digest is truncated or left-padded to
+/// the field size, and the card's DER signature becomes `r || s`.
+pub fn sign_ecdsa(
+    t: &mut dyn CardTransport,
+    slot: Slot,
+    alg: Algorithm,
+    digest: &[u8],
+) -> Result<Vec<u8>> {
+    let n = match alg {
+        Algorithm::P256 | Algorithm::P384 => alg.ec_field_len().expect("EC field"),
+        _ => {
+            return Err(PivError::InvalidArgument(
+                "ECDSA needs a P-256 or P-384 key".into(),
+            ))
+        }
+    };
+    let mut d = vec![0u8; n];
+    if digest.len() >= n {
+        d.copy_from_slice(&digest[..n]);
+    } else {
+        d[n - digest.len()..].copy_from_slice(digest);
+    }
+    let der = general_authenticate(t, algorithm_id(alg)?, slot, &d)?;
+    padding::ecdsa_der_to_raw_for(alg, &der)
+        .map_err(|_| PivError::Malformed("invalid ECDSA signature from card".into()))
+}
+
+/// Ed25519 on the card: GENERAL AUTHENTICATE over the whole message; the card returns the
+/// 64-byte signature.
+pub fn sign_eddsa(t: &mut dyn CardTransport, slot: Slot, message: &[u8]) -> Result<Vec<u8>> {
+    let sig = general_authenticate(t, algorithm_id(Algorithm::Ed25519)?, slot, message)?;
+    if sig.len() != 64 {
+        return Err(PivError::Malformed(
+            "Ed25519 signature must be 64 bytes".into(),
+        ));
+    }
+    Ok(sig.to_vec())
+}
+
+/// ECDH on the card (GENERAL AUTHENTICATE, tag `85`): returns the shared secret, the
+/// x-coordinate (P-256, P-384) or the X25519 output. An all-zero secret (a low-order X25519
+/// peer key) is refused.
+pub fn ecdh(
+    t: &mut dyn CardTransport,
+    slot: Slot,
+    alg: Algorithm,
+    peer: &[u8],
+) -> Result<Zeroizing<Vec<u8>>> {
+    crate::mechanism::check_ecdh_peer(alg, peer)
+        .map_err(|e| PivError::InvalidArgument(e.to_string()))?;
+    let secret = general_authenticate_tagged(t, algorithm_id(alg)?, slot, 0x85, peer)?;
+    let n = alg.ec_field_len().expect("ECDH curve");
+    if secret.len() != n {
+        return Err(PivError::Malformed(
+            "shared secret has the wrong length".into(),
+        ));
+    }
+    if secret.iter().all(|b| *b == 0) {
+        return Err(PivError::Malformed("degenerate shared secret".into()));
+    }
+    Ok(secret)
+}
+
+/// ECDH, then the KDF: `CKD_NULL` keeps the leading `out_len` bytes of the shared secret,
+/// `CKD_SHA256_KDF` runs ANSI X9.63 with SHA-256 over it and the shared data.
+pub fn derive(
+    t: &mut dyn CardTransport,
+    slot: Slot,
+    alg: Algorithm,
+    peer: &[u8],
+    kdf: crate::mechanism::Kdf,
+    shared_data: &[u8],
+    out_len: u32,
+) -> Result<Zeroizing<Vec<u8>>> {
+    let secret = ecdh(t, slot, alg, peer)?;
+    let n = out_len as usize;
+    let mut out = Zeroizing::new(vec![0u8; n]);
+    match kdf {
+        crate::mechanism::Kdf::Null => {
+            if n > secret.len() {
+                return Err(PivError::InvalidArgument(
+                    "requested key longer than the shared secret".into(),
+                ));
+            }
+            out.copy_from_slice(&secret[..n]);
+        }
+        crate::mechanism::Kdf::Sha256 => {
+            ansi_x963_kdf::derive_key_into::<Sha256>(&secret, shared_data, &mut out)
+                .map_err(|_| PivError::InvalidArgument("X9.63 KDF failed".into()))?;
+        }
+    }
+    Ok(out)
+}
+
 /// Run a request's operation on the card and return the result in the mechanism's output
 /// format (wire-format §3). The caller has already verified the request and the PIN.
 pub fn perform(
@@ -403,10 +511,17 @@ pub fn perform(
             &Sha256::digest(input),
         )?),
         Mechanism::RsaPkcs => Zeroizing::new(sign_rsa_pkcs1(t, slot, alg, &[], input)?),
-        Mechanism::EcdsaSha256 => {
-            Zeroizing::new(sign_ecdsa_p256(t, slot, &Sha256::digest(input))?.to_vec())
+        Mechanism::EcdsaSha256 => Zeroizing::new(sign_ecdsa(t, slot, alg, &Sha256::digest(input))?),
+        Mechanism::EcdsaSha384 => {
+            Zeroizing::new(sign_ecdsa(t, slot, alg, &sha2::Sha384::digest(input))?)
         }
-        Mechanism::Ecdsa => Zeroizing::new(sign_ecdsa_p256(t, slot, input)?.to_vec()),
+        Mechanism::Ecdsa => Zeroizing::new(sign_ecdsa(t, slot, alg, input)?),
+        Mechanism::Eddsa => Zeroizing::new(sign_eddsa(t, slot, input)?),
+        Mechanism::Ecdh1Derive {
+            kdf,
+            shared_data,
+            out_len,
+        } => derive(t, slot, alg, input, *kdf, shared_data, *out_len)?,
     })
 }
 

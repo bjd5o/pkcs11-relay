@@ -61,6 +61,10 @@ pub enum Algorithm {
     Rsa2048,
     Rsa4096,
     P256,
+    P384,
+    /// Key agreement only (`encrypt` keys).
+    X25519,
+    /// Client identity keys, and `sign` / `auth` hardware keys (EdDSA).
     Ed25519,
 }
 
@@ -70,6 +74,8 @@ impl Algorithm {
             Algorithm::Rsa2048 => "rsa-2048",
             Algorithm::Rsa4096 => "rsa-4096",
             Algorithm::P256 => "p256",
+            Algorithm::P384 => "p384",
+            Algorithm::X25519 => "x25519",
             Algorithm::Ed25519 => "ed25519",
         }
     }
@@ -79,6 +85,8 @@ impl Algorithm {
             "rsa-2048" => Algorithm::Rsa2048,
             "rsa-4096" => Algorithm::Rsa4096,
             "p256" => Algorithm::P256,
+            "p384" => Algorithm::P384,
+            "x25519" => Algorithm::X25519,
             "ed25519" => Algorithm::Ed25519,
             _ => return Err(Error::Decode(format!("unknown algorithm `{s}`"))),
         })
@@ -86,6 +94,35 @@ impl Algorithm {
 
     pub fn is_rsa(self) -> bool {
         matches!(self, Algorithm::Rsa2048 | Algorithm::Rsa4096)
+    }
+
+    /// NIST curves that sign with ECDSA.
+    pub fn is_ecdsa(self) -> bool {
+        matches!(self, Algorithm::P256 | Algorithm::P384)
+    }
+
+    /// Curves that do ECDH (`encrypt` keys).
+    pub fn is_ecdh(self) -> bool {
+        matches!(self, Algorithm::P256 | Algorithm::P384 | Algorithm::X25519)
+    }
+
+    /// Field size in bytes: the ECDH shared-secret length, and half a raw ECDSA signature.
+    pub fn ec_field_len(self) -> Option<usize> {
+        match self {
+            Algorithm::P256 | Algorithm::X25519 => Some(32),
+            Algorithm::P384 => Some(48),
+            _ => None,
+        }
+    }
+
+    /// The peer public key length for ECDH: an uncompressed point, or 32 bytes for X25519.
+    pub fn ecdh_peer_len(self) -> Option<usize> {
+        match self {
+            Algorithm::P256 => Some(65),
+            Algorithm::P384 => Some(97),
+            Algorithm::X25519 => Some(32),
+            _ => None,
+        }
     }
 
     /// RSA modulus length in bytes (`k`), if RSA.
@@ -129,11 +166,8 @@ impl Role {
     /// Whether a hardware key of `alg` may hold this role (wire-format §2).
     pub fn allows(self, alg: Algorithm) -> bool {
         match self {
-            Role::Sign | Role::Auth => matches!(
-                alg,
-                Algorithm::Rsa2048 | Algorithm::Rsa4096 | Algorithm::P256
-            ),
-            Role::Encrypt => alg.is_rsa(),
+            Role::Sign | Role::Auth => alg.is_rsa() || alg.is_ecdsa() || alg == Algorithm::Ed25519,
+            Role::Encrypt => alg.is_rsa() || alg.is_ecdh(),
             Role::Attest => alg == Algorithm::P256,
         }
     }
@@ -143,6 +177,8 @@ impl Role {
 enum Material {
     Rsa(rsa::PublicKey),
     P256(p256::ecdsa::VerifyingKey),
+    P384(p384::ecdsa::VerifyingKey),
+    X25519([u8; 32]),
     Ed25519(ed25519_dalek::VerifyingKey),
 }
 
@@ -175,6 +211,16 @@ impl Eq for PublicKey {}
 
 /// DER of the `prime256v1` named-curve OID: `CKA_EC_PARAMS` for P-256 keys.
 pub const P256_EC_PARAMS: [u8; 10] = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+/// DER of the `secp384r1` OID: `CKA_EC_PARAMS` for P-384 keys.
+pub const P384_EC_PARAMS: [u8; 7] = [0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22];
+/// DER of the `id-X25519` OID (RFC 8410): `CKA_EC_PARAMS` for X25519 keys.
+pub const X25519_EC_PARAMS: [u8; 5] = [0x06, 0x03, 0x2b, 0x65, 0x6e];
+/// DER of the `id-Ed25519` OID (RFC 8410): `CKA_EC_PARAMS` for Ed25519 keys.
+pub const ED25519_EC_PARAMS: [u8; 5] = [0x06, 0x03, 0x2b, 0x65, 0x70];
+
+const OID_P256: &str = "1.2.840.10045.3.1.7";
+const OID_P384: &str = "1.3.132.0.34";
+const OID_X25519: &str = "1.3.101.110";
 
 const OID_RSA: &str = "1.2.840.113549.1.1.1";
 const OID_EC: &str = "1.2.840.10045.2.1";
@@ -219,14 +265,56 @@ impl PublicKey {
                 (alg, Material::Rsa(k), der)
             }
             OID_EC => {
-                use p256::pkcs8::{DecodePublicKey, EncodePublicKey};
-                let k = p256::ecdsa::VerifyingKey::from_public_key_der(spki)
-                    .map_err(|e| Error::InvalidKey(format!("bad P-256 key: {e}")))?;
-                let der = k
-                    .to_public_key_der()
-                    .map_err(|e| Error::InvalidKey(e.to_string()))?
-                    .into_vec();
-                (Algorithm::P256, Material::P256(k), der)
+                let curve = info
+                    .algorithm
+                    .parameters_oid()
+                    .map_err(|_| Error::InvalidKey("EC key without a named curve".into()))?
+                    .to_string();
+                match curve.as_str() {
+                    OID_P256 => {
+                        use p256::pkcs8::{DecodePublicKey, EncodePublicKey};
+                        let k = p256::ecdsa::VerifyingKey::from_public_key_der(spki)
+                            .map_err(|e| Error::InvalidKey(format!("bad P-256 key: {e}")))?;
+                        let der = k
+                            .to_public_key_der()
+                            .map_err(|e| Error::InvalidKey(e.to_string()))?
+                            .into_vec();
+                        (Algorithm::P256, Material::P256(k), der)
+                    }
+                    OID_P384 => {
+                        use p384::pkcs8::{DecodePublicKey, EncodePublicKey};
+                        let k = p384::ecdsa::VerifyingKey::from_public_key_der(spki)
+                            .map_err(|e| Error::InvalidKey(format!("bad P-384 key: {e}")))?;
+                        let der = k
+                            .to_public_key_der()
+                            .map_err(|e| Error::InvalidKey(e.to_string()))?
+                            .into_vec();
+                        (Algorithm::P384, Material::P384(k), der)
+                    }
+                    other => return Err(Error::InvalidKey(format!("unsupported curve {other}"))),
+                }
+            }
+            OID_X25519 => {
+                use p256::pkcs8::der::Encode;
+                if info.algorithm.parameters.is_some() {
+                    return Err(Error::InvalidKey("X25519 keys take no parameters".into()));
+                }
+                let raw: [u8; 32] = info
+                    .subject_public_key
+                    .as_bytes()
+                    .and_then(|b| b.try_into().ok())
+                    .ok_or_else(|| Error::InvalidKey("X25519 public keys are 32 bytes".into()))?;
+                let der = p256::pkcs8::spki::SubjectPublicKeyInfoOwned {
+                    algorithm: p256::pkcs8::spki::AlgorithmIdentifierOwned {
+                        oid: OID_X25519.parse().expect("oid"),
+                        parameters: None,
+                    },
+                    subject_public_key: p256::pkcs8::der::asn1::BitString::from_bytes(&raw)
+                        .map_err(|e| Error::InvalidKey(e.to_string()))?,
+                }
+                .to_der()
+                .map_err(|e| Error::InvalidKey(e.to_string()))?;
+                (Algorithm::X25519, Material::X25519(raw), der)
             }
             OID_ED25519 => {
                 use ed25519_dalek::pkcs8::{DecodePublicKey, EncodePublicKey};
@@ -284,8 +372,8 @@ impl PublicKey {
                 k.verify_strict(msg, &ed25519_dalek::Signature::from_bytes(&sig))
                     .map_err(|_| bad())
             }
-            Material::Rsa(_) => Err(Error::Crypto(
-                "RSA keys do not sign protocol messages".into(),
+            Material::Rsa(_) | Material::P384(_) | Material::X25519(_) => Err(Error::Crypto(
+                "only P-256 and Ed25519 keys sign protocol messages".into(),
             )),
         }
     }
@@ -304,16 +392,46 @@ impl PublicKey {
             .map(|k| k.e().to_be_bytes_trimmed_vartime().to_vec())
     }
 
-    /// The uncompressed P-256 point (65 bytes); `CKA_EC_POINT` is this wrapped in a DER
-    /// OCTET STRING.
+    /// The public point: uncompressed for P-256 (65 bytes) and P-384 (97), the 32-byte
+    /// u-coordinate for X25519. `CKA_EC_POINT` is this wrapped in a DER OCTET STRING.
     pub fn ec_point(&self) -> Option<Vec<u8>> {
-        self.p256()
-            .map(|k| k.to_sec1_point(false).as_bytes().to_vec())
+        match &self.material {
+            Material::P256(k) => Some(k.to_sec1_point(false).as_bytes().to_vec()),
+            Material::P384(k) => Some(k.to_sec1_point(false).as_bytes().to_vec()),
+            Material::X25519(raw) => Some(raw.to_vec()),
+            Material::Ed25519(k) => Some(k.as_bytes().to_vec()),
+            _ => None,
+        }
+    }
+
+    /// `CKA_EC_PARAMS` for EC keys.
+    pub fn ec_params(&self) -> Option<&'static [u8]> {
+        match self.algorithm {
+            Algorithm::P256 => Some(&P256_EC_PARAMS),
+            Algorithm::P384 => Some(&P384_EC_PARAMS),
+            Algorithm::X25519 => Some(&X25519_EC_PARAMS),
+            Algorithm::Ed25519 => Some(&ED25519_EC_PARAMS),
+            _ => None,
+        }
     }
 
     pub(crate) fn rsa(&self) -> Option<&rsa::PublicKey> {
         match &self.material {
             Material::Rsa(k) => Some(k),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn ed25519(&self) -> Option<&ed25519_dalek::VerifyingKey> {
+        match &self.material {
+            Material::Ed25519(k) => Some(k),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn p384(&self) -> Option<&p384::ecdsa::VerifyingKey> {
+        match &self.material {
+            Material::P384(k) => Some(k),
             _ => None,
         }
     }
@@ -382,9 +500,13 @@ mod tests {
 
     #[test]
     fn roles_and_algorithms() {
-        assert!(!Role::Encrypt.allows(Algorithm::P256));
+        assert!(Role::Encrypt.allows(Algorithm::X25519));
+        assert!(!Role::Sign.allows(Algorithm::X25519));
+        assert!(Role::Sign.allows(Algorithm::P384));
+        assert!(!Role::Attest.allows(Algorithm::P384));
         assert!(!Role::Attest.allows(Algorithm::Rsa2048));
-        assert!(!Role::Sign.allows(Algorithm::Ed25519));
+        assert!(Role::Sign.allows(Algorithm::Ed25519));
+        assert!(!Role::Encrypt.allows(Algorithm::Ed25519));
         assert!(Role::Auth.allows(Algorithm::Rsa4096));
     }
 }

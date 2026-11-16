@@ -71,7 +71,7 @@ impl UnsignedRequest {
         created_at: u64,
         expires_at: u64,
     ) -> Result<Self> {
-        check_operation(key.role, key.algorithm, op, &mechanism, input.len())?;
+        check_operation(key.role, key.algorithm, op, &mechanism, &input)?;
         let mut req_id = [0u8; 16];
         random_bytes(&mut req_id);
         let r = UnsignedRequest {
@@ -278,7 +278,7 @@ pub fn verify_request(
     {
         return Err(Error::KeyNotApproved);
     }
-    check_operation(key.role, key.algorithm, f.op, &f.mechanism, f.input.len())?;
+    check_operation(key.role, key.algorithm, f.op, &f.mechanism, &f.input)?;
     Ok(VerifiedRequest { request: req, key })
 }
 

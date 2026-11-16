@@ -377,18 +377,38 @@ pub fn verify_signature_result(
             };
             pk.verify(scheme, &hashed, sig).map_err(|_| bad())
         }
-        Mechanism::EcdsaSha256 | Mechanism::Ecdsa => {
-            let pk = key.public_key.p256().ok_or_else(bad)?;
-            let sig = p256::ecdsa::Signature::from_slice(sig).map_err(|_| bad())?;
-            if matches!(mechanism, Mechanism::EcdsaSha256) {
-                use p256::ecdsa::signature::Verifier;
-                pk.verify(input, &sig).map_err(|_| bad())
+        Mechanism::EcdsaSha256 | Mechanism::EcdsaSha384 | Mechanism::Ecdsa => {
+            use p256::ecdsa::signature::hazmat::PrehashVerifier;
+            use p256::ecdsa::signature::Verifier;
+            let hashed = matches!(mechanism, Mechanism::EcdsaSha256 | Mechanism::EcdsaSha384);
+            if let Some(pk) = key.public_key.p256() {
+                let sig = p256::ecdsa::Signature::from_slice(sig).map_err(|_| bad())?;
+                if hashed {
+                    pk.verify(input, &sig)
+                } else {
+                    pk.verify_prehash(input, &sig)
+                }
+                .map_err(|_| bad())
+            } else if let Some(pk) = key.public_key.p384() {
+                let sig = p384::ecdsa::Signature::from_slice(sig).map_err(|_| bad())?;
+                if hashed {
+                    pk.verify(input, &sig)
+                } else {
+                    pk.verify_prehash(input, &sig)
+                }
+                .map_err(|_| bad())
             } else {
-                use p256::ecdsa::signature::hazmat::PrehashVerifier;
-                pk.verify_prehash(input, &sig).map_err(|_| bad())
+                Err(bad())
             }
         }
-        Mechanism::RsaPkcsOaep { .. } => Ok(()),
+        Mechanism::Eddsa => {
+            let pk = key.public_key.ed25519().ok_or_else(bad)?;
+            let sig: [u8; 64] = sig.try_into().map_err(|_| bad())?;
+            pk.verify_strict(input, &ed25519_dalek::Signature::from_bytes(&sig))
+                .map_err(|_| bad())
+        }
+        // No public check exists for a decryption or an ECDH result.
+        Mechanism::RsaPkcsOaep { .. } | Mechanism::Ecdh1Derive { .. } => Ok(()),
     }
 }
 
