@@ -42,6 +42,13 @@ Update this file as tasks finish. Each milestone's gate is defined in `docs/mile
 - [x] In-process provider test through the C function table (`crates/relay-pkcs11/tests/module.rs`)
 - [x] Gate passed (2026-11-15): `docker compose -f deploy/compose.test.yml up --build --exit-code-from client` exits 0 on colima (arm64), running the milestone 2 and 3 gates: `pkcs11-tool`, OpenSSL `pkcs11-provider`, `ssh -I`. Not yet run in GitHub Actions.
 
+## Between milestones 3 and 4 (Brian's requests, 2026-11-15)
+
+- [x] Confidentiality-operation content never stored outside RAM: relay audit log fixed; disk-scan test in `crates/relay-pkcs11/tests/module.rs`
+- [x] ECC encryption: ECDH via `C_DeriveKey` on P-256, P-384 and X25519; `CKD_NULL` and `CKD_SHA256_KDF`; derived keys extractable or not, by template; AES-GCM with non-extractable derived keys
+- [x] P-384 signing (`CKM_ECDSA_SHA384`, `CKM_ECDSA`) and Ed25519 signing (`CKM_EDDSA`) for `sign` and `auth` keys
+- [x] Tests: softcard round trips against software ECDH, X9.63 and signature checks; `crates/relay-pkcs11/tests/ecc.rs`; the Docker gate adds `pkcs11-tool` ECDH (P-256, P-384), ECDSA-SHA384 and EdDSA checks. X25519 has no third-party PKCS#11 caller in Debian trixie (`pkcs11-tool` cannot parse its peer keys; `pkcs11-provider` 1.0 rejects `CKK_EC_MONTGOMERY`), so only the in-process test covers it
+
 ## Milestone 4: relayctl and real hardware
 
 - [ ] `relayctl key`

@@ -74,6 +74,42 @@ check "decrypt RSA-PKCS-OAEP (SHA-256) recovers OpenSSL ciphertext" sh -c "
   pkcs11-tool --module $MOD --token-label softcard-a --decrypt -m RSA-PKCS-OAEP --hash-algorithm SHA256 --mgf MGF1-SHA256 --id 01 -i $W/ct -o $W/out-pt &&
   cmp $W/pt $W/out-pt"
 
+# --- P-384 and Ed25519 signatures ---
+id_of_new() { case $1 in enc-p256) echo 09;; enc-p384) echo 0a;; enc-x25519) echo 0b;; sign-p384) echo 0c;; auth-p384) echo 0d;; sign-ed25519) echo 0e;; auth-ed25519) echo 0f;; esac; }
+for k in enc-p256 enc-p384 sign-p384; do
+  p11 --token-label softcard-a --read-object --type pubkey --id "$(id_of_new $k)" -o "$W/$k.der" >/dev/null 2>&1
+  openssl pkey -pubin -inform DER -in "$W/$k.der" -out "$W/$k.pem" 2>/dev/null
+done
+# This pkcs11-tool cannot export Ed25519/X25519 public keys: take them from the signed
+# manifest (keys are pretty-printed with sorted fields, so public_key follows label).
+manifest_pub() {
+  awk -v l="\"label\": \"$1\"" 'index($0, l) { f = 1 } f && /"public_key"/ { gsub(/.*: "|",?$/, ""); print; exit }' /fixtures/manifest.json \
+    | base64 -d | openssl pkey -pubin -inform DER -out "$W/$1.pem" 2>/dev/null
+}
+manifest_pub sign-ed25519
+check "sign ECDSA-SHA384 (P-384 sign key), verified by OpenSSL" sh -c "
+  pkcs11-tool --module $MOD --token-label softcard-a --sign -m ECDSA-SHA384 --id 0c --signature-format openssl -i $W/msg -o $W/sig6 &&
+  openssl dgst -sha384 -verify $W/sign-p384.pem -signature $W/sig6 $W/msg"
+check "sign EDDSA (Ed25519 sign key), verified by OpenSSL" sh -c "
+  pkcs11-tool --module $MOD --token-label softcard-a --sign -m EDDSA --id 0e -i $W/msg -o $W/sig7 &&
+  openssl pkeyutl -verify -pubin -inkey $W/sign-ed25519.pem -rawin -in $W/msg -sigfile $W/sig7"
+
+# --- ECC encryption: ECDH through the provider equals OpenSSL's ECDH from the peer side ---
+for curve in p256:P-256:enc-p256 p384:P-384:enc-p384; do
+  c=${curve%%:*}; rest=${curve#*:}; alg=${rest%%:*}; k=${rest#*:}
+  if [ "$alg" = X25519 ]; then openssl genpkey -algorithm X25519 -out "$W/eph-$c.pem" 2>/dev/null
+  else openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:$alg -out "$W/eph-$c.pem" 2>/dev/null; fi
+  openssl pkey -in "$W/eph-$c.pem" -pubout -outform DER -out "$W/eph-$c.der" 2>/dev/null
+  openssl pkeyutl -derive -inkey "$W/eph-$c.pem" -peerkey "$W/$k.pem" -out "$W/ossl-$c.bin" 2>/dev/null
+  check "ECDH-derive with $k matches OpenSSL" sh -c "
+    pkcs11-tool --module $MOD --token-label softcard-a --derive -m ECDH1-DERIVE --id $(id_of_new $k) -i $W/eph-$c.der -o $W/p11-$c.bin &&
+    cmp $W/ossl-$c.bin $W/p11-$c.bin"
+done
+
+# X25519 ECDH has no third-party PKCS#11 caller here: this pkcs11-tool cannot parse X25519
+# peer keys, and pkcs11-provider 1.0 rejects CKK_EC_MONTGOMERY keys ("Unsupported key type
+# (65)"). crates/relay-pkcs11/tests/ecc.rs checks X25519 against x25519-dalek instead.
+
 # --- Refusals ---
 expect_rv "role violation refused locally (decrypt with a sign key)" "CKR_KEY_FUNCTION_NOT_PERMITTED|\(0x68\)" \
   p11 --token-label softcard-a --decrypt -m RSA-PKCS-OAEP --hash-algorithm SHA256 --mgf MGF1-SHA256 --id 02 -i "$W/ct"

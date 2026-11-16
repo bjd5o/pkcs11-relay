@@ -136,3 +136,28 @@ Consequences: none on the wire format.
 Context: Brian asked to make sure the content of encryption and decryption requests is never stored outside RAM, audit logs included. An audit found that the relay's SQLite audit log stored full decrypt requests (the ciphertext), the device-signed responses (the sealed plaintext), and the raw bodies of rejected requests. No other component writes content: the provider caches only the manifest, the key list and its client key, and the logs carry only metadata.
 Decision (Brian): for every operation other than `sign`, the audit log keeps metadata plus SHA-256 hashes of the input, request and response, never their bytes. Rejected request bodies are never stored, only their hash. Sign requests and responses are still kept in full, as the spec's audit design intends. `docs/spec.md` is updated.
 Consequences: `crates/relay-pkcs11/tests/module.rs` scans every file the relay (including SQLite's WAL), the approvers and the provider write, and fails if any plaintext or ciphertext window appears. It catches the old behaviour. Residual risk, not addressed: process memory can reach swap or a core dump on any host. Mitigating that needs `mlock` and core-dump limits, which require `unsafe` outside the provider, or host configuration such as encrypted swap.
+
+## 2026-11-15: ECC encryption and P-384 signing (supersedes "ECC encrypt keys deferred")
+
+Context: Brian asked for ECC encryption before milestone 4.
+Decision (Brian):
+- **Curves.** `encrypt` keys may be RSA, P-256, P-384 or X25519, reusing the `encrypt` role. EC `encrypt` keys work through ECDH: `CKM_ECDH1_DERIVE` in `C_DeriveKey`, a new wire `op = "derive"`, and PIV `GENERAL AUTHENTICATE` with tag `85` on the card. P-384 is also allowed for `sign` (`CKM_ECDSA_SHA384`) and `auth` (`CKM_ECDSA`).
+- **KDFs.** `CKD_NULL` (the raw shared secret, truncated to the requested length) and `CKD_SHA256_KDF` (ANSI X9.63 with SHA-256 and optional shared data) both run on the approver after the card operation.
+- **The derived key is chosen by template.** The derived value comes back sealed to the reply key, like an RSA decrypt result, and becomes a session-only secret-key object in the provider's RAM.
+  - With `CKA_EXTRACTABLE` true and `CKA_SENSITIVE` false, the consumer can read `CKA_VALUE`.
+  - Otherwise the value stays inside the provider. For `CKK_AES` keys, the consumer uses it only through `CKM_AES_GCM` in the provider's `C_Encrypt` / `C_Decrypt`.
+  - `CKA_TOKEN = TRUE` is refused. Objects are zeroized when destroyed or when their session closes.
+- **Dependencies (approved):** `p384` 0.14.0, `x25519-dalek` 3.0.0, `aes-gcm` 0.11.1 and `ansi-x963-kdf` 0.1.0.
+Consequences: `docs/spec.md` and `docs/wire-format.md` gain the new algorithms, mechanisms and the `derive` operation. Device and attest keys stay P-256.
+
+## 2026-11-15: Ed25519 sign and auth keys
+
+Context: Brian asked for Ed25519 signing and authentication.
+Decision: Ed25519 hardware keys may hold `sign` or `auth`, with `CKM_EDDSA` as pure Ed25519 over the whole message. `CK_EDDSA_PARAMS` asking for Ed25519ph or a context is refused with `CKR_MECHANISM_PARAM_INVALID`. On the card it is PIV algorithm `0xE0` (YubiKey firmware 5.7+). Check 5 verifies with `verify_strict`. Key objects use `CKK_EC_EDWARDS`, and X25519 keys `CKK_EC_MONTGOMERY`; `CKA_EC_PARAMS` holds the RFC 8410 OID and `CKA_EC_POINT` a DER OCTET STRING of the 32-byte key. No new dependency: `ed25519-dalek` was already used for client keys.
+Consequences: because EdDSA signs the whole message, `auth` Ed25519 keys receive full messages, not digests, and so do `sign` keys.
+
+## 2026-11-15: ECDH errors and KDF truncation
+
+Context: details of the ECDH implementation.
+Decision: an ECDH peer key that is malformed, the wrong length or off the curve is a mechanism-parameter error (`CKR_MECHANISM_PARAM_INVALID`), since PKCS#11 passes it in `CK_ECDH1_DERIVE_PARAMS`. `CKD_NULL` with a shorter requested length keeps the leading bytes of the shared secret. A derived generic secret defaults to extractable and not sensitive. A derived AES key defaults to non-extractable and sensitive, with `CKA_ENCRYPT` / `CKA_DECRYPT` true, and requires `CKA_VALUE_LEN` of 16, 24 or 32.
+Consequences: `crates/relay-pkcs11/tests/ecc.rs` covers each rule.

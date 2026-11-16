@@ -80,7 +80,9 @@ Only one SPKI encoding is accepted per key, so every key has exactly one fingerp
 |---|---|---|
 | `rsa-2048`, `rsa-4096` | `rsaEncryption` (1.2.840.113549.1.1.1) with NULL parameters; modulus exactly 2048 or 4096 bits; public exponent 65537 **[proposal: reject other exponents]** | `sign`, `auth`, `encrypt` |
 | `p256` | `id-ecPublicKey` with namedCurve `prime256v1`; **uncompressed** point (65 bytes, leading `0x04`) | `sign`, `auth`, `attest`, device keys, reply keys |
-| `ed25519` | `id-Ed25519` (1.3.101.112), no parameters | client identity keys only |
+| `p384` | `id-ecPublicKey` with namedCurve `secp384r1`; uncompressed point (97 bytes) | `sign`, `auth`, `encrypt` |
+| `x25519` | `id-X25519` (1.3.101.110), no parameters, 32-byte key | `encrypt` |
+| `ed25519` | `id-Ed25519` (1.3.101.112), no parameters | `sign`, `auth`, client identity keys |
 
 Any other SPKI form is rejected when parsed: compressed points, explicit curve parameters, RSA-PSS OIDs, or trailing bytes.
 
@@ -88,9 +90,9 @@ Roles each algorithm may take:
 
 | Role | Allowed algorithms |
 |---|---|
-| `sign` | `rsa-2048`, `rsa-4096`, `p256` |
-| `auth` | `rsa-2048`, `rsa-4096`, `p256` |
-| `encrypt` | `rsa-2048`, `rsa-4096` (OAEP is the only decrypt mechanism) |
+| `sign` | `rsa-2048`, `rsa-4096`, `p256`, `p384`, `ed25519` |
+| `auth` | `rsa-2048`, `rsa-4096`, `p256`, `p384`, `ed25519` |
+| `encrypt` | `rsa-2048`, `rsa-4096` (OAEP decrypt); `p256`, `p384`, `x25519` (ECDH) |
 | `attest` | `p256` |
 
 Worked example: the P-256 device key from §5's example has this SPKI (91 bytes)
@@ -107,9 +109,14 @@ and fingerprint `sha256:d2d3e0fc4b057ee2319854654ec5747eb63a3395343c3d9010afaddb
 |---|---|---|---|---|---|
 | `sign` | RSA | `CKM_SHA256_RSA_PKCS` | `sign` | full message, 1–32 768 bytes | PKCS#1 v1.5 signature, modulus length, big-endian |
 | `sign` | P-256 | `CKM_ECDSA_SHA256` | `sign` | full message, 1–32 768 bytes | `r ‖ s`, 64 bytes |
+| `sign` | P-384 | `CKM_ECDSA_SHA384` | `sign` | full message, 1–32 768 bytes | `r ‖ s`, 96 bytes |
+| `sign`, `auth` | Ed25519 | `CKM_EDDSA` (pure Ed25519; no prehash, no context) | `sign` | full message, 1–32 768 bytes | 64-byte signature |
 | `auth` | RSA | `CKM_RSA_PKCS` | `sign` | caller's data as given to `C_Sign` (normally a DigestInfo), 1 to *k*−11 bytes | PKCS#1 v1.5 signature, modulus length |
-| `auth` | P-256 | `CKM_ECDSA` | `sign` | digest as given to `C_Sign`, 1–64 bytes | `r ‖ s`, 64 bytes |
+| `auth` | P-256, P-384 | `CKM_ECDSA` | `sign` | digest as given to `C_Sign`, 1–64 bytes (truncated or left-padded to the field size) | `r ‖ s`, 64 or 96 bytes |
 | `encrypt` | RSA | `CKM_RSA_PKCS_OAEP` | `decrypt` | ciphertext, exactly *k* bytes | plaintext |
+| `encrypt` | P-256, P-384, X25519 | `CKM_ECDH1_DERIVE` | `derive` | the peer public key: an uncompressed point (65 or 97 bytes) or the 32-byte X25519 key, checked to be on the curve | the derived key, `out_len` bytes: `CKD_NULL` keeps the leading bytes of the shared secret; `CKD_SHA256_KDF` is ANSI X9.63 with SHA-256 over the secret and `shared_data`. An all-zero shared secret is refused |
+
+The approver runs the card's ECDH (PIV `GENERAL AUTHENTICATE`, tag `85`) and the KDF. The derived key comes back sealed like a decryption result. In the provider it becomes a session-only secret-key object (§ "Derived keys" in the spec).
 
 *k* is the modulus length in bytes. Multi-part signing (`C_SignUpdate`) buffers locally and sends the concatenated message once. A message over 32 768 bytes is refused locally with `CKR_DATA_LEN_RANGE` **[proposal: the limit keeps the request inside the relay's 64 KiB body cap]**.
 
@@ -122,7 +129,7 @@ Built and signed by the provider. CBOR map, context string `relay-pkcs11/request
 | Key (canonical order) | Type | Rules |
 |---|---|---|
 | `v` | uint | `1` |
-| `op` | tstr | `"sign"` or `"decrypt"` |
+| `op` | tstr | `"sign"`, `"decrypt"` or `"derive"` |
 | `input` | bstr | §3 |
 | `req_id` | bstr | 16 bytes |
 | `context` | map | §4.1 |
@@ -152,6 +159,9 @@ The requester's claims. The approval screen shows them under a heading that says
 | `hash` | tstr | OAEP only: `"sha256"` |
 | `name` | tstr | a PKCS#11 mechanism name from §3 |
 | `label` | bstr | OAEP only: the label (`pSourceData`), 0–256 bytes; present, possibly empty |
+| `kdf` | tstr | ECDH only: `"null"` or `"sha256"` |
+| `out_len` | uint | ECDH only: derived key length, 1–64 bytes (`null`: at most the field size) |
+| `shared_data` | bstr | ECDH only: X9.63 shared info, 0–256 bytes; empty for `null` |
 
 All three of `mgf`, `hash` and `label` are present for `CKM_RSA_PKCS_OAEP` and absent for every other mechanism.
 

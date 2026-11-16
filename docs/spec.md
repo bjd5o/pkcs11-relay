@@ -66,7 +66,7 @@ Steps 2 and 3, and 5 and 6, are skipped while the cached copies are fresh.
 | --- | --- | --- |
 | `sign` | Private key with `CKA_SIGN` | `C_Sign` with hash-and-sign mechanisms; the approver sees and decodes the message |
 | `auth` | Private key with `CKA_SIGN` | `C_Sign` over opaque challenges, such as SSH or TLS client authentication |
-| `encrypt` | Private key with `CKA_DECRYPT`, public key with `CKA_ENCRYPT` | `C_Decrypt`; encryption runs in software with the public key |
+| `encrypt` | RSA: private key with `CKA_DECRYPT`, public key with `CKA_ENCRYPT`. P-256, P-384, X25519: private key with `CKA_DERIVE` | RSA: `C_Decrypt`, with encryption in software using the public key. EC: `C_DeriveKey` (ECDH), where the consumer encrypts by agreeing a key with the public key |
 | `attest` | Not exposed | Only verifying device attestation statements |
 
 ## Operation flow
@@ -299,7 +299,7 @@ The hardware key holds every private key that matters, the manifest says which o
 | Setting | Example | Used for |
 | --- | --- | --- |
 | Key slots | `9d` encrypt, `9c` sign, `9a` auth, a retired slot (`82` to `95`) attest | One role per key |
-| Algorithm | RSA 2048 or 4096 (firmware 5.7+) for `encrypt`; P-256 for `sign`, `auth` and `attest` | Matching what consumers need (OpenBao's seal: RSA-OAEP) |
+| Algorithm | `encrypt`: RSA 2048 or 4096 (OpenBao's seal: RSA-OAEP), P-256, P-384, X25519 (firmware 5.7+). `sign`, `auth`: RSA, P-256, P-384, Ed25519 (5.7+). `attest`: P-256 | Matching what consumers need |
 | PIN and touch policy | PIN `once` or `always`; touch `always` on the `attest` key | How much each operation demands of the human |
 | Certificate | self-signed, generated with the key | Discovery by the app |
 | Credentials | PIN, PUK and management key changed from defaults | Protecting the card itself |
@@ -324,6 +324,7 @@ Keys generated on the card cannot be copied, so a backup is a second YubiKey: li
 | `issued_at`, `valid_until` | `2026-11-15`, `2026-12-15` | Clients refuse an expired manifest, so re-sign before it lapses |
 | `keys[].fingerprint` | `sha256:4f1c…` | SHA-256 of the key's SubjectPublicKeyInfo |
 | `keys[].role` | `encrypt` | Exactly one of `sign`, `auth`, `encrypt`, `attest` |
+| `keys[].algorithm` (values) | `rsa-2048`, `rsa-4096`, `p256`, `p384`, `x25519`, `ed25519` | `sign` / `auth`: RSA, P-256, P-384, Ed25519. `encrypt`: RSA, P-256, P-384, X25519. `attest`: P-256 |
 | `keys[].label`, `keys[].id` | `openbao-unseal`, `01` | Become `CKA_LABEL` and `CKA_ID` |
 | `keys[].token` | `yubikey-12345678` | Groups keys into slots |
 | `keys[].algorithm` | `rsa-4096` | Key type, checked against `keys[].public_key` |
@@ -500,8 +501,9 @@ One Rust crate builds a loadable module for Linux and macOS and a static library
 
 | Area | MVP support |
 | --- | --- |
-| Functions | `C_Initialize`, `C_Finalize`, `C_GetInfo`, `C_GetFunctionList`, slot and token info, mechanism list and info, sessions, `C_Login` / `C_Logout` (no-ops), `C_FindObjects*`, `C_GetAttributeValue`, `C_SignInit` / `C_Sign` / `C_SignUpdate` / `C_SignFinal`, `C_DecryptInit` / `C_Decrypt`, `C_EncryptInit` / `C_Encrypt` (in software with the public key, no request); everything else returns `CKR_FUNCTION_NOT_SUPPORTED` |
-| Mechanisms | `encrypt`: `CKM_RSA_PKCS_OAEP` (SHA-256, MGF1-SHA256); `sign`: `CKM_SHA256_RSA_PKCS`, `CKM_ECDSA_SHA256`; `auth`: `CKM_RSA_PKCS`, `CKM_ECDSA` |
+| Functions | `C_Initialize`, `C_Finalize`, `C_GetInfo`, `C_GetFunctionList`, slot and token info, mechanism list and info, sessions, `C_Login` / `C_Logout` (no-ops), `C_FindObjects*`, `C_GetAttributeValue`, `C_SignInit` / `C_Sign` / `C_SignUpdate` / `C_SignFinal`, `C_DecryptInit` / `C_Decrypt`, `C_EncryptInit` / `C_Encrypt` (in software with the public key, no request), `C_DeriveKey` (ECDH), `C_DestroyObject` (derived keys only); everything else returns `CKR_FUNCTION_NOT_SUPPORTED` |
+| Mechanisms | `encrypt`: `CKM_RSA_PKCS_OAEP` (SHA-256, MGF1-SHA256), `CKM_ECDH1_DERIVE` (`CKD_NULL`, `CKD_SHA256_KDF`); `sign`: `CKM_SHA256_RSA_PKCS`, `CKM_ECDSA_SHA256`, `CKM_ECDSA_SHA384`, `CKM_EDDSA`; `auth`: `CKM_RSA_PKCS`, `CKM_ECDSA`, `CKM_EDDSA`; derived AES keys: `CKM_AES_GCM` |
+| Derived keys | `C_DeriveKey` makes a session-only secret-key object in the provider's RAM, zeroized when destroyed or when its session closes; `CKA_TOKEN = TRUE` is refused. With `CKA_EXTRACTABLE` true and `CKA_SENSITIVE` false the consumer reads `CKA_VALUE`; otherwise the value never leaves the provider, and a `CKK_AES` key is used only through `CKM_AES_GCM` (96-bit IV, 128-bit tag) in `C_Encrypt` / `C_Decrypt` |
 | Objects | Per trusted key: a private-key object and a public-key object carrying the manifest's label and ID |
 
 **Runtime rules**
@@ -609,7 +611,7 @@ The order puts a working end-to-end loop on Linux in CI before any app exists; m
 ### MVP scope
 
 - **In:** `encrypt`, `sign` and `auth` keys with the listed mechanisms, exercised through third-party PKCS#11 tools; one relay; one manifest signer; hex-and-hash content view with requester claims; device attestation and renewal; headless client pairing; audit log.
-- **Out, for later:** content decoders (X.509 CSR, git, SSH); EC `encrypt` keys (ECDH through `C_DeriveKey`); a pinned-SPKI relay trust option; `revoked_devices`; CryptoTokenKit token extensions for system-wide use on macOS and iPadOS; relay high availability; multiple or threshold manifest signers; platform attestation of device keys (App Attest, Android Key Attestation); a web admin UI.
+- **Out, for later:** content decoders (X.509 CSR, git, SSH); Ed25519ph / Ed25519ctx; a pinned-SPKI relay trust option; `revoked_devices`; CryptoTokenKit token extensions for system-wide use on macOS and iPadOS; relay high availability; multiple or threshold manifest signers; platform attestation of device keys (App Attest, Android Key Attestation); a web admin UI.
 
 ### Risks and open questions
 
