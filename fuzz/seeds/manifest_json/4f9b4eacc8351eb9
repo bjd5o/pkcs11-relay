@@ -1,0 +1,35 @@
+{
+  "issued_at": 1794700800,
+  "keys": [
+    {
+      "algorithm": "rsa-2048",
+      "fingerprint": "sha256:7aad60fd61e503572b86b43fd6b55bfafa9890d9185e73cbcfba1348e4e70299",
+      "id": "01",
+      "label": "openbao-unseal",
+      "public_key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtge46gDtyhbjOIbbidvupyjHFjHVtCpHaMKb6xbrJy+bip6tDmaD8nZbBNSvSDFHPOG4DF2gARhhDv2gURK7zlO89nS3KYMNJfjp+ip+T7yZDkl87kq/DsIv4SQIZH8ftXMW/QAQ7hwDM+YO+QHo1m9bgK9vweJe5zE8NkVOQ+zr7AvfeNp/X4vjLFNjinXuV5MSFAuPsb0kzcOzM75Yy8Ic25AMHj6sD3o2xJpC1gocr0CJ82xS/HyG9wvJZzTI3YGg/fps+New3v29EwDhdibKMXJ5zPF156FnVr2Zq+/ISyGuVSf3W8MfryWgrkDFhmUCOYzbdP7xGGwVkB6bGwIDAQAB",
+      "role": "encrypt",
+      "token": "softcard-0001"
+    },
+    {
+      "algorithm": "p256",
+      "fingerprint": "sha256:f0c3d6dd8e205a7f31e44065ef00edfd84aa5088ad91cf6239922b8eb303d9ce",
+      "id": "02",
+      "label": "code-signing",
+      "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAErPLKQbY14Ev5XTwD6hQvB+qAzO3FpG9clvgn+lf6+NO1hqTR67WtERMOdQrHVSDBHs8OEwmTS3OxSKsA0t12Cw==",
+      "role": "sign",
+      "token": "softcard-0001"
+    },
+    {
+      "algorithm": "p256",
+      "fingerprint": "sha256:1b139e7aacbd9a814a0024ba7e3653f5390d455f59a3442678633ac86498cda9",
+      "id": "03",
+      "label": "ssh",
+      "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPi88m8hpFh1R8wpRnAZRbcbZkpjp9v/4H0mnTjl1MbC5zZnjaWTTGSCFpLgM6e9RDKsA2PWeXvDpGdzo8JK7yQ==",
+      "role": "auth",
+      "token": "softcard-0001"
+    }
+  ],
+  "v": 1,
+  "valid_until": 1797292800,
+  "version": 2
+}
