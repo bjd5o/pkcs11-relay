@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use relay_test_approver::approver::{Approver, Behavior, Config};
+use relay_test_approver::approver::{Approver, Behavior, Config, FATAL};
 
 #[derive(Parser)]
 #[command(version, about = "Headless approver for pkcs11-relay tests")]
@@ -36,7 +36,8 @@ enum Cmd {
         /// Long-poll instead of holding a WebSocket.
         #[arg(long)]
         long_poll: bool,
-        /// Use a real card over PC/SC (milestone 4).
+        /// Use a real YubiKey over PC/SC: `pcsc_serial` in the config, which must match
+        /// RELAY_TEST_YUBIKEY_SERIAL.
         #[arg(long)]
         pcsc: bool,
     },
@@ -92,38 +93,42 @@ async fn run(cli: Cli) -> Result<(), String> {
             let cfg: Config =
                 toml::from_str(&std::fs::read_to_string(&config).map_err(|e| e.to_string())?)
                     .map_err(|e| e.to_string())?;
-            if pcsc {
-                return Err("--pcsc arrives in milestone 4".into());
-            }
-            let dir = cfg
-                .softcard_dir
-                .clone()
-                .ok_or("softcard_dir is required without --pcsc")?;
             let pin = std::fs::read_to_string(&cfg.pin_file).map_err(|e| e.to_string())?;
-            let card = relay_softcard::SoftCard::load_dir(&dir, pin.trim().as_bytes())
-                .map_err(|e| e.to_string())?;
+            // Opens the card afresh for each startup attempt.
+            let open = || -> Result<Box<dyn relay_core::piv::CardTransport + Send>, String> {
+                if pcsc {
+                    let serial = cfg
+                        .pcsc_serial
+                        .ok_or("pcsc_serial is required with --pcsc")?;
+                    Ok(Box::new(relay_pcsc::open(serial)?))
+                } else {
+                    let dir = cfg
+                        .softcard_dir
+                        .as_ref()
+                        .ok_or("softcard_dir is required without --pcsc")?;
+                    Ok(Box::new(
+                        relay_softcard::SoftCard::load_dir(dir, pin.trim().as_bytes())
+                            .map_err(|e| e.to_string())?,
+                    ))
+                }
+            };
             let behavior = Behavior {
                 deny,
                 delay: Duration::from_secs(delay),
                 expired_attestation,
                 long_poll,
             };
-            // Retry startup until the relay is reachable.
-            let mut card: Option<Box<dyn relay_core::piv::CardTransport + Send>> =
-                Some(Box::new(card));
+            // Retry startup until the relay is reachable, but never after a rejected PIN.
             loop {
-                let c = card.take().expect("card");
-                match Approver::start(cfg.clone(), behavior.clone(), c).await {
+                match Approver::start(cfg.clone(), behavior.clone(), open()?).await {
                     Ok(a) => {
                         a.run().await;
                         return Ok(());
                     }
+                    Err(e) if e.starts_with(FATAL) => return Err(e),
                     Err(e) => {
                         tracing::warn!(error = e, "approver startup failed; retrying");
                         tokio::time::sleep(Duration::from_secs(2)).await;
-                        let card2 = relay_softcard::SoftCard::load_dir(&dir, pin.trim().as_bytes())
-                            .map_err(|e| e.to_string())?;
-                        card = Some(Box::new(card2));
                     }
                 }
             }

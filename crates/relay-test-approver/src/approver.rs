@@ -35,6 +35,8 @@ pub struct Config {
     pub manifest_signer: PathBuf,
     /// Softcard directory (`slot-XX.key.pem`, `slot-XX.cert.pem`); ignored with `--pcsc`.
     pub softcard_dir: Option<PathBuf>,
+    /// With `--pcsc`: the YubiKey serial to use. It must equal `RELAY_TEST_YUBIKEY_SERIAL`.
+    pub pcsc_serial: Option<u32>,
     pub pin_file: PathBuf,
     pub attest_slot: String,
     #[serde(default = "default_window")]
@@ -81,6 +83,9 @@ struct Client {
     key: PublicKey,
     keys: Vec<Fingerprint>,
 }
+
+/// Prefix of startup errors that must not be retried (a rejected PIN).
+pub const FATAL: &str = "fatal: ";
 
 /// Everything a request needs; shared by the tasks handling requests.
 pub struct Approver {
@@ -251,7 +256,8 @@ impl Approver {
         let st =
             UnsignedAttestation::new(&cfg.device_id, device_key.public_key(), nb, na, attest_fp)
                 .map_err(|e| e.to_string())?;
-        piv::verify_pin(card, pin).map_err(|e| format!("PIN for attestation: {e}"))?;
+        // A wrong PIN here is fatal: startup is not retried (CLAUDE.md hardware safety).
+        piv::verify_pin(card, pin).map_err(|e| format!("{FATAL}PIN for attestation: {e}"))?;
         let st = piv::sign_attestation(card, slot, st).map_err(|e| e.to_string())?;
         if !b.expired_attestation {
             relay_core::verify_attestation(st.bytes(), manifest, t, cfg.skew_secs)

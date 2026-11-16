@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use relay_test_approver::approver::{Approver, Behavior, Config};
+use relay_test_approver::approver::{Approver, Behavior, Config, FATAL};
 
 fn temp_dir() -> PathBuf {
     let mut b = [0u8; 8];
@@ -82,6 +82,20 @@ async fn gate_in_process() {
     )
     .await
     .expect("gate timed out");
-    let _ = std::fs::remove_dir_all(&dir);
     r.unwrap();
+
+    // A rejected PIN at startup is fatal (the binary does not retry it), and costs one attempt.
+    let mut cfg: Config =
+        toml::from_str(&std::fs::read_to_string(dir.join("approver-a.toml")).unwrap()).unwrap();
+    cfg.data_dir = dir.join("fresh-device"); // no stored attestation: the card must sign one
+    cfg.pin_file = dir.join("wrong-pin");
+    std::fs::write(&cfg.pin_file, "000000").unwrap();
+    let card =
+        relay_softcard::SoftCard::load_dir(cfg.softcard_dir.as_ref().unwrap(), b"123456").unwrap();
+    let e = match Approver::start(cfg, Behavior::default(), Box::new(card)).await {
+        Ok(_) => panic!("started with a wrong PIN"),
+        Err(e) => e,
+    };
+    assert!(e.starts_with(FATAL), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
