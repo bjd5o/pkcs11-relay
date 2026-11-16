@@ -112,3 +112,9 @@ Consequences: we own the C ABI module (the only `unsafe` in the workspace). nati
 Context: the spec offers "CA file, or a pinned SPKI hash". `ureq` 3 supports trust anchors in its stable API, but an SPKI pin needs a custom rustls verifier, which `ureq` only allows through its unstable `unversioned` connector API.
 Decision (Brian): the provider ships `relay_ca_file` (PEM trust anchors) only. SPKI-hash pinning is a later addition. The relay terminates TLS itself (`axum-server`, rustls with `ring`), when given `tls_cert` and `tls_key`.
 Consequences: a client trusts exactly the CAs in its file. The test fixtures make a private CA and a relay certificate for `relay`, `localhost` and `127.0.0.1`.
+
+## 2026-11-15: The provider implements C_Encrypt in software; spec updated
+
+Context: the spec's role table exposes `encrypt` public keys with `CKA_ENCRYPT`, saying encryption runs in software, but its function table did not list `C_Encrypt`. OpenBao's seal may call it.
+Decision (Brian): `C_EncryptInit` / `C_Encrypt` with `CKM_RSA_PKCS_OAEP` (SHA-256) on the public object of an `encrypt` key, using the `rsa` crate's OAEP encryption through `relay_core::padding::encrypt_oaep_sha256`. No request and no approval are involved. Brian also approved updating `docs/spec.md` with every departure approved so far: manifest public keys, reason codes, the relay-auth nonce, check-5 order, the diceware pairing code, the pairing endpoints, relay trust as a CA file for the MVP, C_Encrypt, and ECC `encrypt` deferred.
+Consequences: `docs/spec.md` now matches `docs/wire-format.md` on these points.

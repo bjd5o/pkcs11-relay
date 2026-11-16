@@ -1,6 +1,6 @@
 # Approval-Gated PKCS#11 Relay — Architecture
 
-Exported from the design doc on 2026-11-15. Diagrams are Mermaid versions of the doc's drawings.
+Exported from the design doc on 2026-11-15. Diagrams are Mermaid versions of the doc's drawings. Updated 2026-11-15 with the departures Brian approved during milestones 1–3; each is recorded in `docs/decisions.md`, and the byte-level formats are in `docs/wire-format.md`.
 
 A PKCS#11 provider that holds no private keys forwards each sign or decrypt to a relay. An approver app on the device holding the hardware key shows the request, collects the PIN locally, runs the operation on the key and returns the result sealed to the requester. Trust never comes from the relay: clients use only keys that a manifest signed by your PGP key lists, each for its one role. They accept only responses signed by a device key that a manifest-listed attest key vouched for within its validity window.
 
@@ -136,7 +136,7 @@ Enrollment has three independent parts: publishing keys in the manifest, enrolli
 **Pairing a client (steps 9 to 15).** Headless clients need no input:
 
 1. Configure the client with the relay URL, the manifest URL and your PGP public key. All three are public and the same for every client, so bake them into the image or a mounted config file.
-2. On first start, the client generates its identity key, posts a pending registration to the relay, and prints a short pairing code derived from its key's fingerprint to its log.
+2. On first start, the client generates its identity key, posts a pending registration to the relay, and prints a pairing code derived from its key's fingerprint to its log: four words from the EFF large wordlist (about 51.7 bits; at least 50 bits is required).
 3. In the app, open the pending clients, compare the code with the client's log (`docker logs`, or over SSH), then approve, choosing which keys the client may use.
 4. The client fetches and verifies the manifest, then runs discovery.
 
@@ -166,7 +166,7 @@ The provider holds no private keys and no key list of its own. It builds its slo
   4. the response signature verifies and the response echoes this request's id, key and mechanism;
   5. for a signature result, the signature also verifies against the hardware key's public key.
 
-  Then open the sealed result with the reply key and zero the key.
+  Check 5 needs the signature, which is sealed, so the provider opens the sealed result with the reply key after checks 1–4 pass, zeroes the key, then runs check 5. A failure there discards the plaintext.
 - **One approval per operation.** PKCS#11 callers often call `C_Decrypt` / `C_Sign` twice: first with a null buffer to learn the output length, then for real. Approve on the first call, cache the result for that session, and serve both calls from it.
 - **Concurrency.** Support `CKF_OS_LOCKING_OK` and several sessions at once; each operation is an independent request.
 
@@ -175,7 +175,7 @@ The provider holds no private keys and no key list of its own. It builds its slo
 | Setting | Example | Used for |
 | --- | --- | --- |
 | Relay URL | `https://relay.tailnet.example:8443` | Discovery, requests and responses |
-| Relay trust | CA file, or a pinned SPKI hash | Authenticating the relay's TLS |
+| Relay trust | CA file (MVP); a pinned SPKI hash is a later addition | Authenticating the relay's TLS |
 | Manifest URL | `https://keys.example.net/manifest.json` | Fetching the signed manifest |
 | Manifest signer | OpenPGP public key | The only root of trust |
 | Manifest cache | `/var/lib/relay-pkcs11/manifest.json` | Last verified manifest, for restarts and outages |
@@ -196,7 +196,7 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 
 **Responsibilities**
 
-- **Authenticate both sides.** Clients sign every request with their identity key; approver devices authenticate with their device key.
+- **Authenticate both sides.** Clients sign every request with their identity key; approver devices authenticate with their device key. Every HTTP call also carries a signature over its method, path, time, a random nonce and the body hash, and the relay rejects replayed nonces.
 - **Advertise keys.** Keep, per approver device, the hardware keys it registered and its current attestation, and serve the combined list to clients. Advertisements are untrusted hints: the provider filters them through the manifest.
 - **Route by approval.** A client may only address keys it was approved for at pairing; anything else is rejected before it is queued.
 - **Queue with expiry.** Keep pending requests in memory until their `expires_at`; accept exactly one response per request id; reject duplicate ids.
@@ -213,6 +213,8 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 | `POST /v1/requests` | Provider | Submit a signed request |
 | `GET /v1/requests/{id}/result` | Provider | Long-poll (or WebSocket) for the attested response |
 | `POST /v1/clients/pending` | New client | Start pairing; tailnet only, rate-limited |
+| `GET /v1/clients/self` | Pending or paired client | Learn whether pairing was approved, and for which keys |
+| `POST /v1/clients/{id}/approval` | Approver app | Approve a pending client for keys chosen from the manifest |
 | `POST /v1/devices` | Approver app | Register or update a device: device key, attestation, operable keys, push token |
 | `GET /v1/devices/{id}/pending` | Approver app | Fetch pending requests and pairings after a push |
 | `POST /v1/requests/{id}/response` | Approver app | Return the signed response: approval, denial or error |
@@ -324,7 +326,8 @@ Keys generated on the card cannot be copied, so a backup is a second YubiKey: li
 | `keys[].role` | `encrypt` | Exactly one of `sign`, `auth`, `encrypt`, `attest` |
 | `keys[].label`, `keys[].id` | `openbao-unseal`, `01` | Become `CKA_LABEL` and `CKA_ID` |
 | `keys[].token` | `yubikey-12345678` | Groups keys into slots |
-| `keys[].algorithm` | `rsa-4096` | Key type, checked against the public key the relay sends |
+| `keys[].algorithm` | `rsa-4096` | Key type, checked against `keys[].public_key` |
+| `keys[].public_key` | `MIICIjAN…` | The key's DER SubjectPublicKeyInfo (base64); `fingerprint` must match it. It is where clients get every hardware key, `attest` keys included; the relay's list only says which keys are reachable |
 
 **Signer.** Your PGP key, ideally on the YubiKey's OpenPGP applet or on an offline second YubiKey. Clients do not check PGP revocation, because headless hosts cannot be relied on to reach keyservers. Revoking a hardware key means publishing a new version without it, and `valid_until` bounds how long an old cached copy keeps working. Rotating the PGP key itself means reconfiguring every client.
 
@@ -370,7 +373,7 @@ Only hardware keys perform protected operations, only your PGP key decides which
 
 **Response envelope.** Signed by the device key, with the device's current attestation attached.
 
-- Fields: `v`, `req_id`, `request_hash`, `status` (`approved`, `denied` or `error`), `responded_at`, `sealed_result` (absent unless approved), `device_key_fingerprint`, `device_sig`, `attestation`.
+- Fields: `v`, `req_id`, `request_hash`, `status` (`approved`, `denied` or `error`), `reason` (an optional code with `denied` or `error`, such as `user_denied` or `wrong_pin`; any card or decoding failure is reported only as `card_error`), `responded_at`, `sealed_result` (absent unless approved), `device_key_fingerprint`, `device_sig`, `attestation`.
 - `device_sig` covers the context string `relay-pkcs11/response/v1` plus every field except `attestation`, so a response cannot be replayed onto another request. `request_hash` is the hash of the entire request envelope.
 - The client trusts the response only if the attestation verifies against a manifest `attest` key, is inside its window, and names the key that made `device_sig`.
 - Sealed result, encrypted to `reply_pub`: the output bytes in the exact format the PKCS#11 mechanism returns.
@@ -497,8 +500,8 @@ One Rust crate builds a loadable module for Linux and macOS and a static library
 
 | Area | MVP support |
 | --- | --- |
-| Functions | `C_Initialize`, `C_Finalize`, `C_GetInfo`, `C_GetFunctionList`, slot and token info, mechanism list and info, sessions, `C_Login` / `C_Logout` (no-ops), `C_FindObjects*`, `C_GetAttributeValue`, `C_SignInit` / `C_Sign` / `C_SignUpdate` / `C_SignFinal`, `C_DecryptInit` / `C_Decrypt`; everything else returns `CKR_FUNCTION_NOT_SUPPORTED` |
-| Mechanisms | `encrypt`: `CKM_RSA_PKCS_OAEP`; `sign`: `CKM_SHA256_RSA_PKCS`, `CKM_ECDSA_SHA256`; `auth`: `CKM_RSA_PKCS`, `CKM_ECDSA` |
+| Functions | `C_Initialize`, `C_Finalize`, `C_GetInfo`, `C_GetFunctionList`, slot and token info, mechanism list and info, sessions, `C_Login` / `C_Logout` (no-ops), `C_FindObjects*`, `C_GetAttributeValue`, `C_SignInit` / `C_Sign` / `C_SignUpdate` / `C_SignFinal`, `C_DecryptInit` / `C_Decrypt`, `C_EncryptInit` / `C_Encrypt` (in software with the public key, no request); everything else returns `CKR_FUNCTION_NOT_SUPPORTED` |
+| Mechanisms | `encrypt`: `CKM_RSA_PKCS_OAEP` (SHA-256, MGF1-SHA256); `sign`: `CKM_SHA256_RSA_PKCS`, `CKM_ECDSA_SHA256`; `auth`: `CKM_RSA_PKCS`, `CKM_ECDSA` |
 | Objects | Per trusted key: a private-key object and a public-key object carrying the manifest's label and ID |
 
 **Runtime rules**
@@ -606,7 +609,7 @@ The order puts a working end-to-end loop on Linux in CI before any app exists; m
 ### MVP scope
 
 - **In:** `encrypt`, `sign` and `auth` keys with the listed mechanisms, exercised through third-party PKCS#11 tools; one relay; one manifest signer; hex-and-hash content view with requester claims; device attestation and renewal; headless client pairing; audit log.
-- **Out, for later:** content decoders (X.509 CSR, git, SSH); `revoked_devices`; CryptoTokenKit token extensions for system-wide use on macOS and iPadOS; relay high availability; multiple or threshold manifest signers; platform attestation of device keys (App Attest, Android Key Attestation); a web admin UI.
+- **Out, for later:** content decoders (X.509 CSR, git, SSH); EC `encrypt` keys (ECDH through `C_DeriveKey`); a pinned-SPKI relay trust option; `revoked_devices`; CryptoTokenKit token extensions for system-wide use on macOS and iPadOS; relay high availability; multiple or threshold manifest signers; platform attestation of device keys (App Attest, Android Key Attestation); a web admin UI.
 
 ### Risks and open questions
 
