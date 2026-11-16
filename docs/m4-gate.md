@@ -64,7 +64,12 @@ relayctl manifest add --manifest gate-m4/manifest.json --public-key attest.pem -
 
 ## 4. Sign the manifest with the OpenPGP card [CARD, OpenPGP applet, Brian runs: PIN and touch]
 
+First export the signer's public key from the gpg keyring. This is the manifest trust anchor
+that the approver, the provider and `--verify-with` all read, and exporting it does not touch
+the card.
+
 ```sh
+gpg --armor --export <KEY-ID> > gate-m4/signer.asc
 relayctl manifest sign --manifest gate-m4/manifest.json --gpg-key <KEY-ID> --verify-with gate-m4/signer.asc
 ```
 
