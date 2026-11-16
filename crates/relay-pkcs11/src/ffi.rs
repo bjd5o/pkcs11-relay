@@ -7,7 +7,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
 use cryptoki_sys::*;
-use relay_core::mechanism::{check_key_mechanism, OaepParams, MAX_SIGN_MESSAGE_LEN};
+use relay_core::mechanism::{check_encrypt, check_key_mechanism, OaepParams, MAX_SIGN_MESSAGE_LEN};
 use relay_core::{Mechanism, Op};
 use zeroize::Zeroizing;
 
@@ -911,5 +911,83 @@ pub unsafe extern "C" fn C_Decrypt(
         let data = unsafe { bytes(pEncryptedData, ulEncryptedDataLen) }?.to_vec();
         // SAFETY: per the C_Decrypt contract for the output buffer.
         unsafe { finish(hSession, Op::Decrypt, Some(data), pData, pulDataLen) }
+    })
+}
+
+/// Encryption runs in software with the public key (spec: role table, `encrypt`): it reveals
+/// nothing, so it needs neither the relay nor an approval.
+pub unsafe extern "C" fn C_EncryptInit(
+    hSession: CK_SESSION_HANDLE,
+    pMechanism: CK_MECHANISM_PTR,
+    hKey: CK_OBJECT_HANDLE,
+) -> CK_RV {
+    guard(|| {
+        let p = need_provider()?;
+        let slot = session_slot(&p, hSession)?;
+        // SAFETY: per the C_EncryptInit contract.
+        let mech = unsafe { mechanism(pMechanism) }?;
+        let obj = p.object(slot, hKey).ok_or(CKR_KEY_HANDLE_INVALID)?;
+        if !obj.public {
+            return Err(CKR_KEY_FUNCTION_NOT_PERMITTED);
+        }
+        check_encrypt(obj.key.role, obj.key.algorithm, &mech).map_err(|e| rv(&e))?;
+        let Mechanism::RsaPkcsOaep { label } = mech else {
+            return Err(CKR_MECHANISM_INVALID);
+        };
+        let mut sessions = p.lock_sessions();
+        let s = sessions
+            .get_mut(&hSession)
+            .ok_or(CKR_SESSION_HANDLE_INVALID)?;
+        if s.encrypt.is_some() {
+            return Err(CKR_OPERATION_ACTIVE);
+        }
+        s.encrypt = Some((obj.key, label));
+        Ok(())
+    })
+}
+
+pub unsafe extern "C" fn C_Encrypt(
+    hSession: CK_SESSION_HANDLE,
+    pData: CK_BYTE_PTR,
+    ulDataLen: CK_ULONG,
+    pEncryptedData: CK_BYTE_PTR,
+    pulEncryptedDataLen: CK_ULONG_PTR,
+) -> CK_RV {
+    guard(|| {
+        if pulEncryptedDataLen.is_null() {
+            return Err(CKR_ARGUMENTS_BAD);
+        }
+        let p = need_provider()?;
+        let mut sessions = p.lock_sessions();
+        let s = sessions
+            .get_mut(&hSession)
+            .ok_or(CKR_SESSION_HANDLE_INVALID)?;
+        let (key, label) = s.encrypt.clone().ok_or(CKR_OPERATION_NOT_INITIALIZED)?;
+        let k = key
+            .algorithm
+            .rsa_modulus_len()
+            .ok_or(CKR_KEY_FUNCTION_NOT_PERMITTED)?;
+        // SAFETY: pData holds ulDataLen bytes.
+        let data = unsafe { bytes(pData, ulDataLen) }?;
+        if data.len() > relay_core::mechanism::oaep_max_plaintext(k) {
+            s.encrypt = None;
+            return Err(CKR_DATA_LEN_RANGE);
+        }
+        // SAFETY: pulEncryptedDataLen checked non-null.
+        let have = unsafe { *pulEncryptedDataLen } as usize;
+        // SAFETY: as above.
+        unsafe { *pulEncryptedDataLen = k as CK_ULONG };
+        if pEncryptedData.is_null() {
+            return Ok(()); // length query: the ciphertext is always k bytes
+        }
+        if have < k {
+            return Err(CKR_BUFFER_TOO_SMALL);
+        }
+        s.encrypt = None;
+        let ct = relay_core::padding::encrypt_oaep_sha256(&key.public_key, &label, data)
+            .map_err(|e| rv(&e))?;
+        // SAFETY: pEncryptedData is valid for have >= k == ct.len() bytes.
+        unsafe { std::ptr::copy_nonoverlapping(ct.as_ptr(), pEncryptedData, ct.len()) };
+        Ok(())
     })
 }

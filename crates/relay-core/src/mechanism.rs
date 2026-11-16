@@ -181,6 +181,23 @@ pub fn check_key_mechanism(
     Ok(())
 }
 
+/// The check for `C_EncryptInit`: encryption runs in software with an `encrypt` key's public
+/// key, OAEP only (spec: role table).
+pub fn check_encrypt(role: Role, alg: Algorithm, mechanism: &Mechanism) -> Result<()> {
+    if role != Role::Encrypt || !alg.is_rsa() {
+        return Err(Error::KeyFunctionNotPermitted);
+    }
+    if !matches!(mechanism, Mechanism::RsaPkcsOaep { .. }) {
+        return Err(Error::MechanismInvalid);
+    }
+    Ok(())
+}
+
+/// Largest OAEP-SHA256 plaintext for a modulus of `k` bytes (RFC 8017 §7.1.1).
+pub fn oaep_max_plaintext(k: usize) -> usize {
+    k.saturating_sub(2 * 32 + 2)
+}
+
 /// The local check run before any request is sent, and again by the approver: the role
 /// permits `op`, the mechanism fits the role and algorithm, and the input length fits the
 /// mechanism. Failure handling rows "Operation outside the key's role" and "Mechanism not

@@ -138,6 +138,8 @@ pub struct Session {
     pub find: Option<Vec<CK_OBJECT_HANDLE>>,
     pub sign: Option<Operation>,
     pub decrypt: Option<Operation>,
+    /// Software RSA-OAEP encryption with an `encrypt` key's public key: no approval needed.
+    pub encrypt: Option<(ManifestKey, Vec<u8>)>,
 }
 
 pub struct Provider {
@@ -261,6 +263,7 @@ impl Provider {
                 find: None,
                 sign: None,
                 decrypt: None,
+                encrypt: None,
             },
         );
         h
@@ -429,7 +432,7 @@ pub fn mechanism_info(m: CK_MECHANISM_TYPE, algs: &[Algorithm]) -> Option<CK_MEC
     let (min, max, flags) = match m as u64 {
         ckm::RSA_PKCS_OAEP => {
             let (a, b) = rsa_bits();
-            (a, b, CKF_DECRYPT)
+            (a, b, CKF_DECRYPT | CKF_ENCRYPT)
         }
         ckm::SHA256_RSA_PKCS | ckm::RSA_PKCS => {
             let (a, b) = rsa_bits();

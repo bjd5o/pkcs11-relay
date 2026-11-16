@@ -144,6 +144,26 @@ pub fn emsa_pkcs1v15_encode(prefix: &[u8], hashed: &[u8], k: usize) -> Result<Ve
     Ok(em)
 }
 
+/// RSA-OAEP (SHA-256, MGF1-SHA256) encryption to a manifest `encrypt` key, for the
+/// provider's software `C_Encrypt`. Uses the `rsa` crate's own OAEP implementation.
+pub fn encrypt_oaep_sha256(
+    key: &crate::keys::PublicKey,
+    label: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
+    let pk = key.rsa().ok_or(Error::KeyFunctionNotPermitted)?;
+    let k = key
+        .algorithm()
+        .rsa_modulus_len()
+        .ok_or(Error::KeyFunctionNotPermitted)?;
+    if plaintext.len() > crate::mechanism::oaep_max_plaintext(k) {
+        return Err(Error::DataLenRange);
+    }
+    let padding = rsa::Oaep::<Sha256>::new_with_label(label.to_vec().into_boxed_slice());
+    pk.encrypt(&mut crate::signing::rng(), padding, plaintext)
+        .map_err(|e| Error::Crypto(e.to_string()))
+}
+
 /// Convert a DER `ECDSA-Sig-Value` (what PIV, Security.framework and OpenSSL return) to the
 /// raw `r || s` form `CKM_ECDSA` callers and the wire format use.
 pub fn ecdsa_der_to_raw(der: &[u8]) -> Result<[u8; 64]> {
@@ -211,6 +231,26 @@ mod tests {
             emsa_pkcs1v15_encode(&[], &[0u8; 246], 256),
             Err(Error::DataLenRange)
         );
+    }
+
+    #[test]
+    fn encrypt_then_card_decode_round_trip() {
+        let sk = rsa::PrivateKey::new(&mut crate::signing::rng(), 2048).unwrap();
+        let der = rsa::pkcs8::EncodePublicKey::to_public_key_der(&sk.to_public_key()).unwrap();
+        let pk = crate::keys::PublicKey::from_spki(der.as_bytes()).unwrap();
+        let ct = encrypt_oaep_sha256(&pk, b"L", b"secret").unwrap();
+        let pt = sk
+            .decrypt(
+                rsa::Oaep::<Sha256>::new_with_label(b"L".to_vec().into_boxed_slice()),
+                &ct,
+            )
+            .unwrap();
+        assert_eq!(pt, b"secret");
+        assert_eq!(
+            encrypt_oaep_sha256(&pk, b"", &[0u8; 191]),
+            Err(Error::DataLenRange)
+        );
+        assert!(encrypt_oaep_sha256(&pk, b"", &[0u8; 190]).is_ok());
     }
 
     #[test]

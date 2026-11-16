@@ -93,24 +93,6 @@ pub unsafe extern "C" fn C_SetAttributeValue(
     CKR_FUNCTION_NOT_SUPPORTED
 }
 
-pub unsafe extern "C" fn C_EncryptInit(
-    _arg1: CK_SESSION_HANDLE,
-    _arg2: *mut CK_MECHANISM,
-    _arg3: CK_OBJECT_HANDLE,
-) -> CK_RV {
-    CKR_FUNCTION_NOT_SUPPORTED
-}
-
-pub unsafe extern "C" fn C_Encrypt(
-    _arg1: CK_SESSION_HANDLE,
-    _arg2: *mut CK_BYTE,
-    _arg3: CK_ULONG,
-    _arg4: *mut CK_BYTE,
-    _arg5: *mut CK_ULONG,
-) -> CK_RV {
-    CKR_FUNCTION_NOT_SUPPORTED
-}
-
 pub unsafe extern "C" fn C_EncryptUpdate(
     _arg1: CK_SESSION_HANDLE,
     _arg2: *mut CK_BYTE,
