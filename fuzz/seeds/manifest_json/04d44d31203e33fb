@@ -1,0 +1,44 @@
+{
+  "issued_at": 1794700800,
+  "keys": [
+    {
+      "algorithm": "rsa-2048",
+      "fingerprint": "sha256:c28dd477e94a98e2dba6238a59150b8f7fcb3d50c3ab9f04ebf6e437272f23f3",
+      "id": "01",
+      "label": "openbao-unseal",
+      "public_key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3AFTKNbJNHSjv4+4y+JMhCUDNJ7JZgJcQY7VdMlZE6b2oKlI2QlKYydaUsc2evBeJKZFJoTRYhITij2espcB5U5SL+EThgVTdSHROyaqRt1ozjm2DZlgIAPOc5FN4LWgN4vEHDG0JN3q4DSkEtJow7jXYOffde5egowLs4Fo4adurBCBmDzqEYgNT1tPUwDwkuOVvc2uDJwxUN//I69SMTlrkvgdh+jT9cJcoMKGnyQlzOWt+cuARF0u7clyJ2yyUGp5ZbTwhV4oDPGvQi53VGHKPgsvMzsifcctX6aHp7t8OzVFMDQbWofUjUwW8O+LPolOrVtaxsm4p+W+yQXiywIDAQAB",
+      "role": "encrypt",
+      "token": "softcard-0001"
+    },
+    {
+      "algorithm": "p256",
+      "fingerprint": "sha256:241c5021164d506af15bd5ce17fe459132e641572ae5a961fd194438596ca585",
+      "id": "02",
+      "label": "code-signing",
+      "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsfVJ1ZwzLp+wV+RJigA1xnHjmD/Aa+tP+JEJHmTvaiFc/Sf9hbWGEHAJxCOrLTsbYObiBm+eHk+nw+6cuRoU/A==",
+      "role": "sign",
+      "token": "softcard-0001"
+    },
+    {
+      "algorithm": "p256",
+      "fingerprint": "sha256:e64e334f7c98f56c7f3102dfacbc46d4d00fed805888471b97ec127244ad3e43",
+      "id": "03",
+      "label": "ssh",
+      "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEYW60d3l0HJjxwryUIGHf0Q/ShlicYZVWY1+LDb3+FBJTPxkTm4BggvtoQfnUCbK6Ml8ZxvviJeAQemEUu3wZIg==",
+      "role": "auth",
+      "token": "softcard-0001"
+    },
+    {
+      "algorithm": "p256",
+      "fingerprint": "sha256:8d4d745114f7df3b75a47f62836eae561b6f19becc991da54b4bdabeb12adc65",
+      "id": "04",
+      "label": "attest",
+      "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEEKkb4u0R2buMSZJvgiJ5Rga9GKpQpP8g5LTstlGoIzfetzk5CvrpprFKmTxtf1R/gyQgXqqSnjqOoljoA6Gf7g==",
+      "role": "attest",
+      "token": "softcard-0001"
+    }
+  ],
+  "v": 1,
+  "valid_until": 1797292800,
+  "version": 1
+}

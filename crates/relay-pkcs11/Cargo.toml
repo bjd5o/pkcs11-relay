@@ -21,3 +21,13 @@ toml.workspace = true
 base64.workspace = true
 hex.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+relay-server.workspace = true
+relay-softcard.workspace = true
+relay-test-approver = { path = "../relay-test-approver" }
+tokio.workspace = true
+toml.workspace = true
+p256.workspace = true
+rsa.workspace = true
+sha2.workspace = true
