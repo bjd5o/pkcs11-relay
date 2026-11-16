@@ -12,7 +12,9 @@ use relay_core::{Mechanism, Op};
 use zeroize::Zeroizing;
 
 use crate::ffi_stubs::*;
-use crate::provider::{mechanism_info, mechanisms_for, rv, Attr, Operation, Provider, Rv};
+use crate::provider::{
+    mechanism_info, mechanisms_for, rv, AesOp, Attr, Operation, Provider, Rv, SecretObject,
+};
 use crate::{config::Config, log};
 
 // ---------- global state ----------
@@ -547,6 +549,7 @@ pub unsafe extern "C" fn C_FindObjectsInit(
             .filter(|o| o.matches(&tpl))
             .map(|o| o.handle)
             .collect();
+        let mut found = found;
         let mut sessions = p.lock_sessions();
         let s = sessions
             .get_mut(&hSession)
@@ -554,6 +557,12 @@ pub unsafe extern "C" fn C_FindObjectsInit(
         if s.find.is_some() {
             return Err(CKR_OPERATION_ACTIVE);
         }
+        found.extend(
+            s.derived
+                .iter()
+                .filter(|(_, o)| o.matches(&tpl))
+                .map(|(h, _)| *h),
+        );
         s.find = Some(found);
         Ok(())
     })
@@ -609,15 +618,29 @@ pub unsafe extern "C" fn C_GetAttributeValue(
     guard(|| {
         let p = need_provider()?;
         let slot = session_slot(&p, hSession)?;
-        let obj = p.object(slot, hObject).ok_or(CKR_OBJECT_HANDLE_INVALID)?;
         if ulCount > 0 && pTemplate.is_null() {
             return Err(CKR_ARGUMENTS_BAD);
         }
         // SAFETY: pTemplate holds ulCount attributes the caller lets us update in place.
         let attrs = unsafe { std::slice::from_raw_parts_mut(pTemplate, ulCount as usize) };
+        // A token key (resolved before taking the session lock: discovery may refresh), or a
+        // derived session secret key.
+        let token = p.object(slot, hObject);
+        let sessions = p.lock_sessions();
+        let secret = sessions
+            .get(&hSession)
+            .and_then(|s| s.derived.get(&hObject));
+        if secret.is_none() && token.is_none() {
+            return Err(CKR_OBJECT_HANDLE_INVALID);
+        }
+        let lookup = |t: CK_ATTRIBUTE_TYPE| match (secret, &token) {
+            (Some(o), _) => o.attribute(t),
+            (None, Some(o)) => o.attribute(t),
+            (None, None) => Attr::Invalid,
+        };
         let mut result = CKR_OK;
         for a in attrs.iter_mut() {
-            match obj.attribute(a.type_) {
+            match lookup(a.type_) {
                 Attr::Value(v) => {
                     if a.pValue.is_null() {
                         a.ulValueLen = v.len() as CK_ULONG;
@@ -685,6 +708,17 @@ unsafe fn mechanism(m: CK_MECHANISM_PTR) -> Result<Mechanism, Rv> {
     } else {
         None
     };
+    if m.mechanism == CKM_EDDSA && !m.pParameter.is_null() {
+        if (m.ulParameterLen as usize) < std::mem::size_of::<CK_EDDSA_PARAMS>() {
+            return Err(CKR_MECHANISM_PARAM_INVALID);
+        }
+        // SAFETY: the parameter is a CK_EDDSA_PARAMS of the checked size.
+        let e = unsafe { &*(m.pParameter as *const CK_EDDSA_PARAMS) };
+        // Pure Ed25519 only: no prehash (Ed25519ph), no context (Ed25519ctx).
+        if e.phFlag != CK_FALSE || e.ulContextDataLen != 0 {
+            return Err(CKR_MECHANISM_PARAM_INVALID);
+        }
+    }
     Mechanism::from_pkcs11(m.mechanism as u64, oaep).map_err(|e| rv(&e))
 }
 
@@ -719,6 +753,7 @@ fn op_init(
     let slot_ref = match op {
         Op::Sign => &mut s.sign,
         Op::Decrypt => &mut s.decrypt,
+        Op::Derive => return Err(CKR_GENERAL_ERROR), // C_DeriveKey runs in one call
     };
     if slot_ref.is_some() {
         return Err(CKR_OPERATION_ACTIVE);
@@ -737,7 +772,8 @@ fn op_init(
 fn op_mut(s: &mut crate::provider::Session, op: Op) -> &mut Option<Operation> {
     match op {
         Op::Sign => &mut s.sign,
-        Op::Decrypt => &mut s.decrypt,
+        // Derive never reaches the two-call path; op_init refuses it.
+        Op::Decrypt | Op::Derive => &mut s.decrypt,
     }
 }
 
@@ -890,12 +926,162 @@ pub unsafe extern "C" fn C_SignFinal(
     guard(|| unsafe { finish(hSession, Op::Sign, None, pSignature, pulSignatureLen) })
 }
 
+// ---------- AES-GCM with derived keys ----------
+
+/// The mechanism type, or `CKR_ARGUMENTS_BAD`.
+///
+/// SAFETY (for callers): `m` null or a valid CK_MECHANISM.
+unsafe fn mechanism_type(m: CK_MECHANISM_PTR) -> Result<CK_MECHANISM_TYPE, Rv> {
+    if m.is_null() {
+        return Err(CKR_ARGUMENTS_BAD);
+    }
+    // SAFETY: non-null and valid per the caller's contract.
+    Ok(unsafe { (*m).mechanism })
+}
+
+/// `CK_GCM_PARAMS`: a 96-bit IV and a 128-bit tag only.
+///
+/// SAFETY (for callers): `m` a valid CK_MECHANISM whose parameter matches its type.
+unsafe fn gcm_params(m: CK_MECHANISM_PTR) -> Result<(Vec<u8>, Vec<u8>), Rv> {
+    // SAFETY: the caller passes a valid mechanism.
+    let m = unsafe { &*m };
+    if m.pParameter.is_null() || (m.ulParameterLen as usize) < std::mem::size_of::<CK_GCM_PARAMS>()
+    {
+        return Err(CKR_MECHANISM_PARAM_INVALID);
+    }
+    // SAFETY: the parameter is a CK_GCM_PARAMS of the checked size.
+    let g = unsafe { &*(m.pParameter as *const CK_GCM_PARAMS) };
+    if g.ulIvLen as usize != relay_core::symmetric::IV_LEN || g.ulTagBits != 128 {
+        return Err(CKR_MECHANISM_PARAM_INVALID);
+    }
+    // SAFETY: pIv and pAAD hold the stated lengths.
+    let iv = unsafe { bytes(g.pIv, g.ulIvLen) }?.to_vec();
+    // SAFETY: as above.
+    let aad = unsafe { bytes(g.pAAD, g.ulAADLen) }?.to_vec();
+    Ok((iv, aad))
+}
+
+fn aes_init(
+    hSession: CK_SESSION_HANDLE,
+    pMechanism: CK_MECHANISM_PTR,
+    hKey: CK_OBJECT_HANDLE,
+    encrypt: bool,
+) -> Result<(), Rv> {
+    let p = need_provider()?;
+    // SAFETY: per the C_EncryptInit / C_DecryptInit contract.
+    let (iv, aad) = unsafe { gcm_params(pMechanism) }?;
+    let mut sessions = p.lock_sessions();
+    let s = sessions
+        .get_mut(&hSession)
+        .ok_or(CKR_SESSION_HANDLE_INVALID)?;
+    let key = s.derived.get(&hKey).ok_or(CKR_KEY_HANDLE_INVALID)?;
+    if key.key_type != CKK_AES {
+        return Err(CKR_KEY_TYPE_INCONSISTENT);
+    }
+    if (encrypt && !key.encrypt) || (!encrypt && !key.decrypt) {
+        return Err(CKR_KEY_FUNCTION_NOT_PERMITTED);
+    }
+    let op = AesOp {
+        key: key.value.clone(),
+        iv,
+        aad,
+    };
+    let busy = if encrypt {
+        s.aes_encrypt.is_some() || s.encrypt.is_some()
+    } else {
+        s.aes_decrypt.is_some() || s.decrypt.is_some()
+    };
+    if busy {
+        return Err(CKR_OPERATION_ACTIVE);
+    }
+    if encrypt {
+        s.aes_encrypt = Some(op)
+    } else {
+        s.aes_decrypt = Some(op)
+    }
+    Ok(())
+}
+
+/// One-shot AES-GCM with the two-call convention. Returns `None` when no AES operation is
+/// active in this direction.
+///
+/// SAFETY (for callers): `out` null or valid for `*out_len` bytes; `out_len` valid.
+unsafe fn aes_run(
+    hSession: CK_SESSION_HANDLE,
+    encrypt: bool,
+    input: &[u8],
+    out: *mut u8,
+    out_len: *mut CK_ULONG,
+) -> Option<Result<(), Rv>> {
+    let p = match need_provider() {
+        Ok(p) => p,
+        Err(e) => return Some(Err(e)),
+    };
+    let mut sessions = p.lock_sessions();
+    let s = match sessions.get_mut(&hSession) {
+        Some(s) => s,
+        None => return Some(Err(CKR_SESSION_HANDLE_INVALID)),
+    };
+    let slot = if encrypt {
+        &mut s.aes_encrypt
+    } else {
+        &mut s.aes_decrypt
+    };
+    slot.as_ref()?;
+    Some((|| {
+        if out_len.is_null() {
+            return Err(CKR_ARGUMENTS_BAD);
+        }
+        let tag = relay_core::symmetric::TAG_LEN;
+        if !encrypt && input.len() < tag {
+            *slot = None;
+            return Err(CKR_ENCRYPTED_DATA_LEN_RANGE);
+        }
+        let need = if encrypt {
+            input.len() + tag
+        } else {
+            input.len() - tag
+        };
+        // SAFETY: out_len checked non-null.
+        let have = unsafe { *out_len } as usize;
+        // SAFETY: as above.
+        unsafe { *out_len = need as CK_ULONG };
+        if out.is_null() {
+            return Ok(()); // length query: GCM output lengths are exact
+        }
+        if have < need {
+            return Err(CKR_BUFFER_TOO_SMALL);
+        }
+        let op = slot.take().expect("checked above");
+        let result: Zeroizing<Vec<u8>> = if encrypt {
+            Zeroizing::new(
+                relay_core::symmetric::aes_gcm_seal(&op.key, &op.iv, &op.aad, input)
+                    .map_err(|e| rv(&e))?,
+            )
+        } else {
+            relay_core::symmetric::aes_gcm_open(&op.key, &op.iv, &op.aad, input)
+                .map_err(|_| CKR_ENCRYPTED_DATA_INVALID)?
+        };
+        // SAFETY: out is valid for have >= need == result.len() bytes.
+        unsafe { std::ptr::copy_nonoverlapping(result.as_ptr(), out, result.len()) };
+        // SAFETY: out_len checked non-null.
+        unsafe { *out_len = result.len() as CK_ULONG };
+        Ok(())
+    })())
+}
+
 pub unsafe extern "C" fn C_DecryptInit(
     hSession: CK_SESSION_HANDLE,
     pMechanism: CK_MECHANISM_PTR,
     hKey: CK_OBJECT_HANDLE,
 ) -> CK_RV {
-    guard(|| op_init(hSession, pMechanism, hKey, Op::Decrypt))
+    guard(|| {
+        // SAFETY: per the C_DecryptInit contract.
+        if unsafe { mechanism_type(pMechanism) }? == CKM_AES_GCM {
+            return aes_init(hSession, pMechanism, hKey, false);
+        }
+        op_init(hSession, pMechanism, hKey, Op::Decrypt)
+    })
 }
 
 pub unsafe extern "C" fn C_Decrypt(
@@ -909,18 +1095,26 @@ pub unsafe extern "C" fn C_Decrypt(
         // SAFETY: pEncryptedData holds ulEncryptedDataLen bytes.
         let data = unsafe { bytes(pEncryptedData, ulEncryptedDataLen) }?.to_vec();
         // SAFETY: per the C_Decrypt contract for the output buffer.
+        if let Some(r) = unsafe { aes_run(hSession, false, &data, pData, pulDataLen) } {
+            return r;
+        }
+        // SAFETY: per the C_Decrypt contract for the output buffer.
         unsafe { finish(hSession, Op::Decrypt, Some(data), pData, pulDataLen) }
     })
 }
 
-/// Encryption runs in software with the public key (spec: role table, `encrypt`): it reveals
-/// nothing, so it needs neither the relay nor an approval.
+/// Encryption runs in software: RSA-OAEP with an RSA `encrypt` key's public key (spec: role
+/// table), or AES-GCM with a derived key. Neither needs the relay nor an approval.
 pub unsafe extern "C" fn C_EncryptInit(
     hSession: CK_SESSION_HANDLE,
     pMechanism: CK_MECHANISM_PTR,
     hKey: CK_OBJECT_HANDLE,
 ) -> CK_RV {
     guard(|| {
+        // SAFETY: per the C_EncryptInit contract.
+        if unsafe { mechanism_type(pMechanism) }? == CKM_AES_GCM {
+            return aes_init(hSession, pMechanism, hKey, true);
+        }
         let p = need_provider()?;
         let slot = session_slot(&p, hSession)?;
         // SAFETY: per the C_EncryptInit contract.
@@ -937,7 +1131,7 @@ pub unsafe extern "C" fn C_EncryptInit(
         let s = sessions
             .get_mut(&hSession)
             .ok_or(CKR_SESSION_HANDLE_INVALID)?;
-        if s.encrypt.is_some() {
+        if s.encrypt.is_some() || s.aes_encrypt.is_some() {
             return Err(CKR_OPERATION_ACTIVE);
         }
         s.encrypt = Some((obj.key, label));
@@ -956,6 +1150,14 @@ pub unsafe extern "C" fn C_Encrypt(
         if pulEncryptedDataLen.is_null() {
             return Err(CKR_ARGUMENTS_BAD);
         }
+        // SAFETY: pData holds ulDataLen bytes.
+        let data = unsafe { bytes(pData, ulDataLen) }?;
+        // SAFETY: per the C_Encrypt contract for the output buffer.
+        if let Some(r) =
+            unsafe { aes_run(hSession, true, data, pEncryptedData, pulEncryptedDataLen) }
+        {
+            return r;
+        }
         let p = need_provider()?;
         let mut sessions = p.lock_sessions();
         let s = sessions
@@ -966,8 +1168,6 @@ pub unsafe extern "C" fn C_Encrypt(
             .algorithm
             .rsa_modulus_len()
             .ok_or(CKR_KEY_FUNCTION_NOT_PERMITTED)?;
-        // SAFETY: pData holds ulDataLen bytes.
-        let data = unsafe { bytes(pData, ulDataLen) }?;
         if data.len() > relay_core::mechanism::oaep_max_plaintext(k) {
             s.encrypt = None;
             return Err(CKR_DATA_LEN_RANGE);
@@ -988,5 +1188,165 @@ pub unsafe extern "C" fn C_Encrypt(
         // SAFETY: pEncryptedData is valid for have >= k == ct.len() bytes.
         unsafe { std::ptr::copy_nonoverlapping(ct.as_ptr(), pEncryptedData, ct.len()) };
         Ok(())
+    })
+}
+
+// ---------- ECDH ----------
+
+fn tpl_bool(v: &[u8]) -> Result<bool, Rv> {
+    match v {
+        [b] => Ok(*b != CK_FALSE),
+        _ => Err(CKR_ATTRIBUTE_VALUE_INVALID),
+    }
+}
+
+fn tpl_ulong(v: &[u8]) -> Result<CK_ULONG, Rv> {
+    let b: [u8; std::mem::size_of::<CK_ULONG>()] =
+        v.try_into().map_err(|_| CKR_ATTRIBUTE_VALUE_INVALID)?;
+    Ok(CK_ULONG::from_ne_bytes(b))
+}
+
+/// The peer public key as the card wants it: PKCS#11 allows it raw or as a DER OCTET STRING.
+fn peer_key(alg: relay_core::Algorithm, data: &[u8]) -> Vec<u8> {
+    let n = alg.ecdh_peer_len().unwrap_or(0);
+    if data.len() == n + 2 && data[0] == 0x04 && data[1] as usize == n {
+        data[2..].to_vec()
+    } else {
+        data.to_vec()
+    }
+}
+
+/// ECDH with an EC `encrypt` key (`CKM_ECDH1_DERIVE`): the card agrees the secret on the
+/// approver, the KDF runs there, and the result arrives sealed like a decryption. It becomes
+/// a session-only secret key whose template decides whether `CKA_VALUE` is readable.
+pub unsafe extern "C" fn C_DeriveKey(
+    hSession: CK_SESSION_HANDLE,
+    pMechanism: CK_MECHANISM_PTR,
+    hBaseKey: CK_OBJECT_HANDLE,
+    pTemplate: CK_ATTRIBUTE_PTR,
+    ulAttributeCount: CK_ULONG,
+    phKey: CK_OBJECT_HANDLE_PTR,
+) -> CK_RV {
+    guard(|| {
+        if phKey.is_null() || pMechanism.is_null() {
+            return Err(CKR_ARGUMENTS_BAD);
+        }
+        let p = need_provider()?;
+        let slot = session_slot(&p, hSession)?;
+        // SAFETY: non-null and valid per the C_DeriveKey contract.
+        let m = unsafe { &*pMechanism };
+        if m.mechanism != CKM_ECDH1_DERIVE {
+            return Err(CKR_MECHANISM_INVALID);
+        }
+        if m.pParameter.is_null()
+            || (m.ulParameterLen as usize) < std::mem::size_of::<CK_ECDH1_DERIVE_PARAMS>()
+        {
+            return Err(CKR_MECHANISM_PARAM_INVALID);
+        }
+        // SAFETY: the parameter is a CK_ECDH1_DERIVE_PARAMS of the checked size.
+        let params = unsafe { &*(m.pParameter as *const CK_ECDH1_DERIVE_PARAMS) };
+        // SAFETY: the shared and public data hold the stated lengths.
+        let shared = unsafe { bytes(params.pSharedData, params.ulSharedDataLen) }?.to_vec();
+        // SAFETY: as above.
+        let public = unsafe { bytes(params.pPublicData, params.ulPublicDataLen) }?.to_vec();
+        let base = p.object(slot, hBaseKey).ok_or(CKR_KEY_HANDLE_INVALID)?;
+        if base.public {
+            return Err(CKR_KEY_FUNCTION_NOT_PERMITTED);
+        }
+        // SAFETY: per the C_DeriveKey contract.
+        let tpl = unsafe { template(pTemplate, ulAttributeCount) }?;
+        let (mut key_type, mut value_len, mut extractable, mut sensitive) =
+            (CKK_GENERIC_SECRET, None, None, None);
+        let (mut encrypt, mut decrypt, mut label) = (None, None, Vec::new());
+        for (t, v) in &tpl {
+            match *t {
+                CKA_CLASS if tpl_ulong(v)? != CKO_SECRET_KEY => {
+                    return Err(CKR_TEMPLATE_INCONSISTENT)
+                }
+                CKA_CLASS => {}
+                CKA_KEY_TYPE => key_type = tpl_ulong(v)?,
+                CKA_VALUE_LEN => value_len = Some(tpl_ulong(v)? as u32),
+                // Derived keys exist only in this process's RAM.
+                CKA_TOKEN if tpl_bool(v)? => return Err(CKR_TEMPLATE_INCONSISTENT),
+                CKA_TOKEN => {}
+                CKA_EXTRACTABLE => extractable = Some(tpl_bool(v)?),
+                CKA_SENSITIVE => sensitive = Some(tpl_bool(v)?),
+                CKA_ENCRYPT => encrypt = Some(tpl_bool(v)?),
+                CKA_DECRYPT => decrypt = Some(tpl_bool(v)?),
+                CKA_LABEL => label = v.clone(),
+                CKA_PRIVATE | CKA_MODIFIABLE | CKA_COPYABLE | CKA_DESTROYABLE | CKA_ID
+                | CKA_DERIVE | CKA_SIGN | CKA_VERIFY | CKA_WRAP | CKA_UNWRAP => {}
+                _ => return Err(CKR_ATTRIBUTE_TYPE_INVALID),
+            }
+        }
+        if key_type != CKK_GENERIC_SECRET && key_type != CKK_AES {
+            return Err(CKR_TEMPLATE_INCONSISTENT);
+        }
+        let kdf = params.kdf as u64;
+        let out_len = match (key_type, value_len) {
+            (CKK_AES, Some(n)) if relay_core::symmetric::is_aes_key_len(n as usize) => n,
+            (CKK_AES, Some(_)) => return Err(CKR_ATTRIBUTE_VALUE_INVALID),
+            (CKK_AES, None) => return Err(CKR_TEMPLATE_INCOMPLETE),
+            (_, Some(n)) => n,
+            (_, None) if kdf == relay_core::mechanism::ckm::CKD_NULL => {
+                base.key.algorithm.ec_field_len().unwrap_or(32) as u32
+            }
+            (_, None) => 32,
+        };
+        let extractable = extractable.unwrap_or(key_type == CKK_GENERIC_SECRET);
+        let sensitive = sensitive.unwrap_or(!extractable);
+        let aes = key_type == CKK_AES;
+        let mech = Mechanism::ecdh_from_pkcs11(kdf, shared, out_len).map_err(|e| rv(&e))?;
+        // Rejected locally, before anything is sent.
+        check_key_mechanism(base.key.role, base.key.algorithm, Op::Derive, &mech).map_err(|e| {
+            log::info(&format!("refused derive on {}: {e}", base.key.label));
+            rv(&e)
+        })?;
+        let peer = peer_key(base.key.algorithm, &public);
+        let value = p.run(Op::Derive, &base.key, mech, peer)?;
+        if value.len() != out_len as usize {
+            log::warn("derived key has the wrong length");
+            return Err(CKR_DEVICE_ERROR);
+        }
+        let obj = SecretObject {
+            key_type,
+            value,
+            extractable,
+            sensitive,
+            encrypt: encrypt.unwrap_or(aes) && aes,
+            decrypt: decrypt.unwrap_or(aes) && aes,
+            label,
+        };
+        let h = p.new_object_handle();
+        let mut sessions = p.lock_sessions();
+        let s = sessions
+            .get_mut(&hSession)
+            .ok_or(CKR_SESSION_HANDLE_INVALID)?;
+        s.derived.insert(h, obj);
+        // SAFETY: phKey checked non-null.
+        unsafe { put(phKey, h) }
+    })
+}
+
+/// Only derived session keys can be destroyed; token keys belong to the manifest.
+pub unsafe extern "C" fn C_DestroyObject(
+    hSession: CK_SESSION_HANDLE,
+    hObject: CK_OBJECT_HANDLE,
+) -> CK_RV {
+    guard(|| {
+        let p = need_provider()?;
+        let slot = session_slot(&p, hSession)?;
+        let removed = p
+            .lock_sessions()
+            .get_mut(&hSession)
+            .and_then(|s| s.derived.remove(&hObject));
+        if removed.is_some() {
+            return Ok(()); // zeroized on drop
+        }
+        if p.object(slot, hObject).is_some() {
+            Err(CKR_ACTION_PROHIBITED)
+        } else {
+            Err(CKR_OBJECT_HANDLE_INVALID)
+        }
     })
 }

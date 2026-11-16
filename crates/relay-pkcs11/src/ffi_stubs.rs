@@ -69,13 +69,6 @@ pub unsafe extern "C" fn C_CopyObject(
     CKR_FUNCTION_NOT_SUPPORTED
 }
 
-pub unsafe extern "C" fn C_DestroyObject(
-    _arg1: CK_SESSION_HANDLE,
-    _arg2: CK_OBJECT_HANDLE,
-) -> CK_RV {
-    CKR_FUNCTION_NOT_SUPPORTED
-}
-
 pub unsafe extern "C" fn C_GetObjectSize(
     _arg1: CK_SESSION_HANDLE,
     _arg2: CK_OBJECT_HANDLE,
@@ -316,17 +309,6 @@ pub unsafe extern "C" fn C_UnwrapKey(
     _arg6: *mut CK_ATTRIBUTE,
     _arg7: CK_ULONG,
     _arg8: *mut CK_OBJECT_HANDLE,
-) -> CK_RV {
-    CKR_FUNCTION_NOT_SUPPORTED
-}
-
-pub unsafe extern "C" fn C_DeriveKey(
-    _arg1: CK_SESSION_HANDLE,
-    _arg2: *mut CK_MECHANISM,
-    _arg3: CK_OBJECT_HANDLE,
-    _arg4: *mut CK_ATTRIBUTE,
-    _arg5: CK_ULONG,
-    _arg6: *mut CK_OBJECT_HANDLE,
 ) -> CK_RV {
     CKR_FUNCTION_NOT_SUPPORTED
 }

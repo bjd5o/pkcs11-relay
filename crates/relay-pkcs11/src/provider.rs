@@ -62,20 +62,27 @@ impl Object {
         let pk = &k.public_key;
         let rsa = k.algorithm.is_rsa();
         let signs = matches!(k.role, Role::Sign | Role::Auth);
-        let decrypts = k.role == Role::Encrypt;
+        // RSA encrypt keys decrypt; EC encrypt keys do ECDH (C_DeriveKey).
+        let decrypts = k.role == Role::Encrypt && rsa;
+        let derives = k.role == Role::Encrypt && k.algorithm.is_ecdh();
+        let key_type = match k.algorithm {
+            Algorithm::Rsa2048 | Algorithm::Rsa4096 => CKK_RSA,
+            Algorithm::P256 | Algorithm::P384 => CKK_EC,
+            Algorithm::X25519 => CKK_EC_MONTGOMERY,
+            Algorithm::Ed25519 => CKK_EC_EDWARDS,
+        };
         let v = match t {
             CKA_CLASS => ulong(if self.public {
                 CKO_PUBLIC_KEY
             } else {
                 CKO_PRIVATE_KEY
             }),
-            CKA_KEY_TYPE => ulong(if rsa { CKK_RSA } else { CKK_EC }),
+            CKA_KEY_TYPE => ulong(key_type),
             CKA_TOKEN => bool_attr(true),
             CKA_PRIVATE => bool_attr(false),
             CKA_MODIFIABLE
             | CKA_COPYABLE
             | CKA_DESTROYABLE
-            | CKA_DERIVE
             | CKA_WRAP
             | CKA_UNWRAP
             | CKA_SIGN_RECOVER
@@ -89,6 +96,7 @@ impl Object {
             CKA_DECRYPT if !self.public => bool_attr(decrypts),
             CKA_VERIFY if self.public => bool_attr(signs),
             CKA_ENCRYPT if self.public => bool_attr(decrypts),
+            CKA_DERIVE => bool_attr(derives && !self.public),
             CKA_SIGN | CKA_DECRYPT | CKA_VERIFY | CKA_ENCRYPT => bool_attr(false),
             CKA_SENSITIVE | CKA_ALWAYS_SENSITIVE | CKA_NEVER_EXTRACTABLE if !self.public => {
                 bool_attr(true)
@@ -99,7 +107,7 @@ impl Object {
             CKA_MODULUS_BITS if rsa => {
                 ulong((k.algorithm.rsa_modulus_len().unwrap_or(0) * 8) as CK_ULONG)
             }
-            CKA_EC_PARAMS if !rsa => relay_core::keys::P256_EC_PARAMS.to_vec(),
+            CKA_EC_PARAMS if !rsa => pk.ec_params().unwrap_or_default().to_vec(),
             CKA_EC_POINT if !rsa => ec_point_der(&pk.ec_point().unwrap_or_default()),
             CKA_PUBLIC_KEY_INFO => pk.spki().to_vec(),
             CKA_PRIVATE_EXPONENT | CKA_PRIME_1 | CKA_PRIME_2 | CKA_EXPONENT_1 | CKA_EXPONENT_2
@@ -121,6 +129,56 @@ impl Object {
     }
 }
 
+/// A derived secret key: session-only, in RAM, zeroized on drop (`Zeroizing`). Its value is
+/// readable through `CKA_VALUE` only when the template made it extractable and not
+/// sensitive; otherwise a `CKK_AES` key is usable only through `CKM_AES_GCM` here.
+pub struct SecretObject {
+    pub key_type: CK_KEY_TYPE,
+    pub value: Zeroizing<Vec<u8>>,
+    pub extractable: bool,
+    pub sensitive: bool,
+    pub encrypt: bool,
+    pub decrypt: bool,
+    pub label: Vec<u8>,
+}
+
+impl SecretObject {
+    pub fn attribute(&self, t: CK_ATTRIBUTE_TYPE) -> Attr {
+        let v = match t {
+            CKA_CLASS => ulong(CKO_SECRET_KEY),
+            CKA_KEY_TYPE => ulong(self.key_type),
+            CKA_VALUE_LEN => ulong(self.value.len() as CK_ULONG),
+            CKA_TOKEN | CKA_PRIVATE | CKA_MODIFIABLE | CKA_COPYABLE | CKA_LOCAL | CKA_DERIVE
+            | CKA_SIGN | CKA_VERIFY | CKA_WRAP | CKA_UNWRAP | CKA_TRUSTED => bool_attr(false),
+            CKA_DESTROYABLE => bool_attr(true),
+            CKA_SENSITIVE | CKA_ALWAYS_SENSITIVE => bool_attr(self.sensitive),
+            CKA_EXTRACTABLE => bool_attr(self.extractable),
+            CKA_NEVER_EXTRACTABLE => bool_attr(!self.extractable),
+            CKA_ENCRYPT => bool_attr(self.encrypt),
+            CKA_DECRYPT => bool_attr(self.decrypt),
+            CKA_LABEL => self.label.clone(),
+            CKA_ID => Vec::new(),
+            CKA_VALUE if self.extractable && !self.sensitive => self.value.to_vec(),
+            CKA_VALUE => return Attr::Sensitive,
+            _ => return Attr::Invalid,
+        };
+        Attr::Value(v)
+    }
+
+    pub fn matches(&self, template: &[(CK_ATTRIBUTE_TYPE, Vec<u8>)]) -> bool {
+        template
+            .iter()
+            .all(|(t, want)| matches!(self.attribute(*t), Attr::Value(v) if &v == want))
+    }
+}
+
+/// AES-GCM on a derived key, in progress.
+pub struct AesOp {
+    pub key: Zeroizing<Vec<u8>>,
+    pub iv: Vec<u8>,
+    pub aad: Vec<u8>,
+}
+
 /// A cryptographic operation in progress. The result is cached after the first call so the
 /// length-query second call needs no new approval (spec: one approval per operation).
 pub struct Operation {
@@ -140,6 +198,10 @@ pub struct Session {
     pub decrypt: Option<Operation>,
     /// Software RSA-OAEP encryption with an `encrypt` key's public key: no approval needed.
     pub encrypt: Option<(ManifestKey, Vec<u8>)>,
+    /// Secret keys from C_DeriveKey; they die with the session.
+    pub derived: HashMap<CK_OBJECT_HANDLE, SecretObject>,
+    pub aes_encrypt: Option<AesOp>,
+    pub aes_decrypt: Option<AesOp>,
 }
 
 pub struct Provider {
@@ -149,6 +211,8 @@ pub struct Provider {
     discovery: Mutex<Discovery>,
     pub sessions: Mutex<HashMap<CK_SESSION_HANDLE, Session>>,
     next_session: AtomicU64,
+    /// Session-object handles live above token-object handles.
+    next_object: AtomicU64,
 }
 
 fn load_or_create_client_key(path: &std::path::Path) -> Result<SoftwareKey, String> {
@@ -215,6 +279,7 @@ impl Provider {
             discovery,
             sessions: Mutex::new(HashMap::new()),
             next_session: AtomicU64::new(1),
+            next_object: AtomicU64::new(1 << 31),
         })
     }
 
@@ -264,9 +329,16 @@ impl Provider {
                 sign: None,
                 decrypt: None,
                 encrypt: None,
+                derived: HashMap::new(),
+                aes_encrypt: None,
+                aes_decrypt: None,
             },
         );
         h
+    }
+
+    pub fn new_object_handle(&self) -> CK_OBJECT_HANDLE {
+        self.next_object.fetch_add(1, Ordering::SeqCst) as CK_OBJECT_HANDLE
     }
 
     fn manifest_snapshot(&self) -> Option<Manifest> {
@@ -410,10 +482,15 @@ impl Provider {
 
 /// The mechanisms a key supports (wire-format §3), as PKCS#11 types.
 pub fn mechanisms_for(k: &ManifestKey) -> Vec<CK_MECHANISM_TYPE> {
-    Mechanism::allowed_for(k.role, k.algorithm)
+    let mut m: Vec<CK_MECHANISM_TYPE> = Mechanism::allowed_for(k.role, k.algorithm)
         .iter()
         .map(|m| *m as CK_MECHANISM_TYPE)
-        .collect()
+        .collect();
+    // Keys derived from an ECDH key can be AES keys used through the provider.
+    if k.role == Role::Encrypt && k.algorithm.is_ecdh() {
+        m.push(relay_core::mechanism::ckm::AES_GCM as CK_MECHANISM_TYPE);
+    }
+    m
 }
 
 pub fn mechanism_info(m: CK_MECHANISM_TYPE, algs: &[Algorithm]) -> Option<CK_MECHANISM_INFO> {
@@ -429,6 +506,17 @@ pub fn mechanism_info(m: CK_MECHANISM_TYPE, algs: &[Algorithm]) -> Option<CK_MEC
             bits.iter().max().copied().unwrap_or(4096),
         )
     };
+    let ec_bits = || {
+        let bits: Vec<CK_ULONG> = algs
+            .iter()
+            .filter_map(|a| a.ec_field_len())
+            .map(|n| (n * 8) as CK_ULONG)
+            .collect();
+        (
+            bits.iter().min().copied().unwrap_or(256),
+            bits.iter().max().copied().unwrap_or(384),
+        )
+    };
     let (min, max, flags) = match m as u64 {
         ckm::RSA_PKCS_OAEP => {
             let (a, b) = rsa_bits();
@@ -438,11 +526,31 @@ pub fn mechanism_info(m: CK_MECHANISM_TYPE, algs: &[Algorithm]) -> Option<CK_MEC
             let (a, b) = rsa_bits();
             (a, b, CKF_SIGN)
         }
-        ckm::ECDSA | ckm::ECDSA_SHA256 => (
-            256,
-            256,
-            CKF_SIGN | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_UNCOMPRESS,
-        ),
+        ckm::ECDSA | ckm::ECDSA_SHA256 | ckm::ECDSA_SHA384 => {
+            let (a, b) = ec_bits();
+            (
+                a,
+                b,
+                CKF_SIGN | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_UNCOMPRESS,
+            )
+        }
+        ckm::EDDSA => (255, 255, CKF_SIGN | CKF_EC_NAMEDCURVE),
+        ckm::ECDH1_DERIVE => {
+            let (a, b) = ec_bits();
+            (
+                a,
+                b,
+                CKF_DERIVE | CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_UNCOMPRESS,
+            )
+        }
+        // Derived AES keys, used inside the provider (bytes, per PKCS#11 for AES).
+        ckm::AES_GCM => {
+            return Some(CK_MECHANISM_INFO {
+                ulMinKeySize: 16,
+                ulMaxKeySize: 32,
+                flags: CKF_ENCRYPT | CKF_DECRYPT,
+            })
+        }
         _ => return None,
     };
     Some(CK_MECHANISM_INFO {

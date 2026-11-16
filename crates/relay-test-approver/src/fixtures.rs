@@ -81,6 +81,56 @@ const SPECS: &[Spec] = &[
         role: Role::Auth,
         label: "stale",
     },
+    // ECC encryption, P-384 and Ed25519 signing (appended so earlier CKA_IDs stay stable).
+    Spec {
+        card: "a",
+        slot: 0x87,
+        alg: Algorithm::P256,
+        role: Role::Encrypt,
+        label: "enc-p256",
+    },
+    Spec {
+        card: "a",
+        slot: 0x88,
+        alg: Algorithm::P384,
+        role: Role::Encrypt,
+        label: "enc-p384",
+    },
+    Spec {
+        card: "a",
+        slot: 0x89,
+        alg: Algorithm::X25519,
+        role: Role::Encrypt,
+        label: "enc-x25519",
+    },
+    Spec {
+        card: "a",
+        slot: 0x8a,
+        alg: Algorithm::P384,
+        role: Role::Sign,
+        label: "sign-p384",
+    },
+    Spec {
+        card: "a",
+        slot: 0x8b,
+        alg: Algorithm::P384,
+        role: Role::Auth,
+        label: "auth-p384",
+    },
+    Spec {
+        card: "a",
+        slot: 0x8c,
+        alg: Algorithm::Ed25519,
+        role: Role::Sign,
+        label: "sign-ed25519",
+    },
+    Spec {
+        card: "a",
+        slot: 0x8d,
+        alg: Algorithm::Ed25519,
+        role: Role::Auth,
+        label: "auth-ed25519",
+    },
 ];
 
 fn w(path: &Path, data: impl AsRef<[u8]>) -> Result<(), String> {
@@ -184,6 +234,13 @@ pub fn generate(
         "auth-rsa",
         "denied",
         "stale",
+        "enc-p256",
+        "enc-p384",
+        "enc-x25519",
+        "sign-p384",
+        "auth-p384",
+        "sign-ed25519",
+        "auth-ed25519",
     ]
     .iter()
     .map(|l| fp(l))
