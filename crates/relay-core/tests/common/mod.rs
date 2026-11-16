@@ -244,29 +244,67 @@ impl Fx {
 
     /// A `sign`-role ECDSA-SHA256 request and the correct signature result.
     pub fn key_by_label(&self, label: &str) -> &ManifestKey {
-        self.manifest.keys.iter().find(|k| k.label == label).unwrap()
+        self.manifest
+            .keys
+            .iter()
+            .find(|k| k.label == label)
+            .unwrap()
     }
 
     /// An ECDH request on the `ecdh` key from a fresh peer key, and the derived result the
     /// approver would return (computed here in software).
-    pub fn derive_request(&self, kdf: u64, shared: &[u8], out_len: u32) -> (SignedRequest, ReplyKey, Vec<u8>) {
-        let SoftwareKey::P256(card) = &self.ecdh else { panic!("ecdh key is P-256") };
+    pub fn derive_request(
+        &self,
+        kdf: u64,
+        shared: &[u8],
+        out_len: u32,
+    ) -> (SignedRequest, ReplyKey, Vec<u8>) {
+        let SoftwareKey::P256(card) = &self.ecdh else {
+            panic!("ecdh key is P-256")
+        };
         let peer = SoftwareKey::generate_p256();
-        let SoftwareKey::P256(peer_sk) = &peer else { unreachable!() };
+        let SoftwareKey::P256(peer_sk) = &peer else {
+            unreachable!()
+        };
         let peer_point = peer.public_key().ec_point().unwrap();
-        let secret = p256::ecdh::diffie_hellman(peer_sk.as_nonzero_scalar(), card.verifying_key().as_affine());
+        let secret = p256::ecdh::diffie_hellman(
+            peer_sk.as_nonzero_scalar(),
+            card.verifying_key().as_affine(),
+        );
         let mech = Mechanism::ecdh_from_pkcs11(kdf, shared.to_vec(), out_len).unwrap();
         let result = match kdf {
-            relay_core::mechanism::ckm::CKD_NULL => secret.raw_secret_bytes()[..out_len as usize].to_vec(),
+            relay_core::mechanism::ckm::CKD_NULL => {
+                secret.raw_secret_bytes()[..out_len as usize].to_vec()
+            }
             _ => {
                 let mut out = vec![0u8; out_len as usize];
-                ansi_x963_kdf::derive_key_into::<sha2::Sha256>(secret.raw_secret_bytes(), shared, &mut out).unwrap();
+                ansi_x963_kdf::derive_key_into::<sha2::Sha256>(
+                    secret.raw_secret_bytes(),
+                    shared,
+                    &mut out,
+                )
+                .unwrap();
                 out
             }
         };
         let reply = ReplyKey::generate();
-        let ctx = RequestContext { host: "pi5.tailnet".into(), purpose: "ECDH".into(), consumer: "test".into() };
-        let r = UnsignedRequest::new(CLIENT_ID, self.key_by_label("ecdh"), Op::Derive, mech, peer_point, ctx, reply.public_bytes(), NOW, NOW + 90).unwrap();
+        let ctx = RequestContext {
+            host: "pi5.tailnet".into(),
+            purpose: "ECDH".into(),
+            consumer: "test".into(),
+        };
+        let r = UnsignedRequest::new(
+            CLIENT_ID,
+            self.key_by_label("ecdh"),
+            Op::Derive,
+            mech,
+            peer_point,
+            ctx,
+            reply.public_bytes(),
+            NOW,
+            NOW + 90,
+        )
+        .unwrap();
         let sig = self.client.sign(&r.to_be_signed());
         (r.with_signature(sig), reply, result)
     }
