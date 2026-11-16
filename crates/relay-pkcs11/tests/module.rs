@@ -13,7 +13,8 @@ use relay_pkcs11::ffi::*;
 use relay_test_approver::approver::{Approver, Behavior, Config};
 
 struct Env {
-    _rt: tokio::runtime::Runtime,
+    rt: tokio::runtime::Runtime,
+    dir: std::path::PathBuf,
     relay: Arc<relay_server::state::AppState>,
 }
 
@@ -84,7 +85,7 @@ fn start() -> Env {
         st
     });
     std::env::set_var("RELAY_PKCS11_CONFIG", dir.join("provider.toml"));
-    Env { _rt: rt, relay }
+    Env { rt, dir, relay }
 }
 
 fn hex(b: &[u8]) -> String {
@@ -440,6 +441,7 @@ fn module_end_to_end() {
         );
         assert_eq!(&out[..len as usize], pt);
         assert_eq!(approved(&env) - before, 1);
+        never_on_disk(&env, pt, &ct);
 
         // Failure handling: rejected locally, nothing sent.
         let before = env.relay.metrics.requests_accepted.load(Ordering::SeqCst);
@@ -492,4 +494,63 @@ fn module_end_to_end() {
         assert_eq!(C_Finalize(null_mut()), CKR_CRYPTOKI_NOT_INITIALIZED);
     }
     let _ = null::<u8>();
+}
+
+/// Every file under `dir`, recursively.
+fn files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(files(&p))
+        } else {
+            out.push(p)
+        }
+    }
+    out
+}
+
+/// Decrypt content never reaches storage: no file written by the relay (SQLite and its WAL),
+/// the approvers or the provider holds the plaintext or any 32-byte window of the ciphertext,
+/// and the audit log keeps only hashes for the decrypt.
+fn never_on_disk(env: &Env, pt: &[u8], ct: &[u8]) {
+    // Let SQLite flush and the WAL settle.
+    std::thread::sleep(Duration::from_millis(500));
+    let windows: Vec<&[u8]> = ct.chunks(32).filter(|c| c.len() == 32).collect();
+    let all = files(&env.dir);
+    assert!(
+        all.iter().any(|p| p.to_string_lossy().contains("relay.db")),
+        "relay database present"
+    );
+    for path in all {
+        let data = std::fs::read(&path).unwrap_or_default();
+        let has = |needle: &[u8]| data.windows(needle.len()).any(|w| w == needle);
+        assert!(!has(pt), "plaintext found in {}", path.display());
+        for w in &windows {
+            assert!(!has(w), "ciphertext found in {}", path.display());
+        }
+    }
+    let rows = env
+        .rt
+        .block_on(relay_server::db::audit_since(&env.relay.db, 0))
+        .unwrap();
+    let dec: Vec<_> = rows
+        .iter()
+        .filter(|r| r.op.as_deref() == Some("decrypt"))
+        .collect();
+    assert!(dec.len() >= 2, "decrypt request and response are audited");
+    for r in dec {
+        assert!(
+            r.request.is_none() && r.response.is_none(),
+            "{} row stores decrypt bytes",
+            r.event
+        );
+        assert!(
+            r.input_sha256.is_some() && r.detail.as_deref().is_some_and(|d| d.contains("_sha256="))
+        );
+    }
+    // Sign requests are still audited in full (spec: audit log).
+    assert!(rows
+        .iter()
+        .any(|r| r.op.as_deref() == Some("sign") && r.request.is_some()));
 }

@@ -266,8 +266,16 @@ async fn audit(st: &AppState, e: AuditEvent) {
     }
 }
 
+/// Whether an operation's content must stay out of storage: for decrypts (and key agreement)
+/// the request carries ciphertext and the response a sealed plaintext, so the audit log keeps
+/// only metadata and hashes. Sign requests are logged in full (spec: audit log).
+fn confidential(r: &SignedRequest) -> bool {
+    !matches!(r.fields.op, relay_core::Op::Sign)
+}
+
 fn request_audit(event: &str, r: &SignedRequest) -> AuditEvent {
     let f = &r.fields;
+    let keep = !confidential(r);
     AuditEvent {
         ts: now() as i64,
         event: event.into(),
@@ -280,7 +288,8 @@ fn request_audit(event: &str, r: &SignedRequest) -> AuditEvent {
         purpose: Some(f.context.purpose.clone()),
         consumer: Some(f.context.consumer.clone()),
         input_sha256: Some(hex::encode(Sha256::digest(&f.input))),
-        request: Some(r.bytes().to_vec()),
+        detail: (!keep).then(|| format!("request_sha256={}", hex::encode(r.hash()))),
+        request: keep.then(|| r.bytes().to_vec()),
         ..Default::default()
     }
 }
@@ -397,8 +406,11 @@ async fn submit_request(
                     ts: t as i64,
                     event: "request_rejected".into(),
                     client_id: Some(c.client_id.clone()),
-                    detail: Some(e.to_string()),
-                    request: Some(body.to_vec()),
+                    // Never the body: it may be a decrypt request.
+                    detail: Some(format!(
+                        "{e}; body_sha256={}",
+                        hex::encode(Sha256::digest(&body))
+                    )),
                     ..Default::default()
                 },
             )
@@ -626,7 +638,14 @@ async fn post_response(
     e.device_id = Some(d.device_id.clone());
     e.status = Some(status.as_str().into());
     e.reason = resp.fields.reason.map(|r| r.as_str().into());
-    e.response = Some(body.to_vec());
+    if confidential(&req) {
+        e.detail = Some(format!(
+            "response_sha256={}",
+            hex::encode(Sha256::digest(&body))
+        ));
+    } else {
+        e.response = Some(body.to_vec());
+    }
     e.request = None;
     audit(&st, e).await;
     tracing::info!(

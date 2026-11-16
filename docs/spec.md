@@ -202,7 +202,7 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 - **Queue with expiry.** Keep pending requests in memory until their `expires_at`; accept exactly one response per request id; reject duplicate ids.
 - **Ring the doorbell.** Send a content-free push ("1 pending request") to every device advertising the requested key, through APNs, FCM, ntfy or Web Push. The first response wins; the request is withdrawn from the other devices.
 - **Deliver.** Pass the device-signed response and its attestation to the client's open long-poll or WebSocket, then delete the request.
-- **Limit and log.** Rate-limit per client and per device. Requests are not sealed, so the audit log can record each full request (client, host, purpose, key, mechanism, input hash) next to the device-signed outcome.
+- **Limit and log.** Rate-limit per client and per device. The audit log records every request's metadata (client, host, purpose, key, mechanism, input hash) next to its outcome. Sign requests and their device-signed responses are kept in full. For decrypts and key agreement it keeps only hashes of the request and response, never their bytes: the content of a confidentiality operation stays in RAM.
 - **Lose nothing that matters on restart.** Registries persist; pending requests may be lost, and clients simply fail or retry.
 
 **API** (HTTPS, JSON)
@@ -229,7 +229,7 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 | Push credentials | APNs `.p8` key, key id, team id; or an FCM service account; or an ntfy topic and token | Sending the doorbell |
 | Limits | max TTL 120 s, max 4 pending per client, max body 64 KiB | Bounding abuse and approval spam |
 | Storage | SQLite file for registries; pending requests in memory | Persistence |
-| Audit log | file or syslog target | Every request and its device-signed outcome |
+| Audit log | SQLite (exportable as JSON lines) | Every request's metadata and outcome; full bytes only for sign operations |
 
 ## Approver application
 
