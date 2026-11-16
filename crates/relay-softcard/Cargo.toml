@@ -10,6 +10,9 @@ publish.workspace = true
 relay-core.workspace = true
 rsa.workspace = true
 p256.workspace = true
+p384.workspace = true
+x25519-dalek.workspace = true
+ed25519-dalek.workspace = true
 sha2.workspace = true
 x509-cert.workspace = true
 zeroize.workspace = true
@@ -18,6 +21,10 @@ rand_core.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
+p256.workspace = true
+p384.workspace = true
+x25519-dalek.workspace = true
+ansi-x963-kdf.workspace = true
 relay-core = { workspace = true, features = ["test-util"] }
 rsa.workspace = true
 sha2.workspace = true

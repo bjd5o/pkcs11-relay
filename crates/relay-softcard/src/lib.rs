@@ -31,7 +31,19 @@ const RESPONSE_CHUNK: usize = 256;
 pub enum SlotKey {
     Rsa(Box<rsa::PrivateKey>),
     P256(p256::ecdsa::SigningKey),
+    P384(p384::ecdsa::SigningKey),
+    X25519(x25519_dalek::StaticSecret),
+    Ed25519(ed25519_dalek::SigningKey),
 }
+
+/// RFC 8410 PKCS#8 prefix for an X25519 private key (followed by the 32 key bytes).
+const X25519_PKCS8_PREFIX: [u8; 16] = [
+    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20,
+];
+/// RFC 8410 SPKI prefix for an X25519 public key (followed by the 32 key bytes).
+const X25519_SPKI_PREFIX: [u8; 12] = [
+    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00,
+];
 
 impl SlotKey {
     pub fn generate(alg: Algorithm) -> Self {
@@ -48,29 +60,75 @@ impl SlotKey {
                     &mut rng,
                 ),
             ),
-            Algorithm::Ed25519 => panic!("PIV slots here hold RSA or P-256 keys"),
+            Algorithm::P384 => SlotKey::P384(
+                <p384::ecdsa::SigningKey as p384::elliptic_curve::Generate>::generate_from_rng(
+                    &mut rng,
+                ),
+            ),
+            Algorithm::X25519 => {
+                let mut b = Zeroizing::new([0u8; 32]);
+                relay_core::signing::random_bytes(&mut *b);
+                SlotKey::X25519(x25519_dalek::StaticSecret::from(*b))
+            }
+            Algorithm::Ed25519 => SlotKey::Ed25519(ed25519_dalek::SigningKey::generate(&mut rng)),
         }
     }
 
-    /// Load a PKCS#8 PEM private key (RSA or P-256).
+    /// Load a PKCS#8 PEM private key (RSA, P-256, P-384 or X25519).
     pub fn from_pkcs8_pem(pem: &str) -> Result<Self, PivError> {
         if let Ok(k) = <p256::ecdsa::SigningKey as DecodePrivateKey>::from_pkcs8_pem(pem) {
             return Ok(SlotKey::P256(k));
         }
+        if let Ok(k) =
+            <p384::ecdsa::SigningKey as p384::pkcs8::DecodePrivateKey>::from_pkcs8_pem(pem)
+        {
+            return Ok(SlotKey::P384(k));
+        }
+        if let Ok(k) =
+            <ed25519_dalek::SigningKey as ed25519_dalek::pkcs8::DecodePrivateKey>::from_pkcs8_pem(
+                pem,
+            )
+        {
+            return Ok(SlotKey::Ed25519(k));
+        }
+        if let Ok((label, der)) = p256::pkcs8::der::pem::decode_vec(pem.as_bytes()) {
+            let der = Zeroizing::new(der);
+            if label == "PRIVATE KEY" && der.len() == 48 && der.starts_with(&X25519_PKCS8_PREFIX) {
+                let raw: [u8; 32] = der[16..].try_into().expect("32 bytes");
+                return Ok(SlotKey::X25519(x25519_dalek::StaticSecret::from(raw)));
+            }
+        }
         <rsa::PrivateKey as rsa::pkcs8::DecodePrivateKey>::from_pkcs8_pem(pem)
             .map(|k| SlotKey::Rsa(Box::new(k)))
-            .map_err(|_| PivError::InvalidArgument("not an RSA or P-256 PKCS#8 key".into()))
+            .map_err(|_| {
+                PivError::InvalidArgument("not an RSA, P-256, P-384 or X25519 PKCS#8 key".into())
+            })
     }
 
     pub fn to_pkcs8_pem(&self) -> Zeroizing<String> {
         let pem = match self {
             SlotKey::Rsa(k) => {
                 rsa::pkcs8::EncodePrivateKey::to_pkcs8_pem(k.as_ref(), LineEnding::LF)
+                    .map(|p| p.to_string())
             }
-            SlotKey::P256(k) => k.to_pkcs8_pem(LineEnding::LF),
+            SlotKey::P256(k) => k.to_pkcs8_pem(LineEnding::LF).map(|p| p.to_string()),
+            SlotKey::P384(k) => p384::pkcs8::EncodePrivateKey::to_pkcs8_pem(k, LineEnding::LF)
+                .map(|p| p.to_string()),
+            SlotKey::Ed25519(k) => {
+                ed25519_dalek::pkcs8::EncodePrivateKey::to_pkcs8_pem(k, LineEnding::LF)
+                    .map(|p| p.to_string())
+            }
+            SlotKey::X25519(k) => {
+                let mut der = Zeroizing::new(X25519_PKCS8_PREFIX.to_vec());
+                der.extend_from_slice(k.as_bytes());
+                Ok(
+                    p256::pkcs8::der::pem::encode_string("PRIVATE KEY", LineEnding::LF, &der)
+                        .expect("PEM"),
+                )
+            }
         }
         .expect("encoding a valid key cannot fail");
-        Zeroizing::new(pem.to_string())
+        Zeroizing::new(pem)
     }
 
     pub fn algorithm(&self) -> Algorithm {
@@ -78,19 +136,36 @@ impl SlotKey {
             SlotKey::Rsa(k) if k.n().bit_width() == 4096 => Algorithm::Rsa4096,
             SlotKey::Rsa(_) => Algorithm::Rsa2048,
             SlotKey::P256(_) => Algorithm::P256,
+            SlotKey::P384(_) => Algorithm::P384,
+            SlotKey::X25519(_) => Algorithm::X25519,
+            SlotKey::Ed25519(_) => Algorithm::Ed25519,
         }
     }
 
     pub fn public_key(&self) -> PublicKey {
         let der = match self {
-            SlotKey::Rsa(k) => rsa::pkcs8::EncodePublicKey::to_public_key_der(&k.to_public_key()),
-            SlotKey::P256(k) => p256::pkcs8::EncodePublicKey::to_public_key_der(k.verifying_key()),
+            SlotKey::Rsa(k) => rsa::pkcs8::EncodePublicKey::to_public_key_der(&k.to_public_key())
+                .map(|d| d.into_vec()),
+            SlotKey::P256(k) => p256::pkcs8::EncodePublicKey::to_public_key_der(k.verifying_key())
+                .map(|d| d.into_vec()),
+            SlotKey::P384(k) => p384::pkcs8::EncodePublicKey::to_public_key_der(k.verifying_key())
+                .map(|d| d.into_vec()),
+            SlotKey::Ed25519(k) => {
+                ed25519_dalek::pkcs8::EncodePublicKey::to_public_key_der(&k.verifying_key())
+                    .map(|d| d.into_vec())
+            }
+            SlotKey::X25519(k) => {
+                let mut v = X25519_SPKI_PREFIX.to_vec();
+                v.extend_from_slice(x25519_dalek::PublicKey::from(k).as_bytes());
+                Ok(v)
+            }
         }
         .expect("encoding a valid key cannot fail");
-        PublicKey::from_spki(der.as_bytes()).expect("generated keys are canonical")
+        PublicKey::from_spki(&der).expect("generated keys are canonical")
     }
 
-    /// A self-signed certificate for the key, as a YubiKey writes one at generation time.
+    /// A certificate for the key, as a YubiKey keeps one per slot. Self-signed, except X25519
+    /// (which cannot sign): issued by a throwaway P-256 key. Only its public key matters.
     pub fn self_signed_certificate(&self, common_name: &str) -> Vec<u8> {
         let name = Name::from_str(&format!("CN={common_name}")).expect("valid CN");
         let spki =
@@ -106,8 +181,16 @@ impl SlotKey {
                 builder.build::<_, rsa::pkcs1v15::Signature>(&signer)
             }
             SlotKey::P256(k) => builder.build::<_, p256::ecdsa::DerSignature>(k),
+            SlotKey::P384(k) => builder.build::<_, p384::ecdsa::DerSignature>(k),
+            SlotKey::X25519(_) | SlotKey::Ed25519(_) => {
+                let issuer =
+                    <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate_from_rng(
+                        &mut rand_core::UnwrapErr(getrandom::SysRng),
+                    );
+                builder.build::<_, p256::ecdsa::DerSignature>(&issuer)
+            }
         }
-        .expect("self-signed certificate");
+        .expect("certificate");
         cert.to_der().expect("certificate DER")
     }
 }
@@ -374,7 +457,37 @@ impl SoftCard {
         if !self.verified {
             return Err(0x6982);
         }
-        let challenge = parse_challenge(data).ok_or(0x6a80u16)?;
+        let (tag, challenge) = parse_challenge(data).ok_or(0x6a80u16)?;
+        // Tag 85 asks for ECDH with the peer key; 81 for a signature or raw RSA.
+        if tag == 0x85 {
+            let secret: Zeroizing<Vec<u8>> = match &entry.key {
+                SlotKey::P256(k) => {
+                    let peer =
+                        p256::PublicKey::from_sec1_bytes(&challenge).map_err(|_| 0x6a80u16)?;
+                    let s = p256::ecdh::diffie_hellman(k.as_nonzero_scalar(), peer.as_affine());
+                    Zeroizing::new(s.raw_secret_bytes().to_vec())
+                }
+                SlotKey::P384(k) => {
+                    let peer =
+                        p384::PublicKey::from_sec1_bytes(&challenge).map_err(|_| 0x6a80u16)?;
+                    let s = p384::ecdh::diffie_hellman(k.as_nonzero_scalar(), peer.as_affine());
+                    Zeroizing::new(s.raw_secret_bytes().to_vec())
+                }
+                SlotKey::X25519(k) => {
+                    let peer: [u8; 32] = challenge.as_slice().try_into().map_err(|_| 0x6a80u16)?;
+                    Zeroizing::new(
+                        k.diffie_hellman(&x25519_dalek::PublicKey::from(peer))
+                            .as_bytes()
+                            .to_vec(),
+                    )
+                }
+                SlotKey::Rsa(_) | SlotKey::Ed25519(_) => return Err(0x6a80),
+            };
+            return Ok(wrap_response(&secret));
+        }
+        if tag != 0x81 {
+            return Err(0x6a80);
+        }
         let out: Vec<u8> = match &entry.key {
             SlotKey::Rsa(k) => {
                 let size = k.size();
@@ -397,14 +510,23 @@ impl SoftCard {
                     k.sign_prehash(&challenge).map_err(|_| 0x6a80u16)?;
                 sig.to_der().as_bytes().to_vec()
             }
+            SlotKey::P384(k) => {
+                use p384::ecdsa::signature::hazmat::PrehashSigner;
+                if challenge.len() != 48 {
+                    return Err(0x6a80);
+                }
+                let sig: p384::ecdsa::Signature =
+                    k.sign_prehash(&challenge).map_err(|_| 0x6a80u16)?;
+                sig.to_der().as_bytes().to_vec()
+            }
+            SlotKey::Ed25519(k) => {
+                // EdDSA signs the whole message (YubiKey 5.7: algorithm E0).
+                use ed25519_dalek::Signer;
+                k.sign(&challenge).to_bytes().to_vec()
+            }
+            SlotKey::X25519(_) => return Err(0x6a80),
         };
-        let mut inner = vec![0x82];
-        push_len(&mut inner, out.len());
-        inner.extend_from_slice(&out);
-        let mut resp = vec![0x7c];
-        push_len(&mut resp, inner.len());
-        resp.extend_from_slice(&inner);
-        Ok(resp)
+        Ok(wrap_response(&out))
     }
 
     fn get_data(&self, data: &[u8]) -> Result<Vec<u8>, u16> {
@@ -466,8 +588,20 @@ fn read_len(d: &[u8]) -> Option<(usize, &[u8])> {
     }
 }
 
-/// Extract the `81` challenge from `7C { 82 00, 81 L data }`.
-fn parse_challenge(data: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+/// `7C { 82 L out }`.
+fn wrap_response(out: &[u8]) -> Vec<u8> {
+    let mut inner = vec![0x82];
+    push_len(&mut inner, out.len());
+    inner.extend_from_slice(out);
+    let mut resp = vec![0x7c];
+    push_len(&mut resp, inner.len());
+    resp.extend_from_slice(&inner);
+    resp
+}
+
+/// Extract the input and its tag (`81` challenge or `85` peer key) from
+/// `7C { 82 00, 81|85 L data }`.
+fn parse_challenge(data: &[u8]) -> Option<(u8, Zeroizing<Vec<u8>>)> {
     if *data.first()? != 0x7c {
         return None;
     }
@@ -477,8 +611,8 @@ fn parse_challenge(data: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
         let tag = rest[0];
         let (l, after) = read_len(&rest[1..])?;
         let value = after.get(..l)?;
-        if tag == 0x81 {
-            return Some(Zeroizing::new(value.to_vec()));
+        if tag == 0x81 || tag == 0x85 {
+            return Some((tag, Zeroizing::new(value.to_vec())));
         }
         rest = &after[l..];
     }

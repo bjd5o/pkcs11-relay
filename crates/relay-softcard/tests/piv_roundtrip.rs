@@ -218,3 +218,174 @@ fn certificate_read_and_parse() {
         Err(PivError::NotFound)
     );
 }
+
+/// ECDH on each curve through the core's PIV layer, checked against the same agreement
+/// computed in software from the peer's side; and both KDFs.
+#[test]
+fn ecdh_through_card_matches_software() {
+    use relay_core::mechanism::{ckm, Kdf};
+    let mut card = SoftCard::new(PIN);
+    let p256_pk = card.generate(slot(0x86), Algorithm::P256);
+    let p384_pk = card.generate(slot(0x87), Algorithm::P384);
+    let x_pk = card.generate(slot(0x88), Algorithm::X25519);
+    piv::select(&mut card).unwrap();
+    piv::verify_pin(&mut card, PIN).unwrap();
+    let mut rng = rand_core::UnwrapErr(getrandom::SysRng);
+
+    // P-256: the peer's ephemeral key and its view of the shared secret.
+    let eph =
+        <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate_from_rng(&mut rng);
+    let card_pub = p256::PublicKey::from_sec1_bytes(&p256_pk.ec_point().unwrap()).unwrap();
+    let expect = p256::ecdh::diffie_hellman(eph.as_nonzero_scalar(), card_pub.as_affine());
+    let peer = eph.verifying_key().to_sec1_point(false).as_bytes().to_vec();
+    let m = Mechanism::ecdh_from_pkcs11(ckm::CKD_NULL, vec![], 32).unwrap();
+    let got = piv::perform(&mut card, slot(0x86), Algorithm::P256, &m, &peer).unwrap();
+    assert_eq!(&got[..], &expect.raw_secret_bytes()[..]);
+    // X9.63 KDF with shared info, 16 bytes.
+    let m = Mechanism::ecdh_from_pkcs11(ckm::CKD_SHA256_KDF, b"info".to_vec(), 16).unwrap();
+    let got = piv::perform(&mut card, slot(0x86), Algorithm::P256, &m, &peer).unwrap();
+    let mut want = [0u8; 16];
+    ansi_x963_kdf::derive_key_into::<sha2::Sha256>(expect.raw_secret_bytes(), b"info", &mut want)
+        .unwrap();
+    assert_eq!(&got[..], &want);
+    let _ = Kdf::Null;
+
+    // P-384.
+    let eph =
+        <p384::ecdsa::SigningKey as p384::elliptic_curve::Generate>::generate_from_rng(&mut rng);
+    let card_pub = p384::PublicKey::from_sec1_bytes(&p384_pk.ec_point().unwrap()).unwrap();
+    let expect = p384::ecdh::diffie_hellman(eph.as_nonzero_scalar(), card_pub.as_affine());
+    let peer = eph.verifying_key().to_sec1_point(false).as_bytes().to_vec();
+    let m = Mechanism::ecdh_from_pkcs11(ckm::CKD_NULL, vec![], 48).unwrap();
+    let got = piv::perform(&mut card, slot(0x87), Algorithm::P384, &m, &peer).unwrap();
+    assert_eq!(&got[..], &expect.raw_secret_bytes()[..]);
+
+    // X25519.
+    let mut b = [0u8; 32];
+    relay_core::signing::random_bytes(&mut b);
+    let eph = x25519_dalek::StaticSecret::from(b);
+    let card_pub: [u8; 32] = x_pk.ec_point().unwrap().try_into().unwrap();
+    let expect = eph.diffie_hellman(&x25519_dalek::PublicKey::from(card_pub));
+    let peer = x25519_dalek::PublicKey::from(&eph).as_bytes().to_vec();
+    let m = Mechanism::ecdh_from_pkcs11(ckm::CKD_NULL, vec![], 32).unwrap();
+    let got = piv::perform(&mut card, slot(0x88), Algorithm::X25519, &m, &peer).unwrap();
+    assert_eq!(&got[..], expect.as_bytes());
+    // A low-order peer key gives an all-zero secret: refused.
+    assert!(piv::perform(&mut card, slot(0x88), Algorithm::X25519, &m, &[0u8; 32]).is_err());
+}
+
+#[test]
+fn p384_signatures_pass_check_5() {
+    use relay_core::manifest::{DraftKey, ManifestDraft};
+    let mut card = SoftCard::new(PIN);
+    let sign = card.generate(slot(0x89), Algorithm::P384);
+    let auth = card.generate(slot(0x8a), Algorithm::P384);
+    let keys = vec![
+        DraftKey {
+            role: Role::Sign,
+            label: "sign-p384".into(),
+            id: vec![1],
+            token: "t".into(),
+            public_key: sign,
+        },
+        DraftKey {
+            role: Role::Auth,
+            label: "auth-p384".into(),
+            id: vec![2],
+            token: "t".into(),
+            public_key: auth,
+        },
+    ];
+    let m = Manifest::from_json_unverified(
+        &ManifestDraft {
+            version: 1,
+            issued_at: 1,
+            valid_until: 2_000_000_000,
+            keys,
+        }
+        .to_json()
+        .unwrap(),
+    )
+    .unwrap();
+    piv::select(&mut card).unwrap();
+    piv::verify_pin(&mut card, PIN).unwrap();
+    let sig = piv::perform(
+        &mut card,
+        slot(0x89),
+        Algorithm::P384,
+        &Mechanism::EcdsaSha384,
+        b"tag",
+    )
+    .unwrap();
+    assert_eq!(sig.len(), 96);
+    verify_signature_result(key(&m, "sign-p384"), &Mechanism::EcdsaSha384, b"tag", &sig).unwrap();
+    use sha2::Digest;
+    let d = sha2::Sha384::digest(b"challenge");
+    let sig = piv::perform(
+        &mut card,
+        slot(0x8a),
+        Algorithm::P384,
+        &Mechanism::Ecdsa,
+        &d,
+    )
+    .unwrap();
+    verify_signature_result(key(&m, "auth-p384"), &Mechanism::Ecdsa, &d, &sig).unwrap();
+    assert!(verify_signature_result(key(&m, "sign-p384"), &Mechanism::Ecdsa, &d, &sig).is_err());
+}
+
+#[test]
+fn ed25519_signatures_pass_check_5() {
+    use relay_core::manifest::{DraftKey, ManifestDraft};
+    let mut card = SoftCard::new(PIN);
+    let sign = card.generate(slot(0x8b), Algorithm::Ed25519);
+    let auth = card.generate(slot(0x8c), Algorithm::Ed25519);
+    let keys = vec![
+        DraftKey {
+            role: Role::Sign,
+            label: "sign-ed".into(),
+            id: vec![1],
+            token: "t".into(),
+            public_key: sign,
+        },
+        DraftKey {
+            role: Role::Auth,
+            label: "auth-ed".into(),
+            id: vec![2],
+            token: "t".into(),
+            public_key: auth,
+        },
+    ];
+    let m = Manifest::from_json_unverified(
+        &ManifestDraft {
+            version: 1,
+            issued_at: 1,
+            valid_until: 2_000_000_000,
+            keys,
+        }
+        .to_json()
+        .unwrap(),
+    )
+    .unwrap();
+    piv::select(&mut card).unwrap();
+    piv::verify_pin(&mut card, PIN).unwrap();
+    // A message longer than one APDU exercises command chaining.
+    let msg = vec![0x5a; 600];
+    for (s, label) in [(0x8b, "sign-ed"), (0x8c, "auth-ed")] {
+        let sig = piv::perform(
+            &mut card,
+            slot(s),
+            Algorithm::Ed25519,
+            &Mechanism::Eddsa,
+            &msg,
+        )
+        .unwrap();
+        assert_eq!(sig.len(), 64);
+        verify_signature_result(key(&m, label), &Mechanism::Eddsa, &msg, &sig).unwrap();
+        assert!(
+            verify_signature_result(key(&m, label), &Mechanism::Eddsa, b"other", &sig).is_err()
+        );
+    }
+    // The certificate (issued by a throwaway key) still yields the slot's public key.
+    let pk = piv::read_public_key(&mut card, slot(0x8b)).unwrap();
+    assert_eq!(&pk, &key(&m, "sign-ed").public_key);
+}
