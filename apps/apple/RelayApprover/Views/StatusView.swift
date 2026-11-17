@@ -4,6 +4,7 @@ import SwiftUI
 struct StatusView: View {
     @EnvironmentObject var model: AppModel
     @State private var pin = ""
+    @FocusState private var pinFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -16,6 +17,7 @@ struct StatusView: View {
                     Section("Attestation") {
                         if let a = s.attestation {
                             LabeledContent("Valid until", value: date(a.notAfter))
+                                .accessibilityIdentifier("attestation-valid")
                             LabeledContent("Renews from", value: date(a.renewAt))
                             Text("Renewal happens during an approval, in the same tap.")
                                 .font(.footnote).foregroundStyle(.secondary)
@@ -24,14 +26,18 @@ struct StatusView: View {
                                 .foregroundStyle(.red)
                         }
                         SecureField("YubiKey PIN", text: $pin)
+                            .focused($pinFocused)
+                            .accessibilityIdentifier("pin")
                             #if os(iOS)
                             .keyboardType(.numberPad)
                             #endif
                         Button(s.attestation == nil ? "Enroll with YubiKey" : "Enroll again") {
                             let entered = pin
                             pin = ""
+                            pinFocused = false
                             Task { await model.enroll(pin: entered) }
                         }
+                        .accessibilityIdentifier("enroll")
                         .disabled(pin.count < 6 || s.pinFailed)
                     }
                     if s.pinFailed {

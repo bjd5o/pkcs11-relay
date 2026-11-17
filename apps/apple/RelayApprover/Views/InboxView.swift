@@ -22,6 +22,7 @@ struct InboxView: View {
                                     Text("\(r.secondsLeft) s left").font(.caption)
                                 }
                             }
+                            .accessibilityIdentifier("request-\(r.keyLabel)")
                         }
                     }
                 }
@@ -34,6 +35,7 @@ struct InboxView: View {
                                     Text(p.host).font(.subheadline).foregroundStyle(.secondary)
                                 }
                             }
+                            .accessibilityIdentifier("pairing-\(p.clientId)")
                         }
                     }
                 }

@@ -47,11 +47,24 @@ targets:
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
         "EXCLUDED_ARCHS[sdk=macosx*]": x86_64
         BUNDLE_LOADER: $(TEST_HOST)
+  RelayApproverUITests:
+    type: bundle.ui-testing
+    supportedDestinations: [iOS]
+    sources: [RelayApproverUITests]
+    dependencies:
+      - target: RelayApprover
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        TEST_TARGET_NAME: RelayApprover
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
 schemes:
   RelayApprover:
     build:
       targets:
         RelayApprover: all
         RelayApproverTests: [test]
+        RelayApproverUITests: [test]
     test:
-      targets: [RelayApproverTests]
+      targets: [RelayApproverTests, RelayApproverUITests]

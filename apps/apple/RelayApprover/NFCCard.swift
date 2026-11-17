@@ -104,6 +104,12 @@ final class NFCCard: NSObject, CardChannel, NFCTagReaderSessionDelegate, @unchec
 /// Which card channel to use for one operation.
 enum CardSource {
     static func make(message: String) throws -> CardChannel {
+        #if RELAY_TEST_CARD
+        // Simulator end-to-end test only: a software PIV card from relay-ffi's test-card build.
+        if let json = ProcessInfo.processInfo.environment["RELAY_TEST_CARD"] {
+            return try testCard(slotsJson: json)
+        }
+        #endif
         #if canImport(CoreNFC) && os(iOS)
         guard NFCCard.isAvailable else {
             throw PlatformError.Failed(message: "This device cannot read NFC")

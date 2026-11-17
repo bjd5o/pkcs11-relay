@@ -717,3 +717,53 @@ fn fetch_manifest(
 ) -> Result<(Manifest, Vec<u8>), RelayError> {
     Ok(relay.fetch_manifest(&cfg.manifest_url, signer, cached, t, cfg.skew_secs)?)
 }
+
+// ---------- test card (simulator end-to-end only) ----------
+
+/// A software PIV card from PEM files, for the simulator end-to-end test. Only in builds with
+/// the `test-card` feature; the release XCFramework never contains it.
+#[cfg(feature = "test-card")]
+mod test_card {
+    use super::*;
+    use relay_core::piv::{CardTransport, Slot};
+    use relay_softcard::SoftCard;
+
+    struct SoftChannel(Mutex<SoftCard>);
+
+    impl CardChannel for SoftChannel {
+        fn begin_session(&self) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn transmit(&self, apdu: Vec<u8>) -> Result<Vec<u8>, PlatformError> {
+            self.0
+                .lock()
+                .expect("lock")
+                .transmit(&apdu)
+                .map_err(|e| PlatformError::Failed {
+                    message: e.to_string(),
+                })
+        }
+        /// Like an NFC tap ending: the card powers down.
+        fn end_session(&self) {
+            self.0.lock().expect("lock").reset();
+        }
+    }
+
+    /// `slots_json`: `{"pin": "123456", "slots": [{"slot": "9d", "key_pem": ..., "cert_pem": ...}]}`.
+    #[uniffi::export]
+    pub fn test_card(slots_json: String) -> Result<Arc<dyn CardChannel>, RelayError> {
+        let v: serde_json::Value = serde_json::from_str(&slots_json).map_err(invalid)?;
+        let pin = v["pin"].as_str().ok_or_else(|| invalid("pin"))?;
+        let mut card = SoftCard::new(pin.as_bytes());
+        for s in v["slots"].as_array().into_iter().flatten() {
+            let slot = Slot::parse(s["slot"].as_str().unwrap_or("")).map_err(invalid)?;
+            card.load_pem(
+                slot,
+                s["key_pem"].as_str().unwrap_or(""),
+                s["cert_pem"].as_str().unwrap_or(""),
+            )
+            .map_err(invalid)?;
+        }
+        Ok(Arc::new(SoftChannel(Mutex::new(card))))
+    }
+}

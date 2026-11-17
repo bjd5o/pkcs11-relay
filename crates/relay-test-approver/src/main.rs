@@ -50,6 +50,13 @@ enum Cmd {
         #[arg(long)]
         config: PathBuf,
     },
+    /// The client of the simulator end-to-end test: pair, then one decrypt (tests/sim-e2e.sh).
+    SimClient {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u64,
+    },
     /// Write test fixtures (keys, signed manifest, configs).
     GenFixtures {
         #[arg(long)]
@@ -138,6 +145,19 @@ async fn run(cli: Cli) -> Result<(), String> {
                     }
                 }
             }
+        }
+        Cmd::SimClient {
+            config,
+            timeout_secs,
+        } => {
+            let cfg: relay_test_approver::gate::Config =
+                toml::from_str(&std::fs::read_to_string(&config).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            tokio::task::spawn_blocking(move || {
+                relay_test_approver::sim_client::run(&cfg, Duration::from_secs(timeout_secs))
+            })
+            .await
+            .map_err(|e| e.to_string())?
         }
         Cmd::Gate { config } => {
             let cfg = toml::from_str(&std::fs::read_to_string(&config).map_err(|e| e.to_string())?)

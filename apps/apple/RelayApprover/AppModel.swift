@@ -20,6 +20,18 @@ final class AppModel: ObservableObject {
 
     init() {
         setup = Storage.loadSetup()
+        #if RELAY_TEST_CARD
+        // Simulator end-to-end test only (tests/sim-e2e.sh): the setup arrives in the
+        // environment instead of through the file picker.
+        // Each test run starts from scratch: no stored state or keys from an earlier run.
+        if let json = ProcessInfo.processInfo.environment["RELAY_TEST_SETUP"],
+           let s = try? JSONDecoder().decode(SetupFile.self, from: Data(json.utf8)) {
+            Storage.reset()
+            EnclaveKey.reset()
+            try? Storage.saveSetup(s)
+            setup = s
+        }
+        #endif
         if setup != nil { Task { await connect() } }
     }
 
@@ -77,7 +89,12 @@ final class AppModel: ObservableObject {
                 do {
                     let inbox = try await Self.background { try a.poll(waitSecs: 25) }
                     await MainActor.run { self?.inbox = inbox }
+                    // The relay answers at once while anything is pending: do not spin.
+                    if !inbox.requests.isEmpty || !inbox.pairings.isEmpty {
+                        try? await Task.sleep(for: .seconds(2))
+                    }
                 } catch {
+                    NSLog("relay-approver: poll failed: %@", "\(error)")
                     try? await Task.sleep(for: .seconds(5))
                 }
             }

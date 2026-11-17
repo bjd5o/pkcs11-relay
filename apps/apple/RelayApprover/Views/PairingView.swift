@@ -34,16 +34,22 @@ struct PairingView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    .accessibilityIdentifier("key-\(k.label)")
                 }
             }
-            Button("The code matches: approve") {
-                Task {
-                    await model.approvePairing(pairing, keys: Array(chosen))
-                    dismiss()
-                }
-            }
-            .disabled(chosen.isEmpty)
         }
         .navigationTitle("New client")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Approve") {
+                    Task {
+                        await model.approvePairing(pairing, keys: Array(chosen))
+                        dismiss()
+                    }
+                }
+                .accessibilityIdentifier("approve-pairing")
+                .disabled(chosen.isEmpty)
+            }
+        }
     }
 }

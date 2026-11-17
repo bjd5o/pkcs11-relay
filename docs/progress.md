@@ -66,3 +66,15 @@ Update this file as tasks finish. Each milestone's gate is defined in `docs/mile
   - The provider ran as a macOS `.dylib` under opensc `pkcs11-tool`, paired, and listed one token with four keys.
   - ECDSA-SHA256 (hw-sign), raw ECDSA (hw-auth), RSA-OAEP decryption (hw-unseal) and EdDSA (hw-sign-ed25519) all succeeded, and OpenSSL verified each result. The role and mechanism refusals returned the expected codes.
   - Not covered by this gate: `relayctl key generate` on hardware (needs a 3DES management key) and `relayctl attest sign` on hardware. The softcard tests cover both.
+
+## Milestone 5: Apple approver app (plan: `docs/milestone-5.md`)
+
+Part A:
+- [x] 5.0 The relay serves the signed manifest (`/v1/manifest`, `.asc`); the provider and test approver trust the relay CA for it. The Docker gate fetches it this way.
+- [x] 5.1 `relay-approver`: the engine (checks, approval view, PIN and operation in one card session, sealing, signing, renewal during approvals, pairing with locally derived codes, key map) and a blocking relay client. The test approver now runs on it.
+- [x] Separate relay-auth key (wire-format §8.4): the device key, which requires a biometric per signature, signs only responses, denials and the auth-key binding.
+- [x] 5.2 `relay-ffi` (UniFFI 0.32.2): `DeviceKey` and `CardChannel` foreign traits, an `Approver` object, saved state. `RelayFFI.xcframework` covers iOS, the simulator and Apple silicon macOS.
+- [x] 5.3 App skeleton: SwiftUI multiplatform (XcodeGen), Setup, Enrollment, Approval, Pairing and Status screens, Secure Enclave keys, storage; `relayctl app-config` writes the setup file.
+- [x] 5.4 NFC `CardChannel` (CoreNFC, ISO 7816). Builds; not yet run on a device.
+- [x] 5.5 Simulator end-to-end test (`tests/sim-e2e.sh`), passing locally (2026-11-17). A relay runs on the Mac; the app in the iOS simulator uses relay-ffi's software test card; an XCUITest enrolls, approves the pairing and approves an RSA-OAEP decrypt with the PIN; `relay-test-approver sim-client` verifies the plaintext as the provider would. CI job `apple` (macos-15) added, not yet run.
+- [ ] Gate on Brian's iPhone over NFC with YubiKey <serial>

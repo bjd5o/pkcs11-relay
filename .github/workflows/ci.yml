@@ -50,3 +50,15 @@ jobs:
         with:
           name: librelay_pkcs11-${{ matrix.arch }}-${{ matrix.libc }}
           path: librelay_pkcs11-*.so
+  apple:
+    # Milestone 5: the approver app in the iOS simulator against a real relay, with relay-ffi's
+    # software test card (tests/sim-e2e.sh). No YubiKey, no signing.
+    needs: rust
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          rustup toolchain install 1.93.0 --profile minimal --target aarch64-apple-ios,aarch64-apple-ios-sim
+          rustup default 1.93.0
+      - run: brew install xcodegen
+      - run: tests/sim-e2e.sh

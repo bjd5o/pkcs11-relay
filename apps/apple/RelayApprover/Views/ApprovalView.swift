@@ -7,6 +7,7 @@ struct ApprovalView: View {
     @Environment(\.dismiss) private var dismiss
     let request: RequestView
     @State private var pin = ""
+    @FocusState private var pinFocused: Bool
     @State private var result: String?
 
     var body: some View {
@@ -44,6 +45,8 @@ struct ApprovalView: View {
             }
             Section("Approve") {
                 SecureField("YubiKey PIN", text: $pin)
+                    .focused($pinFocused)
+                    .accessibilityIdentifier("pin")
                     .textContentType(.password)
                     #if os(iOS)
                     .keyboardType(.numberPad)
@@ -51,6 +54,7 @@ struct ApprovalView: View {
                 Button("Approve and tap YubiKey") {
                     let entered = pin
                     pin = ""
+                    pinFocused = false
                     Task {
                         if let o = await model.approve(request, pin: entered) {
                             result = o.approved
@@ -60,6 +64,7 @@ struct ApprovalView: View {
                         }
                     }
                 }
+                .accessibilityIdentifier("approve")
                 .disabled(pin.count < 6 || model.status?.pinFailed == true)
                 if model.status?.pinFailed == true {
                     Text("The last PIN was rejected. Retry it from Status when you are sure.")

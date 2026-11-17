@@ -6,3 +6,4 @@ pub mod approver;
 pub mod fixtures;
 pub mod gate;
 pub mod relay;
+pub mod sim_client;
