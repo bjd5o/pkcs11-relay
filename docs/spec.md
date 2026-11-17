@@ -210,6 +210,7 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 | Endpoint | Caller | Purpose |
 | --- | --- | --- |
 | `GET /v1/keys` | Provider | Advertised keys: public key, token, number of approver devices, last seen |
+| `GET /v1/manifest`, `GET /v1/manifest.asc` | Anyone | The signed manifest and its detached signature, served unchanged from configured files. A convenience for phones that cannot read local files; the signature, not the relay, makes it trustworthy |
 | `POST /v1/requests` | Provider | Submit a signed request |
 | `GET /v1/requests/{id}/result` | Provider | Long-poll (or WebSocket) for the attested response |
 | `POST /v1/clients/pending` | New client | Start pairing; tailnet only, rate-limited |
@@ -228,6 +229,7 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 | Device registry | device id → device public key, current attestation, operable keys, push tokens | Advertising keys; knowing whom to ring |
 | Push credentials | APNs `.p8` key, key id, team id; or an FCM service account; or an ntfy topic and token | Sending the doorbell |
 | Limits | max TTL 120 s, max 4 pending per client, max body 64 KiB | Bounding abuse and approval spam |
+| Manifest copy (optional) | `manifest.json` and `manifest.json.asc` | Serving the signed manifest at `/v1/manifest` |
 | Storage | SQLite file for registries; pending requests in memory | Persistence |
 | Audit log | SQLite (exportable as JSON lines) | Every request's metadata and outcome; full bytes only for sign operations |
 
