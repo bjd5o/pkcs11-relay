@@ -5,7 +5,8 @@
 [tools]
 # Pinned stable toolchain, installed through rustup by mise's built-in rust backend.
 # Linux targets are added in milestone 3, when the provider builds for glibc and musl.
-rust = { version = "1.93.0", components = "rustfmt,clippy" }
+# iOS device and simulator targets for the approver app's XCFramework (milestone 5).
+rust = { version = "1.93.0", components = "rustfmt,clippy", targets = "aarch64-apple-ios,aarch64-apple-ios-sim" }
 # Fuzzing (fuzz/run.sh adds the pinned nightly toolchain it needs through rustup).
 "cargo:cargo-fuzz" = "0.13.2"
 
