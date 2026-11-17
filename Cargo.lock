@@ -3023,6 +3023,7 @@ dependencies = [
  "hex",
  "p256 0.14.0",
  "rand_core 0.10.1",
+ "relay-approver",
  "relay-core",
  "relay-pcsc",
  "relay-server",

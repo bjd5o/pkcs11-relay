@@ -1,23 +1,19 @@
-//! The headless approver: the same checks the apps will run, with an auto-approve policy.
+//! The headless approver: a thin async driver around `relay-approver`'s engine (the same code
+//! the apps run), with an auto-approve policy instead of a person.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine as _;
 use futures_util::StreamExt;
-use relay_core::attestation::{AttestationStatement, UnsignedAttestation};
-use relay_core::piv::{self, CardTransport, PivError, Slot};
-use relay_core::request::{ApproverPolicy, ReplayCache, SignedRequest};
-use relay_core::response::{Reason, UnsignedResponse};
-use relay_core::signing::SoftwareKey;
-use relay_core::{
-    verify_request, Algorithm, Error, Fingerprint, Manifest, ManifestSigner, PublicKey, Role,
-};
+use relay_approver::{ApproverError, Checked, Engine, EngineConfig, PairedClient};
+use relay_core::piv::{CardTransport, Slot};
+use relay_core::request::SignedRequest;
+use relay_core::signing::{DeviceSigner, SoftwareKey};
+use relay_core::{Fingerprint, ManifestSigner, PublicKey};
 use serde::Deserialize;
-use serde_json::json;
 use zeroize::Zeroizing;
 
 use crate::relay::{load_manifest, now, Relay};
@@ -81,30 +77,17 @@ pub struct Behavior {
     pub long_poll: bool,
 }
 
-struct Client {
-    key: PublicKey,
-    keys: Vec<Fingerprint>,
-}
-
 /// Prefix of startup errors that must not be retried (a rejected PIN).
 pub const FATAL: &str = "fatal: ";
 
-/// Everything a request needs; shared by the tasks handling requests.
+/// The engine plus what the headless driver needs around it.
 pub struct Approver {
     cfg: Config,
     behavior: Behavior,
     relay: Relay,
-    device_key: Arc<SoftwareKey>,
-    attestation: Mutex<AttestationStatement>,
-    manifest: Manifest,
+    engine: Engine,
     card: Mutex<Box<dyn CardTransport + Send>>,
-    /// Hardware key fingerprint -> slot and algorithm (spec: approver "Key map").
-    key_map: HashMap<Fingerprint, (Slot, Algorithm)>,
-    clients: HashMap<String, Client>,
     pin: Zeroizing<Vec<u8>>,
-    /// Set after one wrong PIN: never try again automatically (CLAUDE.md hardware safety).
-    pin_failed: AtomicBool,
-    replay: Mutex<ReplayCache>,
     handled: Mutex<HashSet<[u8; 16]>>,
     approved_pairings: Mutex<HashSet<String>>,
 }
@@ -130,22 +113,13 @@ fn load_or_create_device_key(dir: &Path) -> Result<SoftwareKey, String> {
     Ok(k)
 }
 
-/// Read every PIV slot's public key and keep those the manifest lists.
-fn discover_keys(
-    card: &mut dyn CardTransport,
-    manifest: &Manifest,
-) -> HashMap<Fingerprint, (Slot, Algorithm)> {
-    let slots = [0x9a, 0x9c, 0x9d, 0x9e].into_iter().chain(0x82..=0x95);
-    let mut map = HashMap::new();
-    for s in slots {
-        let slot = Slot::new(s).expect("valid slot");
-        if let Ok(pk) = piv::read_public_key(card, slot) {
-            if let Some(k) = manifest.key(pk.fingerprint()) {
-                map.insert(k.fingerprint.clone(), (slot, k.algorithm));
-            }
+fn fatal_if_pin(e: ApproverError) -> String {
+    match e {
+        ApproverError::PinRejected { .. } | ApproverError::PinBlocked => {
+            format!("{FATAL}PIN for attestation: {e}")
         }
+        e => e.to_string(),
     }
-    map
 }
 
 impl Approver {
@@ -191,56 +165,47 @@ impl Approver {
         )
         .await?;
         let device_key = Arc::new(load_or_create_device_key(&cfg.data_dir)?);
-        let key_map = piv::in_session(card.as_mut(), |c| {
-            piv::select(c)?;
-            Ok(discover_keys(c, &manifest))
-        })
-        .map_err(|e| e.to_string())?;
-        let attest_slot = Slot::parse(&cfg.attest_slot).map_err(|e| e.to_string())?;
-        let attest_fp = key_map
-            .iter()
-            .find(|(fp, (s, _))| {
-                *s == attest_slot && manifest.key(fp).is_some_and(|k| k.role == Role::Attest)
-            })
-            .map(|(fp, _)| fp.clone())
-            .ok_or("no manifest attest key in the attest slot")?;
-        let mut clients = HashMap::new();
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let mut clients = Vec::new();
         for c in &cfg.trusted_clients {
-            let spki = base64::engine::general_purpose::STANDARD
-                .decode(&c.public_key)
-                .map_err(|e| e.to_string())?;
-            let key = PublicKey::from_spki(&spki).map_err(|e| e.to_string())?;
-            let keys = c
-                .keys
-                .iter()
-                .map(|k| Fingerprint::parse(k).map_err(|e| e.to_string()))
-                .collect::<Result<_, _>>()?;
-            clients.insert(c.client_id.clone(), Client { key, keys });
+            let spki = b64.decode(&c.public_key).map_err(|e| e.to_string())?;
+            clients.push(PairedClient {
+                client_id: c.client_id.clone(),
+                public_key: PublicKey::from_spki(&spki).map_err(|e| e.to_string())?,
+                keys: c
+                    .keys
+                    .iter()
+                    .map(|k| Fingerprint::parse(k).map_err(|e| e.to_string()))
+                    .collect::<Result<_, _>>()?,
+            });
         }
-        let relay = Relay::new(&cfg.relay_url, device_key.clone(), ca.as_deref())?;
-        let attestation = Self::attest(
-            &cfg,
-            &behavior,
-            card.as_mut(),
-            &pin,
-            &device_key,
-            attest_slot,
-            attest_fp,
-            &manifest,
-        )?;
+        let engine = Engine::new(
+            EngineConfig {
+                device_id: cfg.device_id.clone(),
+                attestation_window_secs: cfg.attestation_window_secs,
+                skew_secs: cfg.skew_secs,
+                // The stale fixture must stay stale.
+                renew_attestation: !behavior.expired_attestation,
+            },
+            manifest,
+            device_key.clone() as Arc<dyn DeviceSigner>,
+            clients,
+        );
+        engine.discover(card.as_mut()).map_err(|e| e.to_string())?;
+        let attest_slot = Slot::parse(&cfg.attest_slot).map_err(|e| e.to_string())?;
+        match engine.attest_key() {
+            Some((s, _)) if s == attest_slot => {}
+            _ => return Err("no manifest attest key in the attest slot".into()),
+        }
+        Self::attest(&cfg, &behavior, &engine, card.as_mut(), &pin)?;
+        let relay = Relay::new(&cfg.relay_url, device_key, ca.as_deref())?;
         let a = Arc::new(Approver {
             cfg,
             behavior,
             relay,
-            device_key,
-            attestation: Mutex::new(attestation),
-            manifest,
+            engine,
             card: Mutex::new(card),
-            key_map,
-            clients,
             pin,
-            pin_failed: AtomicBool::new(false),
-            replay: Mutex::new(ReplayCache::new(86_400)),
             handled: Mutex::new(HashSet::new()),
             approved_pairings: Mutex::new(HashSet::new()),
         });
@@ -248,28 +213,21 @@ impl Approver {
         Ok(a)
     }
 
-    /// Reuse the stored attestation, or have the card's attest key sign a new one when there is
-    /// none, it is past 75% of its window, or `--expired-attestation` wants a stale one.
-    #[allow(clippy::too_many_arguments)]
+    /// Reuse the stored attestation unless renewal is due (or `--expired-attestation` wants a
+    /// stale one); otherwise the card's attest key signs a new one. A rejected PIN is fatal.
     fn attest(
         cfg: &Config,
         b: &Behavior,
+        engine: &Engine,
         card: &mut dyn CardTransport,
         pin: &[u8],
-        device_key: &SoftwareKey,
-        slot: Slot,
-        attest_fp: Fingerprint,
-        manifest: &Manifest,
-    ) -> Result<AttestationStatement, String> {
+    ) -> Result<(), String> {
         let path = cfg.data_dir.join("attestation.cbor");
         let t = now();
         if !b.expired_attestation {
             if let Ok(bytes) = std::fs::read(&path) {
-                if let Ok(v) = relay_core::verify_attestation(&bytes, manifest, t, cfg.skew_secs) {
-                    let renew_at = v.not_before + (v.not_after - v.not_before) * 3 / 4;
-                    if v.device_key == device_key.public_key() && t < renew_at {
-                        return AttestationStatement::decode(&bytes).map_err(|e| e.to_string());
-                    }
+                if engine.load_attestation(&bytes, t).is_ok() && !engine.renewal_due(t) {
+                    return Ok(());
                 }
             }
         }
@@ -278,49 +236,17 @@ impl Approver {
         } else {
             (t, t + cfg.attestation_window_secs)
         };
-        let st =
-            UnsignedAttestation::new(&cfg.device_id, device_key.public_key(), nb, na, attest_fp)
-                .map_err(|e| e.to_string())?;
-        // A wrong PIN here is fatal: startup is not retried (CLAUDE.md hardware safety).
-        // PIN and signature in one card session, which clears the PIN state when it ends.
-        let st = piv::in_session(card, |c| {
-            piv::select(c)?;
-            if let Err(e) = piv::verify_pin(c, pin) {
-                return Ok(Err(format!("{FATAL}PIN for attestation: {e}")));
-            }
-            Ok(piv::sign_attestation(c, slot, st).map_err(|e| e.to_string()))
-        })
-        .map_err(|e| e.to_string())??;
-        if !b.expired_attestation {
-            relay_core::verify_attestation(st.bytes(), manifest, t, cfg.skew_secs)
-                .map_err(|e| format!("own attestation: {e}"))?;
-        }
-        std::fs::write(&path, st.bytes()).map_err(|e| e.to_string())?;
+        let bytes = engine.attest(card, pin, nb, na).map_err(fatal_if_pin)?;
+        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
         tracing::info!(not_before = nb, not_after = na, "new attestation");
-        Ok(st)
+        Ok(())
     }
 
     async fn register(&self) -> Result<(), String> {
-        let b64 = base64::engine::general_purpose::STANDARD;
-        let keys: Vec<serde_json::Value> = self
-            .key_map
-            .keys()
-            .filter_map(|fp| self.manifest.key(fp))
-            .filter(|k| k.role != Role::Attest)
-            .map(|k| json!({"public_key": b64.encode(k.public_key.spki()), "token": k.token}))
-            .collect();
-        let push = if self.cfg.push.is_null() {
-            json!({"kind": "none"})
-        } else {
-            self.cfg.push.clone()
-        };
-        let body = json!({
-            "device_id": self.cfg.device_id,
-            "device_key": b64.encode(self.device_key.public_key().spki()),
-            "attestation": b64.encode(self.attestation.lock().expect("lock").bytes()),
-            "keys": keys,
-            "push": push,
-        });
+        let body = self
+            .engine
+            .registration(self.cfg.push.clone())
+            .map_err(|e| e.to_string())?;
         let r = self.relay.post_json("/v1/devices", &body).await?;
         if !r.status.is_success() {
             return Err(format!(
@@ -331,7 +257,7 @@ impl Approver {
         }
         tracing::info!(
             device_id = self.cfg.device_id,
-            keys = keys.len(),
+            keys = body["keys"].as_array().map_or(0, Vec::len),
             "registered with relay"
         );
         Ok(())
@@ -426,54 +352,64 @@ impl Approver {
     }
 
     async fn handle_pairing(&self, p: &serde_json::Value) {
-        let (Some(id), Some(fp), Some(code)) = (
-            p["client_id"].as_str(),
-            p["fingerprint"].as_str(),
-            p["code"].as_str(),
-        ) else {
-            return;
+        let view = match self.engine.pairing_view(p) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "pending pairing failed checks; not approving");
+                return;
+            }
         };
+        // The configured client stands in for the person comparing the code.
         let Some(tc) = self
             .cfg
             .trusted_clients
             .iter()
-            .find(|c| c.client_id == id && c.approve_pairing)
+            .find(|c| c.client_id == view.client_id && c.approve_pairing)
         else {
             return;
         };
-        let Some(client) = self.clients.get(id) else {
+        let known = self
+            .engine
+            .clients()
+            .into_iter()
+            .find(|c| c.client_id == view.client_id);
+        if known.is_none_or(|c| c.public_key != view.public_key) {
             return;
+        }
+        let fp = view.public_key.fingerprint().as_str().to_string();
+        if !self.approved_pairings.lock().expect("lock").insert(fp) {
+            return;
+        }
+        let keys: Vec<Fingerprint> = match tc.keys.iter().map(|k| Fingerprint::parse(k)).collect() {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::warn!(error = %e, "bad key in trusted_clients");
+                return;
+            }
         };
-        if client.key.fingerprint().as_str() != fp
-            || !self
-                .approved_pairings
-                .lock()
-                .expect("lock")
-                .insert(fp.to_string())
-        {
-            return;
-        }
-        // The core derives the code the person would compare.
-        let expected = relay_core::pairing::pairing_code(client.key.spki());
-        if expected != code {
-            tracing::warn!(client_id = id, "pairing code mismatch; not approving");
-            return;
-        }
-        let r = self
-            .relay
-            .post_json(
-                &format!("/v1/clients/{id}/approval"),
-                &json!({"fingerprint": fp, "keys": tc.keys}),
-            )
-            .await;
-        match r {
+        let (path, body, _client) = match self.engine.pairing_approval(&view, &keys) {
+            Ok(x) => x,
+            Err(e) => {
+                tracing::warn!(error = %e, "pairing approval refused");
+                return;
+            }
+        };
+        match self.relay.post_json(&path, &body).await {
             Ok(r) if r.status.is_success() => {
-                tracing::info!(client_id = id, code, "pairing approved")
+                tracing::info!(
+                    client_id = view.client_id,
+                    code = view.code,
+                    "pairing approved"
+                )
             }
             Ok(r) => {
-                tracing::warn!(client_id = id, status = %r.status, body = %String::from_utf8_lossy(&r.body), "pairing approval failed")
+                tracing::warn!(client_id = view.client_id, status = %r.status, body = %String::from_utf8_lossy(&r.body), "pairing approval failed")
             }
-            Err(e) => tracing::warn!(client_id = id, error = e, "pairing approval failed"),
+            Err(e) => tracing::warn!(
+                client_id = view.client_id,
+                error = e,
+                "pairing approval failed"
+            ),
         }
     }
 
@@ -483,7 +419,7 @@ impl Approver {
         }
         let me = self.clone();
         let out = tokio::task::spawn_blocking(move || me.decide(&bytes)).await;
-        let Ok(Some((req_id, resp))) = out else {
+        let Ok(Some((req_id, resp, renewed))) = out else {
             return;
         };
         match self
@@ -504,127 +440,81 @@ impl Approver {
                 "posting response failed"
             ),
         }
+        if renewed {
+            if let Err(e) = self.register().await {
+                tracing::warn!(error = e, "re-registering the renewed attestation failed");
+            }
+        }
     }
 
-    /// Verify the request, then approve, deny or report an error. Returns the signed response.
-    fn decide(&self, bytes: &[u8]) -> Option<([u8; 16], Vec<u8>)> {
-        let req = SignedRequest::decode(bytes).ok()?;
-        let id = req.fields.req_id;
-        let att = self.attestation.lock().expect("lock").clone();
+    /// The engine checks the request, then approves (or denies with `--deny`). Returns the
+    /// signed response and whether the attestation was renewed.
+    fn decide(&self, bytes: &[u8]) -> Option<([u8; 16], Vec<u8>, bool)> {
         let t = now();
-        let sign = |u: UnsignedResponse| {
-            let sig = self.device_key.sign(&u.to_be_signed());
-            Some((id, u.with_signature(sig).bytes().to_vec()))
-        };
-        let Some(client) = self.clients.get(&req.fields.client_id) else {
-            tracing::warn!(
-                client_id = req.fields.client_id,
-                "request from an unpaired client; denied"
-            );
-            return sign(UnsignedResponse::denied(
-                &req,
-                Some(Reason::Policy),
-                &att,
-                t,
-            ));
-        };
-        let operable: Vec<Fingerprint> = self.key_map.keys().cloned().collect();
-        let policy = ApproverPolicy {
-            client_id: &req.fields.client_id,
-            client_key: &client.key,
-            approved_keys: &client.keys,
-            operable_keys: &operable,
-        };
-        let verified = {
-            let mut replay = self.replay.lock().expect("lock");
-            verify_request(
-                bytes,
-                &policy,
-                &self.manifest,
-                &mut replay,
-                t,
-                self.cfg.skew_secs,
-            )
-        };
-        let v = match verified {
-            Ok(v) => v,
-            Err(e) => {
+        let p = match self.engine.check_request(bytes, t) {
+            Ok(Checked::Show(p)) => p,
+            Ok(Checked::Denied {
+                req_id,
+                response,
+                why,
+            }) => {
                 tracing::warn!(
-                    req_id = hex::encode(id),
-                    error = e.kind(),
+                    req_id = hex::encode(req_id),
+                    why,
                     "request failed checks; denied"
                 );
-                let reason = if e == Error::RequestExpired {
-                    Reason::Expired
-                } else {
-                    Reason::Policy
-                };
-                return sign(UnsignedResponse::denied(&req, Some(reason), &att, t));
+                return Some((req_id, response, false));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "request not handled");
+                return None;
             }
         };
-        let view = relay_core::content::approval_view(&v, t);
+        let v = &p.view;
         tracing::info!(
-            req_id = hex::encode(id),
-            client = view.client_id,
-            key = view.key_label,
-            op = view.op,
-            mechanism = view.mechanism,
-            input_sha256 = view.input_sha256,
-            purpose = view.claims.purpose,
+            req_id = hex::encode(p.req_id()),
+            client = v.client_id,
+            key = v.key_label,
+            op = v.op,
+            mechanism = v.mechanism,
+            input_sha256 = v.input_sha256,
+            purpose = v.claims.purpose,
             "request verified"
         );
         if self.behavior.deny {
-            return sign(UnsignedResponse::denied(
-                &req,
-                Some(Reason::UserDenied),
-                &att,
-                t,
-            ));
-        }
-        let (slot, alg) = self.key_map[&v.key.fingerprint];
-        match self.operate(slot, alg, &req) {
-            Ok(result) => match UnsignedResponse::approved(&req, &result, &att, now()) {
-                Ok(u) => sign(u),
+            return match self.engine.deny(&p, t) {
+                Ok(r) => Some((p.req_id(), r, false)),
                 Err(e) => {
-                    tracing::error!(error = %e, "sealing failed");
-                    sign(UnsignedResponse::error(
-                        &req,
-                        Some(Reason::Internal),
-                        &att,
-                        now(),
-                    ))
+                    tracing::error!(error = %e, "signing the denial failed");
+                    None
                 }
-            },
-            Err(e) => {
-                tracing::warn!(req_id = hex::encode(id), error = %e, "card operation failed");
-                sign(UnsignedResponse::error(&req, Some(e.reason()), &att, now()))
-            }
-        }
-    }
-
-    /// PIN, then the raw operation through the core's PIV layer. The result never leaves this
-    /// function except sealed.
-    fn operate(
-        &self,
-        slot: Slot,
-        alg: Algorithm,
-        req: &SignedRequest,
-    ) -> Result<Zeroizing<Vec<u8>>, PivError> {
-        if self.pin_failed.load(Ordering::SeqCst) {
-            return Err(PivError::WrongPin { retries: 0 });
+            };
         }
         let mut card = self.card.lock().expect("lock");
-        // SELECT, VERIFY and the operation in one card session; the PIN state is cleared after.
-        piv::in_session(card.as_mut(), |c| {
-            piv::select(c)?;
-            if let Err(e) = piv::verify_pin(c, &self.pin) {
-                if matches!(e, PivError::WrongPin { .. } | PivError::PinBlocked) {
-                    self.pin_failed.store(true, Ordering::SeqCst);
-                    tracing::error!("PIN rejected; no further PIN attempts will be made");
+        match self.engine.approve(&p, card.as_mut(), &self.pin, now()) {
+            Ok(a) => {
+                if let Some(e) = &a.card_error {
+                    tracing::warn!(req_id = hex::encode(a.req_id), error = %e, "card operation failed");
+                    if self.engine.pin_failed() {
+                        tracing::error!("PIN rejected; no further PIN attempts will be made");
+                    }
                 }
-                return Err(e);
+                if let Some(e) = &a.renewal_error {
+                    tracing::warn!(
+                        error = e,
+                        "attestation renewal failed; keeping the current one"
+                    );
+                }
+                if let Some(st) = &a.renewed_attestation {
+                    let _ = std::fs::write(self.cfg.data_dir.join("attestation.cbor"), st);
+                    tracing::info!("attestation renewed during an approval");
+                }
+                Some((a.req_id, a.response, a.renewed_attestation.is_some()))
             }
-            piv::perform(c, slot, alg, &req.fields.mechanism, &req.fields.input)
-        })
+            Err(e) => {
+                tracing::error!(error = %e, "approval failed before a response could be signed");
+                None
+            }
+        }
     }
 }

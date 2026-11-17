@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 relay-core.workspace = true
+relay-approver.workspace = true
 relay-softcard.workspace = true
 relay-pcsc.workspace = true
 tokio.workspace = true

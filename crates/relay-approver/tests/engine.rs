@@ -57,6 +57,7 @@ fn fixture(window: u64) -> Fx {
             device_id: "phone".into(),
             attestation_window_secs: window,
             skew_secs: 60,
+            renew_attestation: true,
         },
         manifest.clone(),
         Arc::new(SoftwareKey::generate_p256()),

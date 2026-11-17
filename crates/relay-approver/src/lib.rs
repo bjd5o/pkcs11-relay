@@ -84,6 +84,9 @@ pub struct EngineConfig {
     /// Length of each attestation window; renewal is due after 75% of it.
     pub attestation_window_secs: u64,
     pub skew_secs: u64,
+    /// Renew the attestation during an approval once it is due (spec). Off only for test
+    /// fixtures that must stay stale.
+    pub renew_attestation: bool,
 }
 
 /// A client approved at pairing, and the manifest keys it may use.
@@ -302,7 +305,8 @@ impl Engine {
         v
     }
 
-    fn attest_key(&self) -> Option<(Slot, Fingerprint)> {
+    /// The manifest attest key found on the card, and its slot.
+    pub fn attest_key(&self) -> Option<(Slot, Fingerprint)> {
         let m = self.manifest();
         self.key_map
             .lock()
@@ -552,7 +556,7 @@ impl Engine {
             ))?;
             return Ok(out);
         }
-        let renewal = if self.renewal_due(now) {
+        let renewal = if self.cfg.renew_attestation && self.renewal_due(now) {
             match self.unsigned_attestation(now, now + self.cfg.attestation_window_secs) {
                 Ok(r) => Some(r),
                 Err(e) => {
