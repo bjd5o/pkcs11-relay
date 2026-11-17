@@ -31,6 +31,11 @@ pub struct Config {
     pub long_poll_max_secs: u64,
     pub max_devices: usize,
     pub notify: NotifyConfig,
+    /// A copy of the signed manifest to serve at `GET /v1/manifest`, re-read on every request
+    /// so a newly signed version is served without a restart. Its detached signature is served
+    /// at `/v1/manifest.asc`, from `manifest_signature_file` or else `<manifest_file>.asc`.
+    pub manifest_file: Option<PathBuf>,
+    pub manifest_signature_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -71,6 +76,8 @@ impl Default for Config {
             long_poll_max_secs: 30,
             max_devices: 32,
             notify: NotifyConfig::Log,
+            manifest_file: None,
+            manifest_signature_file: None,
         }
     }
 }

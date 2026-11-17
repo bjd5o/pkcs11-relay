@@ -16,6 +16,16 @@ use crate::keys::{Algorithm, Fingerprint, PublicKey, Role};
 
 /// Largest manifest file accepted (wire-format §9.1).
 pub const MAX_MANIFEST_LEN: usize = 1 << 20;
+
+/// Whether `manifest_url` points at the relay's own `/v1/manifest` (same origin as
+/// `relay_url`). Fetchers then use the relay's trust anchors for TLS; the manifest's signature,
+/// not the transport, is what makes it trustworthy either way.
+pub fn served_by_relay(manifest_url: &str, relay_url: &str) -> bool {
+    let base = relay_url.trim_end_matches('/');
+    manifest_url
+        .strip_prefix(base)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
 /// Largest number of keys in one manifest (wire-format §9.2).
 pub const MAX_KEYS: usize = 64;
 
@@ -451,5 +461,21 @@ mod pgp_tests {
         let now = std::time::UNIX_EPOCH.elapsed().unwrap().as_secs();
         signer.verify(data, sig.as_bytes(), now, 60).unwrap();
         assert!(signer.verify(b"{ }", sig.as_bytes(), now, 60).is_err());
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::served_by_relay;
+
+    #[test]
+    fn served_by_relay_needs_same_origin_and_a_path() {
+        let r = "https://relay:8443";
+        assert!(served_by_relay("https://relay:8443/v1/manifest", r));
+        assert!(served_by_relay("https://relay:8443/v1/manifest", "https://relay:8443/"));
+        assert!(!served_by_relay("https://relay:84430/v1/manifest", r));
+        assert!(!served_by_relay("https://relay:8443.evil/v1/manifest", r));
+        assert!(!served_by_relay("https://example.org/manifest.json", r));
+        assert!(!served_by_relay("file:///fixtures/manifest.json", r));
     }
 }

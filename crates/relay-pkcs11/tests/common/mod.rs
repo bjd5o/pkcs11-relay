@@ -46,6 +46,7 @@ pub fn start() -> Env {
     .unwrap();
     let cfg = relay_server::config::Config {
         data_dir: dir.join("relay"),
+        manifest_file: Some(dir.join("manifest.json")),
         ..Default::default()
     };
     let relay = rt.block_on(async {

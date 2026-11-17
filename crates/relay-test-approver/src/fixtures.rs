@@ -251,7 +251,7 @@ pub fn generate(
         .map(|c| format!("{c:?}"))
         .collect::<Vec<_>>()
         .join(", ");
-    w(&out.join("relay.toml"), format!("listen = \"0.0.0.0:8443\"\ntls_cert = \"{root}/relay-cert.pem\"\ntls_key = \"{root}/relay-key.pem\"\ndata_dir = \"/data\"\n# Two gates in one minute: above the default of 30 requests per minute.\nclient_requests_per_minute = 120\npairing_allowed_cidrs = [{cidrs}]\n\n[notify]\nkind = \"log\"\n"))?;
+    w(&out.join("relay.toml"), format!("listen = \"0.0.0.0:8443\"\ntls_cert = \"{root}/relay-cert.pem\"\ntls_key = \"{root}/relay-key.pem\"\ndata_dir = \"/data\"\n# Two gates in one minute: above the default of 30 requests per minute.\nclient_requests_per_minute = 120\npairing_allowed_cidrs = [{cidrs}]\nmanifest_file = \"{root}/manifest.json\"\n\n[notify]\nkind = \"log\"\n"))?;
     for (card, approve) in [("a", true), ("b", false), ("c", false)] {
         let cfg = format!(
             "relay_url = {relay_url:?}\nrelay_ca_file = \"{root}/relay-ca.pem\"\ndevice_id = \"approver-{card}\"\ndata_dir = \"{root}/state/approver-{card}\"\n\
@@ -278,7 +278,7 @@ pub fn generate(
     w(
         &out.join("provider.toml"),
         format!(
-            "relay_url = {relay_url:?}\nrelay_ca_file = \"{root}/relay-ca.pem\"\nmanifest_url = \"file://{root}/manifest.json\"\n\
+            "relay_url = {relay_url:?}\nrelay_ca_file = \"{root}/relay-ca.pem\"\nmanifest_url = \"{relay_url}/v1/manifest\"\n\
              manifest_signer = \"{root}/signer.asc\"\nmanifest_cache = \"{root}/state/client/manifest.json\"\n\
              client_id = \"{CLIENT_ID}\"\nclient_key = \"{root}/client.pem\"\npurpose = \"milestone 3 gate\"\ntimeout_secs = 30\nlog_level = \"info\"\n"
         ),

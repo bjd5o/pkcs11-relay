@@ -180,12 +180,23 @@ impl Relay {
 }
 
 /// Fetch bytes from `file://` or `http(s)://`.
-pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
+/// `ca_pem` replaces the public roots (the relay's CA, for a manifest the relay serves).
+pub async fn fetch(url: &str, ca_pem: Option<&[u8]>) -> Result<Vec<u8>, String> {
     if let Some(path) = url.strip_prefix("file://") {
         return std::fs::read(path).map_err(|e| format!("{path}: {e}"));
     }
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let r = reqwest::get(url).await.map_err(|e| format!("{url}: {e}"))?;
+    let mut b = reqwest::Client::builder();
+    if let Some(pem) = ca_pem {
+        b = b
+            .tls_certs_only(reqwest::Certificate::from_pem_bundle(pem).map_err(|e| e.to_string())?);
+    }
+    let client = b.build().map_err(|e| e.to_string())?;
+    let r = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("{url}: {e}"))?;
     if !r.status().is_success() {
         return Err(format!("{url}: {}", r.status()));
     }
@@ -193,12 +204,19 @@ pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Fetch and verify the manifest exactly as clients do (`relay_core::verify_manifest`).
+/// `relay` is the relay URL and its CA, used when the manifest is served by the relay.
 pub async fn load_manifest(
     url: &str,
     signer: &relay_core::ManifestSigner,
     skew: u64,
+    relay: (&str, Option<&[u8]>),
 ) -> Result<relay_core::Manifest, String> {
-    let bytes = fetch(url).await?;
-    let sig = fetch(&format!("{url}.asc")).await?;
+    let ca = if relay_core::manifest::served_by_relay(url, relay.0) {
+        relay.1
+    } else {
+        None
+    };
+    let bytes = fetch(url, ca).await?;
+    let sig = fetch(&format!("{url}.asc"), ca).await?;
     relay_core::verify_manifest(&bytes, &sig, signer, None, now(), skew).map_err(|e| e.to_string())
 }

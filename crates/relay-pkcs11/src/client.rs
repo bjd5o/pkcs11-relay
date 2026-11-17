@@ -125,15 +125,16 @@ impl RelayClient {
     }
 }
 
-/// Fetch a manifest file over HTTPS (public WebPKI roots) or from `file://`.
-pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
+/// Fetch a manifest file over HTTPS or from `file://`. `ca_pem` replaces the public WebPKI
+/// roots: callers pass the relay's CA when the manifest is served by the relay.
+pub fn fetch(url: &str, ca_pem: Option<&[u8]>) -> Result<Vec<u8>, String> {
     if let Some(path) = url.strip_prefix("file://") {
         return std::fs::read(path).map_err(|e| format!("{path}: {e}"));
     }
     if !url.starts_with("https://") {
         return Err("manifest_url must be https:// or file://".into());
     }
-    let a = agent(None, Duration::from_secs(20))?;
+    let a = agent(ca_pem, Duration::from_secs(20))?;
     let mut resp = a.get(url).call().map_err(|e| format!("{url}: {e}"))?;
     if resp.status().as_u16() != 200 {
         return Err(format!("{url}: HTTP {}", resp.status()));

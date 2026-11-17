@@ -160,7 +160,17 @@ pub async fn run(cfg: Config) -> Result<(), String> {
         &std::fs::read(&cfg.manifest_signer).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    let manifest = load_manifest(&cfg.manifest_url, &signer, 60).await?;
+    let ca_for_manifest = match &cfg.relay_ca_file {
+        Some(p) => Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
+        None => None,
+    };
+    let manifest = load_manifest(
+        &cfg.manifest_url,
+        &signer,
+        60,
+        (&cfg.relay_url, ca_for_manifest.as_deref()),
+    )
+    .await?;
     let key = SoftwareKey::from_pkcs8_pem(
         &std::fs::read_to_string(&cfg.client_key).map_err(|e| e.to_string())?,
     )

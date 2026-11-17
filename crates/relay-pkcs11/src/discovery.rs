@@ -117,8 +117,20 @@ impl Discovery {
             return;
         }
         self.manifest_checked_at = t;
-        let fetched = fetch(&cfg.manifest_url)
-            .and_then(|b| fetch(&format!("{}.asc", cfg.manifest_url)).map(|s| (b, s)));
+        let ca = if relay_core::manifest::served_by_relay(&cfg.manifest_url, &cfg.relay_url) {
+            cfg.relay_ca_file
+                .as_ref()
+                .map(std::fs::read)
+                .transpose()
+                .map_err(|e| format!("relay CA: {e}"))
+        } else {
+            Ok(None)
+        };
+        let fetched = ca.and_then(|ca| {
+            fetch(&cfg.manifest_url, ca.as_deref()).and_then(|b| {
+                fetch(&format!("{}.asc", cfg.manifest_url), ca.as_deref()).map(|s| (b, s))
+            })
+        });
         match fetched {
             Ok((bytes, sig)) => match verify_manifest(
                 &bytes,

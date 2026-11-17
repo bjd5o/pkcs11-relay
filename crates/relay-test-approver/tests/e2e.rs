@@ -33,6 +33,7 @@ async fn gate_in_process() {
     let dir = temp_dir();
     let cfg = relay_server::config::Config {
         data_dir: dir.join("relay"),
+        manifest_file: Some(dir.join("manifest.json")),
         ..Default::default()
     };
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

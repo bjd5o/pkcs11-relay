@@ -179,7 +179,17 @@ impl Approver {
             &std::fs::read(&cfg.manifest_signer).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        let manifest = load_manifest(&cfg.manifest_url, &signer, cfg.skew_secs).await?;
+        let ca = match &cfg.relay_ca_file {
+            Some(p) => Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
+            None => None,
+        };
+        let manifest = load_manifest(
+            &cfg.manifest_url,
+            &signer,
+            cfg.skew_secs,
+            (&cfg.relay_url, ca.as_deref()),
+        )
+        .await?;
         let device_key = Arc::new(load_or_create_device_key(&cfg.data_dir)?);
         let key_map = piv::in_session(card.as_mut(), |c| {
             piv::select(c)?;
@@ -207,10 +217,6 @@ impl Approver {
                 .collect::<Result<_, _>>()?;
             clients.insert(c.client_id.clone(), Client { key, keys });
         }
-        let ca = match &cfg.relay_ca_file {
-            Some(p) => Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
-            None => None,
-        };
         let relay = Relay::new(&cfg.relay_url, device_key.clone(), ca.as_deref())?;
         let attestation = Self::attest(
             &cfg,

@@ -38,6 +38,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(metrics))
         .route("/v1/keys", get(list_keys))
+        .route("/v1/manifest", get(manifest))
+        .route("/v1/manifest.asc", get(manifest_signature))
         .route("/v1/requests", post(submit_request))
         .route("/v1/requests/{id}/result", get(get_result))
         .route("/v1/requests/{id}/response", post(post_response))
@@ -49,6 +51,45 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/devices/{id}/ws", get(device_ws))
         .layer(DefaultBodyLimit::max(limit))
         .with_state(state)
+}
+
+// ---------- manifest copy ----------
+
+/// Serve a configured file's bytes unchanged. Unauthenticated: the manifest is public and
+/// signed; the relay is not trusted for it.
+fn serve_file(
+    path: Option<&std::path::Path>,
+    content_type: &'static str,
+) -> Result<Response, ApiError> {
+    let path =
+        path.ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "no manifest configured"))?;
+    let bytes = std::fs::read(path).map_err(|e| {
+        tracing::warn!(path = %path.display(), error = %e, "manifest file unreadable");
+        err(StatusCode::NOT_FOUND, "not_found", "manifest unavailable")
+    })?;
+    if bytes.len() > relay_core::manifest::MAX_MANIFEST_LEN {
+        return Err(err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "too_large",
+            "manifest file too large",
+        ));
+    }
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response())
+}
+
+async fn manifest(State(st): S) -> Result<Response, ApiError> {
+    serve_file(st.cfg.manifest_file.as_deref(), "application/json")
+}
+
+async fn manifest_signature(State(st): S) -> Result<Response, ApiError> {
+    let sig = st.cfg.manifest_signature_file.clone().or_else(|| {
+        st.cfg.manifest_file.as_ref().map(|m| {
+            let mut s = m.clone().into_os_string();
+            s.push(".asc");
+            std::path::PathBuf::from(s)
+        })
+    });
+    serve_file(sig.as_deref(), "application/pgp-signature")
 }
 
 // ---------- errors ----------
