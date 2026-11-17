@@ -4,6 +4,9 @@
 # with pkcs11-provider, OpenSSH).
 FROM rust:1.93-bookworm AS build
 WORKDIR /src
+# relay-pcsc (the approver's --pcsc mode) links libpcsclite.
+RUN apt-get update && apt-get install -y --no-install-recommends libpcsclite-dev \
+ && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target,id=relay-gnu-target \
@@ -14,7 +17,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # Built on bookworm (glibc 2.36); runs on trixie for pkcs11-provider 1.x.
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates opensc openssl pkcs11-provider openssh-client openssh-server \
+      ca-certificates libpcsclite1 opensc openssl pkcs11-provider openssh-client openssh-server \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --create-home --uid 1000 tester \
  && usermod -p '*' tester \
