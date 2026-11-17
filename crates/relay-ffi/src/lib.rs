@@ -317,6 +317,15 @@ fn request_view(p: &PendingRequest) -> RequestView {
     }
 }
 
+/// The manifest signer's OpenPGP fingerprint (uppercase hex), for the setup screen to show
+/// before the person confirms it.
+#[uniffi::export]
+pub fn manifest_signer_fingerprint(armored: String) -> Result<String, RelayError> {
+    Ok(ManifestSigner::from_bytes(armored.as_bytes())
+        .map_err(invalid)?
+        .fingerprint())
+}
+
 // ---------- the approver ----------
 
 #[derive(Default)]

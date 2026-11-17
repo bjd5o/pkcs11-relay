@@ -3204,6 +3204,7 @@ dependencies = [
  "relay-pcsc",
  "relay-softcard",
  "rpassword",
+ "serde_json",
  "x509-cert 0.2.5",
  "x509-cert 0.3.0",
  "yubikey",

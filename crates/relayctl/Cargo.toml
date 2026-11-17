@@ -15,6 +15,7 @@ p384-013.workspace = true
 x509-cert-02.workspace = true
 rpassword.workspace = true
 clap.workspace = true
+serde_json.workspace = true
 base64.workspace = true
 hex.workspace = true
 p256.workspace = true

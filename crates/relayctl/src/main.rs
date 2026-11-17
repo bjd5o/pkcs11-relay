@@ -37,6 +37,27 @@ enum Cmd {
         #[command(subcommand)]
         command: AttestCmd,
     },
+    /// Write the setup file the approver app imports: relay URL and CA, manifest URL and
+    /// signer, device id and attestation window. Public material only.
+    AppConfig {
+        #[arg(long)]
+        relay_url: String,
+        /// The relay's CA certificate (PEM).
+        #[arg(long)]
+        relay_ca: Option<PathBuf>,
+        /// Default: <relay-url>/v1/manifest.
+        #[arg(long)]
+        manifest_url: Option<String>,
+        /// The manifest signer's OpenPGP public key.
+        #[arg(long)]
+        signer: PathBuf,
+        #[arg(long)]
+        device_id: String,
+        #[arg(long, default_value_t = 30)]
+        attestation_days: u64,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// The relay's admin commands (runs `relay-server admin`).
     Relay {
         /// The relay-server binary.
@@ -479,6 +500,43 @@ fn run(cli: Cli) -> Result<(), String> {
             println!(
                 "attestation for {device_id} valid until {}; wrote {}",
                 util::utc(t + days * 86_400),
+                out.display()
+            );
+            Ok(())
+        }
+        Cmd::AppConfig {
+            relay_url,
+            relay_ca,
+            manifest_url,
+            signer,
+            device_id,
+            attestation_days,
+            out,
+        } => {
+            let signer_pem = std::fs::read_to_string(&signer)
+                .map_err(|e| format!("{}: {e}", signer.display()))?;
+            let fp = relay_core::ManifestSigner::from_bytes(signer_pem.as_bytes())
+                .map_err(|e| e.to_string())?
+                .fingerprint();
+            relay_core::check_id(&device_id).map_err(|e| e.to_string())?;
+            let ca = match relay_ca {
+                Some(p) => {
+                    Some(std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?)
+                }
+                None => None,
+            };
+            let base = relay_url.trim_end_matches('/').to_string();
+            let v = serde_json::json!({
+                "relay_url": base,
+                "relay_ca_pem": ca,
+                "manifest_url": manifest_url.unwrap_or_else(|| format!("{base}/v1/manifest")),
+                "manifest_signer": signer_pem,
+                "device_id": device_id,
+                "attestation_window_secs": attestation_days * 86_400,
+            });
+            util::write(&out, serde_json::to_vec_pretty(&v).expect("json"))?;
+            println!(
+                "wrote {}; the app will show signer fingerprint {fp}",
                 out.display()
             );
             Ok(())

@@ -47,6 +47,13 @@ impl std::fmt::Debug for ManifestSigner {
 }
 
 impl ManifestSigner {
+    /// The primary key's OpenPGP fingerprint, uppercase hex as `gpg --fingerprint` prints it
+    /// (without spaces): what a person compares when configuring a client or an app.
+    pub fn fingerprint(&self) -> String {
+        use pgp::types::KeyDetails;
+        hex::encode_upper(self.key.primary_key.fingerprint().as_bytes())
+    }
+
     /// Load an OpenPGP public key, armored or binary, and check its self-signatures and subkey
     /// bindings.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
