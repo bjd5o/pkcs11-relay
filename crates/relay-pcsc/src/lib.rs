@@ -29,14 +29,70 @@ pub struct PcscCard {
     pub serial: u32,
 }
 
+fn transmit_on(card: &pcsc::Card, apdu: &[u8]) -> Result<Vec<u8>, PivError> {
+    let mut buf = vec![0u8; pcsc::MAX_BUFFER_SIZE_EXTENDED];
+    let r = card
+        .transmit(apdu, &mut buf)
+        .map_err(|e| PivError::Transport(e.to_string()))?;
+    Ok(r.to_vec())
+}
+
+/// The card inside a running PC/SC transaction.
+struct InTransaction<'a>(&'a pcsc::Card);
+
+impl CardTransport for InTransaction<'_> {
+    fn transmit(&mut self, apdu: &[u8]) -> Result<Vec<u8>, PivError> {
+        transmit_on(self.0, apdu)
+    }
+    /// Already inside one: nested sessions share it.
+    fn session(&mut self, f: &mut dyn FnMut(&mut dyn CardTransport)) -> Result<(), PivError> {
+        f(self);
+        Ok(())
+    }
+}
+
 impl CardTransport for PcscCard {
     fn transmit(&mut self, apdu: &[u8]) -> Result<Vec<u8>, PivError> {
-        let mut buf = vec![0u8; pcsc::MAX_BUFFER_SIZE_EXTENDED];
-        let r = self
-            .card
-            .transmit(apdu, &mut buf)
-            .map_err(|e| PivError::Transport(e.to_string()))?;
-        Ok(r.to_vec())
+        transmit_on(&self.card, apdu)
+    }
+
+    /// One PC/SC transaction (`SCardBeginTransaction`): other programs' commands wait until it
+    /// ends. It first checks that the card in the reader still reports the expected serial, and
+    /// it ends with `SCARD_RESET_CARD`, which clears the PIV PIN verification for everyone.
+    fn session(&mut self, f: &mut dyn FnMut(&mut dyn CardTransport)) -> Result<(), PivError> {
+        let err = |e: pcsc::Error| match e {
+            pcsc::Error::SharingViolation => PivError::Transport(
+                "card busy: another program holds it exclusively (for gpg, set pcsc-shared in \
+                 scdaemon.conf or run gpgconf --kill scdaemon)"
+                    .into(),
+            ),
+            e => PivError::Transport(e.to_string()),
+        };
+        // The reset that ended the previous session invalidates this handle until it reconnects.
+        self.card
+            .reconnect(
+                pcsc::ShareMode::Shared,
+                pcsc::Protocols::ANY,
+                pcsc::Disposition::LeaveCard,
+            )
+            .map_err(err)?;
+        let expected = self.serial;
+        let tx = self.card.transaction().map_err(err)?;
+        let mut card = InTransaction(&tx);
+        piv::select(&mut card)?;
+        let serial = piv::get_serial(&mut card)?;
+        let checked = serial == expected;
+        if checked {
+            f(&mut card);
+        }
+        tx.end(pcsc::Disposition::ResetCard)
+            .map_err(|(_, e)| err(e))?;
+        if !checked {
+            return Err(PivError::Transport(format!(
+                "the card in the reader is now serial {serial}, not {expected}; nothing was sent"
+            )));
+        }
+        Ok(())
     }
 }
 

@@ -231,6 +231,8 @@ pub struct SoftCard {
     pending: Zeroizing<Vec<u8>>,
     /// Every APDU received, with any VERIFY data blanked: for tests of the host side.
     pub log: Vec<Vec<u8>>,
+    /// Card sessions run so far: for tests that the host side uses one per operation.
+    pub sessions: usize,
 }
 
 impl SoftCard {
@@ -244,6 +246,7 @@ impl SoftCard {
             chain: Zeroizing::new(Vec::new()),
             pending: Zeroizing::new(Vec::new()),
             log: Vec::new(),
+            sessions: 0,
         }
     }
 
@@ -563,6 +566,14 @@ impl CardTransport for SoftCard {
         }
         self.log.push(logged);
         Ok(self.handle(apdu))
+    }
+
+    /// Like a PC/SC transaction ended with a card reset: selection and PIN state are gone.
+    fn session(&mut self, f: &mut dyn FnMut(&mut dyn CardTransport)) -> Result<(), PivError> {
+        self.sessions += 1;
+        f(self);
+        self.reset();
+        Ok(())
     }
 }
 

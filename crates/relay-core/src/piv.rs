@@ -16,6 +16,31 @@ pub const PIV_AID: [u8; 5] = [0xA0, 0x00, 0x00, 0x03, 0x08];
 /// Moves one APDU to the card and returns its response, including the two status bytes.
 pub trait CardTransport {
     fn transmit(&mut self, apdu: &[u8]) -> std::result::Result<Vec<u8>, PivError>;
+
+    /// Run `f` while holding the card for this caller alone, then leave the card with no PIN
+    /// verified. Each sequence of commands that belongs together (`SELECT`, `VERIFY`, the
+    /// operation) runs inside one session, so another program can neither interleave commands
+    /// nor use the PIN verification afterwards. Callers use [`in_session`]. A transport that
+    /// is already exclusive and powered down after each use (one NFC tap) just calls `f`.
+    fn session(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn CardTransport),
+    ) -> std::result::Result<(), PivError>;
+}
+
+/// Run `f` in one card session (see [`CardTransport::session`]) and return its result.
+pub fn in_session<R>(
+    t: &mut dyn CardTransport,
+    f: impl FnOnce(&mut dyn CardTransport) -> Result<R>,
+) -> Result<R> {
+    let mut f = Some(f);
+    let mut out = None;
+    t.session(&mut |c| {
+        if let Some(f) = f.take() {
+            out = Some(f(c));
+        }
+    })?;
+    out.unwrap_or_else(|| Err(PivError::Transport("card session did not run".into())))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -557,6 +582,10 @@ mod tests {
             let (want, resp) = self.0.remove(0);
             assert_eq!(hex::encode(apdu), hex::encode(want));
             Ok(resp)
+        }
+        fn session(&mut self, f: &mut dyn FnMut(&mut dyn CardTransport)) -> Result<()> {
+            f(self);
+            Ok(())
         }
     }
 

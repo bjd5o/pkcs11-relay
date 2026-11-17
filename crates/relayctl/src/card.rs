@@ -15,22 +15,29 @@ pub fn all_slots() -> Vec<Slot> {
         .collect()
 }
 
-/// The public key in every slot that has a certificate.
+/// The public key in every slot that has a certificate (one card session).
 pub fn list(card: &mut dyn CardTransport) -> Result<Vec<(Slot, PublicKey)>, String> {
-    piv::select(card).map_err(|e| e.to_string())?;
-    Ok(all_slots()
-        .into_iter()
-        .filter_map(|s| piv::read_public_key(card, s).ok().map(|k| (s, k)))
-        .collect())
+    piv::in_session(card, |c| {
+        piv::select(c)?;
+        Ok(all_slots()
+            .into_iter()
+            .filter_map(|s| piv::read_public_key(c, s).ok().map(|k| (s, k)))
+            .collect())
+    })
+    .map_err(|e| e.to_string())
 }
 
 pub fn export(card: &mut dyn CardTransport, slot: Slot) -> Result<PublicKey, String> {
-    piv::select(card).map_err(|e| e.to_string())?;
-    piv::read_public_key(card, slot).map_err(|e| format!("slot {:02x}: {e}", slot.id()))
+    piv::in_session(card, |c| {
+        piv::select(c)?;
+        piv::read_public_key(c, slot)
+    })
+    .map_err(|e| format!("slot {:02x}: {e}", slot.id()))
 }
 
 /// Sign a device attestation with the attest key in `slot`: one PIN attempt, never retried
-/// (CLAUDE.md hardware safety). Touch happens on the card if its policy requires it.
+/// (CLAUDE.md hardware safety). Touch happens on the card if its policy requires it. The PIN
+/// verification and the signature share one card session, which clears the PIN state at the end.
 pub fn attest(
     card: &mut dyn CardTransport,
     slot: Slot,
@@ -40,27 +47,34 @@ pub fn attest(
     not_before: u64,
     not_after: u64,
 ) -> Result<AttestationStatement, String> {
-    piv::select(card).map_err(|e| e.to_string())?;
-    let attest_key = piv::read_public_key(card, slot)
-        .map_err(|e| format!("attest slot {:02x}: {e}", slot.id()))?;
-    let st = UnsignedAttestation::new(
-        device_id,
-        device_key,
-        not_before,
-        not_after,
-        attest_key.fingerprint().clone(),
-    )
-    .map_err(|e| e.to_string())?;
-    match piv::verify_pin(card, pin) {
-        Ok(()) => {}
-        Err(PivError::WrongPin { retries }) => {
-            return Err(format!(
-                "wrong PIN ({retries} tries left); stopping without retrying"
-            ))
+    piv::in_session(card, |c| {
+        piv::select(c)?;
+        let attest_key = match piv::read_public_key(c, slot) {
+            Ok(k) => k,
+            Err(e) => return Ok(Err(format!("attest slot {:02x}: {e}", slot.id()))),
+        };
+        let st = match UnsignedAttestation::new(
+            device_id,
+            device_key,
+            not_before,
+            not_after,
+            attest_key.fingerprint().clone(),
+        ) {
+            Ok(st) => st,
+            Err(e) => return Ok(Err(e.to_string())),
+        };
+        match piv::verify_pin(c, pin) {
+            Ok(()) => {}
+            Err(PivError::WrongPin { retries }) => {
+                return Ok(Err(format!(
+                    "wrong PIN ({retries} tries left); stopping without retrying"
+                )))
+            }
+            Err(e) => return Err(e),
         }
-        Err(e) => return Err(e.to_string()),
-    }
-    piv::sign_attestation(card, slot, st).map_err(|e| e.to_string())
+        Ok(piv::sign_attestation(c, slot, st).map_err(|e| e.to_string()))
+    })
+    .map_err(|e| e.to_string())?
 }
 
 pub fn fingerprint_line(slot: Slot, k: &PublicKey) -> String {

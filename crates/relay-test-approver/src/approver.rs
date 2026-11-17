@@ -181,8 +181,11 @@ impl Approver {
         .map_err(|e| e.to_string())?;
         let manifest = load_manifest(&cfg.manifest_url, &signer, cfg.skew_secs).await?;
         let device_key = Arc::new(load_or_create_device_key(&cfg.data_dir)?);
-        piv::select(card.as_mut()).map_err(|e| e.to_string())?;
-        let key_map = discover_keys(card.as_mut(), &manifest);
+        let key_map = piv::in_session(card.as_mut(), |c| {
+            piv::select(c)?;
+            Ok(discover_keys(c, &manifest))
+        })
+        .map_err(|e| e.to_string())?;
         let attest_slot = Slot::parse(&cfg.attest_slot).map_err(|e| e.to_string())?;
         let attest_fp = key_map
             .iter()
@@ -273,8 +276,15 @@ impl Approver {
             UnsignedAttestation::new(&cfg.device_id, device_key.public_key(), nb, na, attest_fp)
                 .map_err(|e| e.to_string())?;
         // A wrong PIN here is fatal: startup is not retried (CLAUDE.md hardware safety).
-        piv::verify_pin(card, pin).map_err(|e| format!("{FATAL}PIN for attestation: {e}"))?;
-        let st = piv::sign_attestation(card, slot, st).map_err(|e| e.to_string())?;
+        // PIN and signature in one card session, which clears the PIN state when it ends.
+        let st = piv::in_session(card, |c| {
+            piv::select(c)?;
+            if let Err(e) = piv::verify_pin(c, pin) {
+                return Ok(Err(format!("{FATAL}PIN for attestation: {e}")));
+            }
+            Ok(piv::sign_attestation(c, slot, st).map_err(|e| e.to_string()))
+        })
+        .map_err(|e| e.to_string())??;
         if !b.expired_attestation {
             relay_core::verify_attestation(st.bytes(), manifest, t, cfg.skew_secs)
                 .map_err(|e| format!("own attestation: {e}"))?;
@@ -598,20 +608,17 @@ impl Approver {
             return Err(PivError::WrongPin { retries: 0 });
         }
         let mut card = self.card.lock().expect("lock");
-        piv::select(card.as_mut())?;
-        if let Err(e) = piv::verify_pin(card.as_mut(), &self.pin) {
-            if matches!(e, PivError::WrongPin { .. } | PivError::PinBlocked) {
-                self.pin_failed.store(true, Ordering::SeqCst);
-                tracing::error!("PIN rejected; no further PIN attempts will be made");
+        // SELECT, VERIFY and the operation in one card session; the PIN state is cleared after.
+        piv::in_session(card.as_mut(), |c| {
+            piv::select(c)?;
+            if let Err(e) = piv::verify_pin(c, &self.pin) {
+                if matches!(e, PivError::WrongPin { .. } | PivError::PinBlocked) {
+                    self.pin_failed.store(true, Ordering::SeqCst);
+                    tracing::error!("PIN rejected; no further PIN attempts will be made");
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
-        piv::perform(
-            card.as_mut(),
-            slot,
-            alg,
-            &req.fields.mechanism,
-            &req.fields.input,
-        )
+            piv::perform(c, slot, alg, &req.fields.mechanism, &req.fields.input)
+        })
     }
 }

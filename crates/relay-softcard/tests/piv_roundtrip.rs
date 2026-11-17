@@ -389,3 +389,27 @@ fn ed25519_signatures_pass_check_5() {
     let pk = piv::read_public_key(&mut card, slot(0x8b)).unwrap();
     assert_eq!(&pk, &key(&m, "sign-ed").public_key);
 }
+
+/// A card session leaves no PIN verified: the next session must verify again, and the card
+/// counts each session.
+#[test]
+fn session_clears_pin_state() {
+    let mut card = SoftCard::new(PIN);
+    card.generate(slot(0x9c), Algorithm::P256);
+    let m = Mechanism::Ecdsa;
+    let digest = [7u8; 32];
+    let sig = piv::in_session(&mut card, |c| {
+        piv::select(c)?;
+        piv::verify_pin(c, PIN)?;
+        piv::perform(c, slot(0x9c), Algorithm::P256, &m, &digest)
+    })
+    .unwrap();
+    assert_eq!(sig.len(), 64);
+    let e = piv::in_session(&mut card, |c| {
+        piv::select(c)?;
+        piv::perform(c, slot(0x9c), Algorithm::P256, &m, &digest)
+    })
+    .unwrap_err();
+    assert_eq!(e, PivError::SecurityStatusNotSatisfied);
+    assert_eq!(card.sessions, 2);
+}

@@ -14,6 +14,10 @@ impl CardTransport for FuzzCard<'_> {
     fn transmit(&mut self, _apdu: &[u8]) -> Result<Vec<u8>, PivError> {
         self.chunks.next().map(|c| c.to_vec()).ok_or_else(|| PivError::Transport("eof".into()))
     }
+    fn session(&mut self, f: &mut dyn FnMut(&mut dyn CardTransport)) -> Result<(), PivError> {
+        f(self);
+        Ok(())
+    }
 }
 
 fn card(data: &[u8]) -> FuzzCard<'_> {

@@ -181,3 +181,13 @@ Decision (proposed by Claude, accepted with the plan):
 - The approver flow moves from `relay-test-approver` into a shared `relay-approver` crate wrapped by `relay-ffi`.
 - Networking and TLS trust stay in Rust (`ureq`).
 - PIN, card operation and sealing run in one Rust call, so plaintext never crosses the FFI.
+
+## 2026-11-17: Card sessions: exclusive access, then no PIN left verified
+
+Context: on macOS every smart-card client goes through CryptoTokenKit. `relay-pcsc` connected in shared mode without transactions, and the test approver kept its connection open. Another program could interleave commands between our `VERIFY` and the operation, and could use a PIN-policy-`once` key afterwards without the PIN, because PIV keeps the PIN verified until the card is reset.
+Decision (Brian approved the fix): `CardTransport` gains `session(f)` and relay-core has `piv::in_session`. Every PIN verification and the operations that follow it run inside one session.
+- **PC/SC:** the session reconnects, begins a transaction, rechecks the card's serial, runs `f` and ends with `SCARD_RESET_CARD`.
+- **Softcard:** a session ends with a reset, and the card counts sessions so tests can check them.
+- **gpg conflict:** a sharing violation is reported as "card busy" with the gpg fix (`pcsc-shared` or `gpgconf --kill scdaemon`), because gpg's scdaemon holds the card exclusively by default.
+
+Consequences: relayctl (list, export, attest) and the test approver (key discovery, attestation, every operation) use sessions. Not yet verified on hardware: whether macOS's PC/SC layer honors `SCARD_RESET_CARD` at the end of a transaction. A one-command check against slots 85–89 needs Brian's approval.

@@ -42,6 +42,7 @@ fn manifest_round_trip_and_attestation() {
     yk.generate(slot(0x9d), Algorithm::Rsa2048);
     let keys = card::list(&mut yk).unwrap();
     assert_eq!(keys.len(), 3, "list finds every populated slot");
+    assert_eq!(yk.sessions, 1, "list uses one card session");
 
     manifest::init(&m).unwrap();
     assert!(manifest::init(&m).is_err(), "init never overwrites");
@@ -129,6 +130,7 @@ fn manifest_round_trip_and_attestation() {
     // Attest a device key with the card's attest key; the approver-side check accepts it.
     let device = SoftCard::new(b"000000").generate(slot(0x82), Algorithm::P256);
     let now = util::now();
+    let before = yk.sessions;
     let st = card::attest(
         &mut yk,
         slot(0x95),
@@ -139,6 +141,11 @@ fn manifest_round_trip_and_attestation() {
         now + 86_400,
     )
     .unwrap();
+    assert_eq!(
+        yk.sessions,
+        before + 1,
+        "PIN and signature share one session"
+    );
     let ok = verify_attestation(st.bytes(), &mf, now, 60).unwrap();
     assert_eq!(ok.device_key, device);
     assert_eq!(&ok.attest_key_fingerprint, attest.fingerprint());
