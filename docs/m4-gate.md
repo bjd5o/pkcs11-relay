@@ -93,3 +93,18 @@ These are the same checks as milestone 3, run against `target/debug/librelay_pkc
 - refusals (role and mechanism)
 
 OpenSSL verifies every signature.
+
+## 7. PIN reset check [CARD, Brian runs: PIN]
+
+This checks that a card session (one PC/SC transaction ended with `SCARD_RESET_CARD`) leaves no PIN verified on macOS. It runs two sessions on slot 86 (P-256, PIN policy `once`, touch `never`):
+
+1. verify the PIN once and sign a fixed test digest;
+2. try the same signature with no PIN, which must be refused.
+
+Nothing is written to the card, and the refused step costs no PIN attempt. Stop any running test approver first.
+
+```sh
+RELAY_TEST_YUBIKEY_SERIAL=<serial> ./target/debug/relayctl key check-pin-reset --serial <serial> --slot 86
+```
+
+Pass means the output starts with `ok:`. `FAILED` means macOS keeps the PIN verified across transactions, so the transport needs another way to clear it.

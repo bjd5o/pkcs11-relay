@@ -143,6 +143,15 @@ enum KeyCmd {
         #[arg(long)]
         serial: u32,
     },
+    /// Check that a card session leaves no PIN verified: sign once with the PIN, then try
+    /// again without it in a new session, which must be refused. Writes nothing to the card.
+    /// Use a signing key with PIN policy `once` and touch `never`.
+    CheckPinReset {
+        #[arg(long)]
+        serial: u32,
+        #[arg(long, value_parser = slot)]
+        slot: Slot,
+    },
     /// Export a slot's public key (PEM).
     Export {
         #[arg(long)]
@@ -331,6 +340,19 @@ fn run(cli: Cli) -> Result<(), String> {
                     println!("{}", card::fingerprint_line(s, &k));
                 }
                 Ok(())
+            }
+            KeyCmd::CheckPinReset { serial, slot } => {
+                let mut c = relay_pcsc::open(serial)?;
+                let pin = util::prompt_secret("PIV PIN: ")?;
+                match card::check_pin_reset(&mut c, slot, pin.as_bytes())? {
+                    card::PinReset::Cleared => {
+                        println!("ok: the second session was refused without a PIN; sessions clear the PIN state");
+                        Ok(())
+                    }
+                    card::PinReset::StillVerified => Err(
+                        "FAILED: the second session signed without a PIN; the PIN stayed verified across sessions".into(),
+                    ),
+                }
             }
             KeyCmd::Export { serial, slot, out } => {
                 let mut c = relay_pcsc::open(serial)?;

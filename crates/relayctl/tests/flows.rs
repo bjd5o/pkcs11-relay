@@ -241,3 +241,62 @@ fn gpg_signing() {
         .args(["--kill", "all"])
         .status();
 }
+
+/// A transport that runs sessions but never resets the card, standing in for a PC/SC layer
+/// that ignores `SCARD_RESET_CARD`.
+struct NoReset(SoftCard);
+
+impl relay_core::piv::CardTransport for NoReset {
+    fn transmit(&mut self, apdu: &[u8]) -> Result<Vec<u8>, relay_core::piv::PivError> {
+        self.0.transmit(apdu)
+    }
+    fn session(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn relay_core::piv::CardTransport),
+    ) -> Result<(), relay_core::piv::PivError> {
+        f(self);
+        Ok(())
+    }
+}
+
+#[test]
+fn pin_reset_check() {
+    for alg in [
+        Algorithm::P256,
+        Algorithm::P384,
+        Algorithm::Ed25519,
+        Algorithm::Rsa2048,
+    ] {
+        let mut yk = SoftCard::new(b"123456");
+        yk.generate(slot(0x86), alg);
+        let before = yk.pin_retries();
+        assert_eq!(
+            card::check_pin_reset(&mut yk, slot(0x86), b"123456").unwrap(),
+            card::PinReset::Cleared,
+            "{alg:?}"
+        );
+        assert_eq!(
+            yk.pin_retries(),
+            before,
+            "the refused step costs no PIN attempt"
+        );
+
+        let mut leaky = SoftCard::new(b"123456");
+        leaky.generate(slot(0x86), alg);
+        let mut leaky = NoReset(leaky);
+        assert_eq!(
+            card::check_pin_reset(&mut leaky, slot(0x86), b"123456").unwrap(),
+            card::PinReset::StillVerified,
+            "{alg:?}"
+        );
+    }
+    // A wrong PIN stops after one attempt; X25519 cannot sign.
+    let mut yk = SoftCard::new(b"123456");
+    yk.generate(slot(0x86), Algorithm::P256);
+    let e = card::check_pin_reset(&mut yk, slot(0x86), b"000000").unwrap_err();
+    assert!(e.contains("stopping without retrying"), "{e}");
+    yk.generate(slot(0x87), Algorithm::X25519);
+    assert!(card::check_pin_reset(&mut yk, slot(0x87), b"123456")
+        .unwrap_err()
+        .contains("cannot sign"));
+}
