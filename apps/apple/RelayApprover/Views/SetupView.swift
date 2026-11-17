@@ -13,6 +13,8 @@ struct SetupView: View {
             Form {
                 Section {
                     Text("Import the setup file made by `relayctl app-config`. It holds only public settings: the relay, its certificate authority and the manifest signer's key.")
+                    Text("To copy it over USB: in Finder, select this iPhone, open Files, and drag the file onto Relay Approver. It then appears under On My iPhone › Relay Approver.")
+                        .font(.footnote).foregroundStyle(.secondary)
                     Button("Choose setup file…") { importing = true }
                 }
                 if let c = candidate {
