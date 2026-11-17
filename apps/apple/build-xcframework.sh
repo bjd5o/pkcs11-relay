@@ -12,15 +12,22 @@ case $PROFILE in dev) DIR=debug ;; *) DIR=$PROFILE ;; esac
 FEATURE_ARGS=""
 [ -n "${FEATURES:-}" ] && FEATURE_ARGS="--features $FEATURES"
 OUT=apps/apple/Generated
-export IPHONEOS_DEPLOYMENT_TARGET=17.0 MACOSX_DEPLOYMENT_TARGET=14.0
+# Never leave an older framework (for example a test-card build) behind if this build fails.
+rm -rf "$OUT"
+
+# Host-side proc macros first, without the deployment-target variables: with them set,
+# release builds of proc-macro dylibs came out malformed ("mis-aligned LINKEDIT").
+# shellcheck disable=SC2086
+env -u IPHONEOS_DEPLOYMENT_TARGET -u MACOSX_DEPLOYMENT_TARGET \
+  cargo build -p relay-ffi --lib --profile "$PROFILE" $FEATURE_ARGS
 
 TARGETS="aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin"
 for t in $TARGETS; do
   # shellcheck disable=SC2086
-  cargo build -p relay-ffi --lib --profile "$PROFILE" --target "$t" $FEATURE_ARGS
+  IPHONEOS_DEPLOYMENT_TARGET=17.0 MACOSX_DEPLOYMENT_TARGET=14.0 \
+    cargo build -p relay-ffi --lib --profile "$PROFILE" --target "$t" $FEATURE_ARGS
 done
 
-rm -rf "$OUT"
 mkdir -p "$OUT/bindings" "$OUT/headers"
 cargo run -q -p relay-ffi --features bindgen --bin uniffi-bindgen -- generate \
   --library "target/aarch64-apple-darwin/$DIR/librelay_ffi.dylib" \

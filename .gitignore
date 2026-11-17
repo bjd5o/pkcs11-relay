@@ -10,3 +10,4 @@ gate-m4/
 apps/apple/Generated/
 apps/apple/RelayApprover.xcodeproj/
 apps/apple/Config/Local.xcconfig
+gate-m5/
