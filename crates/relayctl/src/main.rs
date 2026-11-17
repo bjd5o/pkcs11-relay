@@ -55,6 +55,9 @@ enum Cmd {
         device_id: String,
         #[arg(long, default_value_t = 30)]
         attestation_days: u64,
+        /// A window in minutes instead of days (to test renewal, which starts at 75%).
+        #[arg(long, conflicts_with = "attestation_days")]
+        attestation_minutes: Option<u64>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -511,6 +514,7 @@ fn run(cli: Cli) -> Result<(), String> {
             signer,
             device_id,
             attestation_days,
+            attestation_minutes,
             out,
         } => {
             let signer_pem = std::fs::read_to_string(&signer)
@@ -532,7 +536,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 "manifest_url": manifest_url.unwrap_or_else(|| format!("{base}/v1/manifest")),
                 "manifest_signer": signer_pem,
                 "device_id": device_id,
-                "attestation_window_secs": attestation_days * 86_400,
+                "attestation_window_secs": attestation_minutes.map_or(attestation_days * 86_400, |m| m * 60),
             });
             util::write(&out, serde_json::to_vec_pretty(&v).expect("json"))?;
             println!(
