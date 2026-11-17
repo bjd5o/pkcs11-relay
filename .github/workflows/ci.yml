@@ -27,20 +27,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, libc: gnu, runner: ubuntu-24.04, image: "rust:1.93-bookworm" }
-          - { arch: aarch64, libc: gnu, runner: ubuntu-24.04-arm, image: "rust:1.93-bookworm" }
-          - { arch: x86_64, libc: musl, runner: ubuntu-24.04, image: "rust:1.93-alpine" }
-          - { arch: aarch64, libc: musl, runner: ubuntu-24.04-arm, image: "rust:1.93-alpine" }
+          - { arch: x86_64, libc: gnu, runner: ubuntu-24.04, image: "rust:1.93-bookworm", setup: "true" }
+          - { arch: aarch64, libc: gnu, runner: ubuntu-24.04-arm, image: "rust:1.93-bookworm", setup: "true" }
+          # musl targets link statically by default, which rules out a cdylib.
+          - { arch: x86_64, libc: musl, runner: ubuntu-24.04, image: "rust:1.93-alpine", setup: "apk add --no-cache musl-dev", rustflags: "-C target-feature=-crt-static" }
+          - { arch: aarch64, libc: musl, runner: ubuntu-24.04-arm, image: "rust:1.93-alpine", setup: "apk add --no-cache musl-dev", rustflags: "-C target-feature=-crt-static" }
     runs-on: ${{ matrix.runner }}
-    container: ${{ matrix.image }}
-    env:
-      # musl targets link statically by default, which rules out a cdylib.
-      RUSTFLAGS: ${{ matrix.libc == 'musl' && '-C target-feature=-crt-static' || '' }}
     steps:
       - uses: actions/checkout@v4
-      - if: matrix.libc == 'musl'
-        run: apk add --no-cache musl-dev
-      - run: cargo build --release --locked -p relay-pkcs11
+      # JavaScript actions cannot run inside Alpine containers on arm64 runners, so checkout
+      # and upload run on the host and only the build runs in the image.
+      - name: build in ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          SETUP: ${{ matrix.setup }}
+          BUILD_RUSTFLAGS: ${{ matrix.rustflags }}
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src -e RUSTFLAGS="$BUILD_RUSTFLAGS" "$IMAGE" \
+            sh -c "$SETUP && cargo build --release --locked -p relay-pkcs11"
       - run: cp target/release/librelay_pkcs11.so librelay_pkcs11-${{ matrix.arch }}-${{ matrix.libc }}.so
       - uses: actions/upload-artifact@v4
         with:
