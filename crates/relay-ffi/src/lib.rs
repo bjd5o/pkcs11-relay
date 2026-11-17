@@ -42,8 +42,8 @@ fn now() -> u64 {
 pub enum RelayError {
     #[error("not enrolled")]
     NotEnrolled,
-    #[error("the YubiKey holds no attest key from the manifest")]
-    NoAttestKey,
+    #[error("the YubiKey holds no attest key from the manifest: {detail}")]
+    NoAttestKey { detail: String },
     #[error("wrong PIN, {retries} tries left; no further attempt until you retry")]
     PinRejected { retries: u8 },
     #[error("PIN blocked")]
@@ -64,7 +64,7 @@ impl From<ApproverError> for RelayError {
     fn from(e: ApproverError) -> Self {
         match e {
             ApproverError::NotEnrolled => RelayError::NotEnrolled,
-            ApproverError::NoAttestKey => RelayError::NoAttestKey,
+            ApproverError::NoAttestKey(detail) => RelayError::NoAttestKey { detail },
             ApproverError::PinRejected { retries } => RelayError::PinRejected { retries },
             ApproverError::PinBlocked => RelayError::PinBlocked,
             ApproverError::Card(e) => RelayError::Card {
@@ -495,9 +495,16 @@ impl Approver {
             .collect())
     }
 
-    /// Enrollment, one card session: discover, have the attest key sign this device's
-    /// statement (PIN; touch over NFC is the tap), bind the relay-auth key (device-key
-    /// signature) and register. Also renews an existing enrollment.
+    /// What the last `discover` read, slot by slot: fingerprints and whether each is in the
+    /// manifest, plus any read errors. Public data only.
+    pub fn last_discovery(&self) -> String {
+        self.engine.last_discovery()
+    }
+
+    /// Enrollment, after `discover` (the first tap, no PIN): have the attest key sign this
+    /// device's statement (PIN; over NFC the tap is the touch), bind the relay-auth key
+    /// (device-key signature) and register. Also renews an existing enrollment. Reads the card
+    /// first only when no discovery has found the attest key yet.
     pub fn enroll(
         &self,
         card: Arc<dyn CardChannel>,
@@ -505,7 +512,9 @@ impl Approver {
     ) -> Result<AttestationStatus, RelayError> {
         let pin = Zeroizing::new(pin);
         let mut card = Card(card);
-        self.engine.discover(&mut card)?;
+        if self.engine.attest_key().is_none() {
+            self.engine.discover(&mut card)?;
+        }
         let t = now();
         self.engine
             .attest(&mut card, &pin, t, t + self.cfg.attestation_window_secs)?;

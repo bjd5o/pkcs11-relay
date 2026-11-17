@@ -46,8 +46,9 @@ pub fn key_slots() -> impl Iterator<Item = Slot> {
 pub enum ApproverError {
     #[error("not enrolled: this device has no attestation yet")]
     NotEnrolled,
-    #[error("the card holds no manifest attest key")]
-    NoAttestKey,
+    /// The detail says what the last discovery read, for diagnosis.
+    #[error("the card holds no manifest attest key ({0})")]
+    NoAttestKey(String),
     #[error("PIN rejected ({retries} tries left); no further attempt is made automatically")]
     PinRejected { retries: u8 },
     #[error("PIN blocked")]
@@ -199,6 +200,8 @@ pub struct Engine {
     replay: Mutex<ReplayCache>,
     /// Set after a rejected PIN: no card operation until the person retries explicitly.
     pin_failed: AtomicBool,
+    /// What the last discovery read: slots, fingerprints, errors. Public data only.
+    last_discovery: Mutex<String>,
 }
 
 impl Engine {
@@ -222,6 +225,7 @@ impl Engine {
             attestation: Mutex::new(None),
             replay: Mutex::new(ReplayCache::new(REPLAY_TTL_SECS)),
             pin_failed: AtomicBool::new(false),
+            last_discovery: Mutex::new("no discovery yet".into()),
         }
     }
 
@@ -290,20 +294,44 @@ impl Engine {
     /// lists. Returns them with their slots.
     pub fn discover(&self, card: &mut dyn CardTransport) -> Result<Vec<(Slot, ManifestKey)>> {
         let manifest = self.manifest();
+        let mut report = Vec::new();
         let found = piv::in_session(card, |c| {
             piv::select(c)?;
             Ok(key_slots()
-                .filter_map(|s| {
-                    let pk = piv::read_public_key(c, s).ok()?;
-                    manifest.key(pk.fingerprint()).map(|k| (s, k.clone()))
+                .filter_map(|s| match piv::read_public_key(c, s) {
+                    Ok(pk) => {
+                        let k = manifest.key(pk.fingerprint());
+                        report.push(format!(
+                            "{:02x}: {} {}",
+                            s.id(),
+                            &pk.fingerprint().as_str()[..15],
+                            k.map_or("not in manifest".to_string(), |k| k.label.clone())
+                        ));
+                        k.map(|k| (s, k.clone()))
+                    }
+                    Err(PivError::NotFound) => None,
+                    Err(e) => {
+                        report.push(format!("{:02x}: {e}", s.id()));
+                        None
+                    }
                 })
                 .collect::<Vec<_>>())
         })?;
+        *self.last_discovery.lock().expect("lock") = if report.is_empty() {
+            "no certificates read in any slot".into()
+        } else {
+            report.join("; ")
+        };
         *self.key_map.lock().expect("lock") = found
             .iter()
             .map(|(s, k)| (k.fingerprint.clone(), (*s, k.algorithm)))
             .collect();
         Ok(found)
+    }
+
+    /// What the last discovery read, slot by slot (public data only), for the person to see.
+    pub fn last_discovery(&self) -> String {
+        self.last_discovery.lock().expect("lock").clone()
     }
 
     /// The key map as `(fingerprint, slot)` pairs, to persist (spec: approver "Key map").
@@ -396,7 +424,9 @@ impl Engine {
         not_before: u64,
         not_after: u64,
     ) -> Result<(Slot, UnsignedAttestation)> {
-        let (slot, fp) = self.attest_key().ok_or(ApproverError::NoAttestKey)?;
+        let (slot, fp) = self.attest_key().ok_or_else(|| {
+            ApproverError::NoAttestKey(self.last_discovery.lock().expect("lock").clone())
+        })?;
         let st = UnsignedAttestation::new(
             &self.cfg.device_id,
             self.signer.public_key(),

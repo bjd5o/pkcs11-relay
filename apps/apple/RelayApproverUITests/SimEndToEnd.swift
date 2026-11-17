@@ -21,6 +21,10 @@ final class SimEndToEnd: XCTestCase {
         let status = app.tabBars.buttons["Status"]
         XCTAssertTrue(status.waitForExistence(timeout: 60), "the app connected to the relay")
         status.tap()
+        // First tap: read the keys, no PIN.
+        let read = app.buttons["read-yubikey"]
+        XCTAssertTrue(read.waitForExistence(timeout: 10))
+        read.tap()
         let pinField = app.secureTextFields["pin"]
         XCTAssertTrue(pinField.waitForExistence(timeout: 10))
         pinField.tap()

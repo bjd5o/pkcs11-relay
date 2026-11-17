@@ -25,20 +25,37 @@ struct StatusView: View {
                             Text("Not enrolled: clients reject this device's answers.")
                                 .foregroundStyle(.red)
                         }
-                        SecureField("YubiKey PIN", text: $pin)
-                            .focused($pinFocused)
-                            .accessibilityIdentifier("pin")
-                            #if os(iOS)
-                            .keyboardType(.numberPad)
-                            #endif
-                        Button(s.attestation == nil ? "Enroll with YubiKey" : "Enroll again") {
-                            let entered = pin
-                            pin = ""
+                        // Step 1: a tap without PIN reads which keys the YubiKey holds.
+                        Button(model.discovered == nil ? "1. Read YubiKey (tap)" : "Read YubiKey again (tap)") {
                             pinFocused = false
-                            Task { await model.enroll(pin: entered) }
+                            Task { await model.readYubiKey() }
                         }
-                        .accessibilityIdentifier("enroll")
-                        .disabled(pin.count < 6 || s.pinFailed)
+                        .accessibilityIdentifier("read-yubikey")
+                        if let found = model.discovered {
+                            if model.attestKeyFound {
+                                Text("Found \(found.count) manifest key(s), including the attest key.")
+                            } else {
+                                Text("This YubiKey holds no attest key from the manifest.")
+                                    .foregroundStyle(.red)
+                                Text(model.discoveryReport).font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                            }
+                            // Step 2: PIN, then a second tap to sign the enrollment.
+                            SecureField("YubiKey PIN", text: $pin)
+                                .focused($pinFocused)
+                                .accessibilityIdentifier("pin")
+                                #if os(iOS)
+                                .keyboardType(.numberPad)
+                                #endif
+                            Button(s.attestation == nil ? "2. Enroll (tap again)" : "2. Enroll again (tap again)") {
+                                let entered = pin
+                                pin = ""
+                                pinFocused = false
+                                Task { await model.enroll(pin: entered) }
+                            }
+                            .accessibilityIdentifier("enroll")
+                            .disabled(pin.count < 6 || s.pinFailed || !model.attestKeyFound)
+                        }
                     }
                     if s.pinFailed {
                         Section {
@@ -68,6 +85,13 @@ struct StatusView: View {
             }
             .navigationTitle("Status")
             .refreshable { model.refresh() }
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { pinFocused = false }
+                }
+            }
         }
     }
 

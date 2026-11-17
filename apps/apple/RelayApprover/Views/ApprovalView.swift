@@ -77,5 +77,12 @@ struct ApprovalView: View {
             if let result { Text(result) }
         }
         .navigationTitle("Approve?")
+        .scrollDismissesKeyboard(.interactively)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { pinFocused = false }
+            }
+        }
     }
 }

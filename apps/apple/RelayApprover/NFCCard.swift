@@ -59,9 +59,17 @@ final class NFCCard: NSObject, CardChannel, NFCTagReaderSessionDelegate, @unchec
         if done.wait(timeout: .now() + 30) == .timedOut {
             throw PlatformError.Failed(message: "the YubiKey stopped answering")
         }
+        // Diagnostics for the Xcode console: the 4-byte header and the status word only, never
+        // the data (a VERIFY carries the PIN; responses can carry results).
+        let header = apdu.prefix(4).map { String(format: "%02X", $0) }.joined()
         switch out {
-        case .success(let d): return d
-        case .failure(let e): throw PlatformError.Failed(message: e.localizedDescription)
+        case .success(let d):
+            let sw = d.suffix(2).map { String(format: "%02X", $0) }.joined()
+            NSLog("relay-nfc: %@ -> %@ (%d bytes)", header, sw, d.count - 2)
+            return d
+        case .failure(let e):
+            NSLog("relay-nfc: %@ -> error %@", header, e.localizedDescription)
+            throw PlatformError.Failed(message: e.localizedDescription)
         }
     }
 

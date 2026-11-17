@@ -13,6 +13,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var inbox = Inbox(requests: [], pairings: [], rejected: 0)
     @Published var error: String?
     @Published private(set) var busy: String?
+    /// Keys the first enrollment tap found, and what it read slot by slot.
+    @Published private(set) var discovered: [KeyInfo]?
+    @Published private(set) var discoveryReport = ""
 
     private var deviceKey: EnclaveKey?
     private var authKey: EnclaveKey?
@@ -108,6 +111,20 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: actions (biometric, then PIN, then tap)
+
+    /// Enrollment, first tap (no PIN): read which manifest keys the YubiKey holds.
+    func readYubiKey() async {
+        guard let a = approver else { return }
+        await run("Reading the YubiKey") {
+            let card = try CardSource.make(message: "Hold your YubiKey to the iPhone to read its keys")
+            let keys = try await Self.background { try a.discover(card: card) }
+            self.discovered = keys
+            self.discoveryReport = a.lastDiscovery()
+        }
+    }
+
+    /// Whether the first tap found the manifest's attest key.
+    var attestKeyFound: Bool { discovered?.contains { $0.role == "attest" } ?? false }
 
     func enroll(pin: String) async {
         guard let a = approver, let key = deviceKey else { return }
