@@ -8,7 +8,7 @@ WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends libpcsclite-dev \
  && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,id=relay-gnu-target \
     cargo build --release --locked -p relay-test-approver -p relay-pkcs11 \
  && cp target/release/relay-test-approver /usr/local/bin/ \
