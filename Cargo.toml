@@ -8,6 +8,7 @@ members = [
     "crates/relay-test-approver",
     "crates/relayctl",
     "crates/relay-pcsc",
+    "crates/relay-approver",
 ]
 # cargo-fuzz targets build with a nightly toolchain and their own lockfile.
 exclude = ["fuzz"]
@@ -27,6 +28,7 @@ relay-core = { path = "crates/relay-core" }
 relay-softcard = { path = "crates/relay-softcard" }
 relay-server = { path = "crates/relay-server" }
 relay-pcsc = { path = "crates/relay-pcsc" }
+relay-approver = { path = "crates/relay-approver" }
 
 # Spec technology table. pgp 0.21 brings its own older RustCrypto generation
 # (p256 0.13, rsa 0.9, ed25519-dalek 2) for OpenPGP only; no types cross over.

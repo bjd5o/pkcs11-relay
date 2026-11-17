@@ -78,6 +78,27 @@ impl AuthHeaders {
         }
     }
 
+    /// Sign a call with a device signer (Secure Enclave and similar) and a fresh nonce.
+    pub fn sign_with(
+        signer: &dyn crate::signing::DeviceSigner,
+        method: &str,
+        path_and_query: &str,
+        body: &[u8],
+        now: u64,
+    ) -> Result<Self> {
+        let mut nonce = [0u8; 16];
+        random_bytes(&mut nonce);
+        let signature = signer
+            .sign_message(&to_be_signed(method, path_and_query, now, &nonce, body))
+            .map_err(Error::Crypto)?;
+        Ok(AuthHeaders {
+            key: signer.public_key().fingerprint().clone(),
+            time: now,
+            nonce,
+            signature,
+        })
+    }
+
     /// Header name/value pairs to send.
     pub fn to_headers(&self) -> [(&'static str, String); 4] {
         [

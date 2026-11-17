@@ -472,7 +472,10 @@ mod origin_tests {
     fn served_by_relay_needs_same_origin_and_a_path() {
         let r = "https://relay:8443";
         assert!(served_by_relay("https://relay:8443/v1/manifest", r));
-        assert!(served_by_relay("https://relay:8443/v1/manifest", "https://relay:8443/"));
+        assert!(served_by_relay(
+            "https://relay:8443/v1/manifest",
+            "https://relay:8443/"
+        ));
         assert!(!served_by_relay("https://relay:84430/v1/manifest", r));
         assert!(!served_by_relay("https://relay:8443.evil/v1/manifest", r));
         assert!(!served_by_relay("https://example.org/manifest.json", r));

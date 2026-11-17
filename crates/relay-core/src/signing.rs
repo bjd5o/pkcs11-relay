@@ -91,6 +91,34 @@ impl SoftwareKey {
     }
 }
 
+/// A key that signs for this approver device: the Secure Enclave, Android Keystore or a TPM in
+/// the apps, a [`SoftwareKey`] in tests. ECDSA P-256 over SHA-256 of the message, as a raw
+/// `r || s` signature (wire-format §1.4). Platform code only signs bytes the core hands it.
+pub trait DeviceSigner: Send + Sync {
+    fn public_key(&self) -> PublicKey;
+    /// Sign `msg`; an error when the platform refuses (no biometric, key invalidated).
+    fn sign_message(&self, msg: &[u8]) -> std::result::Result<[u8; 64], String>;
+}
+
+impl DeviceSigner for SoftwareKey {
+    fn public_key(&self) -> PublicKey {
+        SoftwareKey::public_key(self)
+    }
+    fn sign_message(&self, msg: &[u8]) -> std::result::Result<[u8; 64], String> {
+        Ok(self.sign(msg))
+    }
+}
+
+/// Sign with a device signer and check the signature against its public key before anything
+/// uses it, so a platform binding that signs the wrong bytes fails here instead of at a client.
+pub fn sign_checked(signer: &dyn DeviceSigner, msg: &[u8]) -> Result<[u8; 64]> {
+    let sig = signer.sign_message(msg).map_err(Error::Crypto)?;
+    signer.public_key().verify_message(msg, &sig).map_err(|_| {
+        Error::Crypto("device signer returned a signature that does not verify".into())
+    })?;
+    Ok(sig)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
