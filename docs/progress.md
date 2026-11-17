@@ -27,8 +27,8 @@ Update this file as tasks finish. Each milestone's gate is defined in `docs/mile
 - [x] ntfy and no-op notifiers (APNs/FCM stubs behind `Notifier`)
 - [x] `relay-test-approver` (softcard; `--pcsc` in milestone 4)
 - [x] Fixture generator (`relay-test-approver gen-fixtures`)
-- [x] `deploy/Dockerfile.relay` (static musl, distroless, non-root; built and run on arm64 only so far, amd64 not yet built)
-- [x] Gate passed (2026-11-15): `docker compose -f deploy/compose.test.yml up --build --exit-code-from client` exits 0 on colima, and the same gate runs in-process in `cargo test`. Not yet run in GitHub Actions (no remote).
+- [x] `deploy/Dockerfile.relay` (static musl, distroless, non-root; arm64 on colima; amd64 in GitHub Actions, where the integration job builds it)
+- [x] Gate passed (2026-11-15): `docker compose -f deploy/compose.test.yml up --build --exit-code-from client` exits 0 on colima, and the same gate runs in-process in `cargo test`. Passes in GitHub Actions on amd64 (first run 2026-11-16).
 
 ## Milestone 3: provider on Linux
 
@@ -36,11 +36,11 @@ Update this file as tasks finish. Each milestone's gate is defined in `docs/mile
 - [x] Discovery and role enforcement
 - [x] Sign and decrypt through the relay, response verification; `C_Encrypt` in software
 - [x] Client pairing from the provider
-- [x] glibc and musl builds; p11-kit module file (aarch64 glibc and musl built and loaded locally; x86_64 only in the CI matrix, which has not run yet; musl needs `libgcc` at run time)
+- [x] glibc and musl builds; p11-kit module file (aarch64 glibc and musl built and loaded locally; all four built in GitHub Actions since 2026-11-16, x86_64 not yet loaded by a client outside the amd64 Docker gate; musl needs `libgcc` at run time)
 - [x] `deploy/compose.test.yml` and `tests/` scripts
 - [x] Relay terminates TLS (axum-server); test clients trust a private CA
 - [x] In-process provider test through the C function table (`crates/relay-pkcs11/tests/module.rs`)
-- [x] Gate passed (2026-11-15): `docker compose -f deploy/compose.test.yml up --build --exit-code-from client` exits 0 on colima (arm64), running the milestone 2 and 3 gates: `pkcs11-tool`, OpenSSL `pkcs11-provider`, `ssh -I`. Not yet run in GitHub Actions.
+- [x] Gate passed (2026-11-15): `docker compose -f deploy/compose.test.yml up --build --exit-code-from client` exits 0 on colima (arm64), running the milestone 2 and 3 gates: `pkcs11-tool`, OpenSSL `pkcs11-provider`, `ssh -I`. Passes in GitHub Actions on amd64 (2026-11-16).
 
 ## Between milestones 3 and 4 (Brian's requests, 2026-11-15)
 
