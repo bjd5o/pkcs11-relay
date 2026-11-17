@@ -9,6 +9,7 @@ members = [
     "crates/relayctl",
     "crates/relay-pcsc",
     "crates/relay-approver",
+    "crates/relay-ffi",
 ]
 # cargo-fuzz targets build with a nightly toolchain and their own lockfile.
 exclude = ["fuzz"]
@@ -29,6 +30,7 @@ relay-softcard = { path = "crates/relay-softcard" }
 relay-server = { path = "crates/relay-server" }
 relay-pcsc = { path = "crates/relay-pcsc" }
 relay-approver = { path = "crates/relay-approver" }
+relay-test-approver = { path = "crates/relay-test-approver" }
 
 # Spec technology table. pgp 0.21 brings its own older RustCrypto generation
 # (p256 0.13, rsa 0.9, ed25519-dalek 2) for OpenPGP only; no types cross over.
@@ -86,6 +88,9 @@ p384-013 = { package = "p384", version = "=0.13.1" }
 x509-cert-02 = { package = "x509-cert", version = "=0.2.5" }
 pcsc = "=2.9.0"
 rpassword = "=7.5.5"
+
+# Milestone 5 (spec technology table: the apps call the core through UniFFI).
+uniffi = "=0.32.2"
 
 # Approved 2026-11-15 for milestone 3.
 axum-server = { version = "=0.9.2", features = ["tls-rustls-ring"] }

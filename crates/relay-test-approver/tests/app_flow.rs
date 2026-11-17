@@ -68,7 +68,7 @@ fn app_path_with_a_separate_auth_key() {
     let start = Instant::now();
     let manifest = loop {
         match rc.fetch_manifest(&format!("{url}/v1/manifest"), &signer, None, now(), 60) {
-            Ok(m) => break m,
+            Ok((m, _sig)) => break m,
             Err(e) if start.elapsed() < Duration::from_secs(10) => {
                 let _ = e;
                 std::thread::sleep(Duration::from_millis(100));

@@ -200,7 +200,8 @@ impl RelayClient {
     }
 
     /// Fetch `url` and `url.asc` (the relay's CA when the relay serves them) and verify them
-    /// exactly as clients do, against `cached` for rollback.
+    /// exactly as clients do, against `cached` for rollback. Returns the manifest and the
+    /// signature bytes that verified it (to store with it).
     pub fn fetch_manifest(
         &self,
         url: &str,
@@ -208,10 +209,11 @@ impl RelayClient {
         cached: Option<&Manifest>,
         now: u64,
         skew: u64,
-    ) -> Result<Manifest> {
+    ) -> Result<(Manifest, Vec<u8>)> {
         let bytes = self.fetch(url)?;
         let sig = self.fetch(&format!("{url}.asc"))?;
-        verify_manifest(&bytes, &sig, signer, cached, now, skew).map_err(crate::invalid)
+        let m = verify_manifest(&bytes, &sig, signer, cached, now, skew).map_err(crate::invalid)?;
+        Ok((m, sig))
     }
 
     fn fetch(&self, url: &str) -> Result<Vec<u8>> {

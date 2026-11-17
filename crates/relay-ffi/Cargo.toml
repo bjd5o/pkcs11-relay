@@ -1,0 +1,40 @@
+[package]
+name = "relay-ffi"
+description = "UniFFI interface to the approver engine for the Swift (and later Kotlin) apps"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+name = "relay_ffi"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+# The binding generator (`cargo run -p relay-ffi --features bindgen --bin uniffi-bindgen`).
+bindgen = ["uniffi/cli"]
+# A software PIV card for the simulator end-to-end test; never in release builds.
+test-card = ["dep:relay-softcard"]
+
+[dependencies]
+relay-core.workspace = true
+relay-approver.workspace = true
+relay-softcard = { workspace = true, optional = true }
+uniffi.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+relay-softcard.workspace = true
+relay-server.workspace = true
+relay-test-approver.workspace = true
+tokio.workspace = true
+base64.workspace = true

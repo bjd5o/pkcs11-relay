@@ -306,6 +306,30 @@ impl Engine {
         Ok(found)
     }
 
+    /// The key map as `(fingerprint, slot)` pairs, to persist (spec: approver "Key map").
+    pub fn key_map(&self) -> Vec<(Fingerprint, Slot)> {
+        let mut v: Vec<_> = self
+            .key_map
+            .lock()
+            .expect("lock")
+            .iter()
+            .map(|(fp, (s, _))| (fp.clone(), *s))
+            .collect();
+        v.sort_by_key(|(_, s)| s.id());
+        v
+    }
+
+    /// Restore a saved key map without the card. Entries the current manifest does not list
+    /// are dropped. A stale entry is harmless: the card would sign with whatever key is in the
+    /// slot, and clients check every result against the manifest key (response check 5).
+    pub fn restore_key_map(&self, entries: &[(Fingerprint, Slot)]) {
+        let m = self.manifest();
+        *self.key_map.lock().expect("lock") = entries
+            .iter()
+            .filter_map(|(fp, s)| m.key(fp).map(|k| (fp.clone(), (*s, k.algorithm))))
+            .collect();
+    }
+
     /// The keys found by [`discover`](Self::discover) that clients can use (not the attest key).
     pub fn operable_keys(&self) -> Vec<ManifestKey> {
         let m = self.manifest();
