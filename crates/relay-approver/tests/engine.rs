@@ -114,7 +114,7 @@ impl Fx {
     fn show(&self, bytes: &[u8], at: u64) -> PendingRequest {
         match self.engine.check_request(bytes, at).unwrap() {
             Checked::Show(p) => *p,
-            Checked::Denied { why, .. } => panic!("denied: {why}"),
+            Checked::Rejected(r) => panic!("rejected: {}", r.why),
         }
     }
 
@@ -156,16 +156,21 @@ fn denial_and_failed_checks_are_signed_denials() {
     ));
 
     // The same request id again: replay.
-    let Checked::Denied { why, .. } = f.engine.check_request(&req, NOW + 6).unwrap() else {
+    let Checked::Rejected(r) = f.engine.check_request(&req, NOW + 6).unwrap() else {
         panic!()
     };
-    assert!(why.contains("Replay") || why.contains("replay"), "{why}");
+    assert!(
+        r.why.contains("Replay") || r.why.contains("replay"),
+        "{}",
+        r.why
+    );
 
     // A key that is not on this card.
     let (req, reply) = f.request("elsewhere", NOW + 5);
-    let Checked::Denied { response, .. } = f.engine.check_request(&req, NOW + 5).unwrap() else {
+    let Checked::Rejected(r) = f.engine.check_request(&req, NOW + 5).unwrap() else {
         panic!()
     };
+    let response = f.engine.sign_rejection(&r, NOW + 5).unwrap();
     assert!(matches!(
         f.outcome(&response, &req, NOW + 5, reply),
         Outcome::Denied(Some(Reason::Policy))
@@ -173,9 +178,10 @@ fn denial_and_failed_checks_are_signed_denials() {
 
     // Expired by the time it arrives.
     let (req, reply) = f.request("sign", NOW);
-    let Checked::Denied { response, .. } = f.engine.check_request(&req, NOW + 200).unwrap() else {
+    let Checked::Rejected(r) = f.engine.check_request(&req, NOW + 200).unwrap() else {
         panic!()
     };
+    let response = f.engine.sign_rejection(&r, NOW + 200).unwrap();
     assert!(matches!(
         f.outcome(&response, &req, NOW + 100, reply),
         Outcome::Denied(Some(Reason::Expired))
@@ -186,7 +192,7 @@ fn denial_and_failed_checks_are_signed_denials() {
     let (req, _) = f.request("sign", NOW + 5);
     assert!(matches!(
         f.engine.check_request(&req, NOW + 5).unwrap(),
-        Checked::Denied { .. }
+        Checked::Rejected(_)
     ));
 }
 
@@ -362,16 +368,16 @@ fn a_bad_device_signature_is_caught() {
         Arc::new(Broken(SoftwareKey::generate_p256())),
         f.engine.clients(),
     );
-    let (req, _) = f.request("sign", NOW + 5);
-    assert!(matches!(
-        broken.check_request(&req, NOW + 5),
-        Err(ApproverError::NotEnrolled)
-    ));
     broken.discover(&mut f.card).unwrap();
-    broken.attest(&mut f.card, PIN, NOW, NOW + 1000).unwrap();
+    let (req, _) = f.request("sign", NOW + 5);
     let Checked::Show(p) = broken.check_request(&req, NOW + 5).unwrap() else {
         panic!()
     };
+    assert!(
+        matches!(broken.deny(&p, NOW + 5), Err(ApproverError::NotEnrolled)),
+        "nothing to sign with before enrollment"
+    );
+    broken.attest(&mut f.card, PIN, NOW, NOW + 1000).unwrap();
     assert!(matches!(
         broken.deny(&p, NOW + 5),
         Err(ApproverError::Signer(_))

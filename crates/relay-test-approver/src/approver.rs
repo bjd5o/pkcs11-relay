@@ -453,17 +453,19 @@ impl Approver {
         let t = now();
         let p = match self.engine.check_request(bytes, t) {
             Ok(Checked::Show(p)) => p,
-            Ok(Checked::Denied {
-                req_id,
-                response,
-                why,
-            }) => {
+            Ok(Checked::Rejected(r)) => {
                 tracing::warn!(
-                    req_id = hex::encode(req_id),
-                    why,
+                    req_id = hex::encode(r.req_id),
+                    why = r.why,
                     "request failed checks; denied"
                 );
-                return Some((req_id, response, false));
+                return match self.engine.sign_rejection(&r, t) {
+                    Ok(response) => Some((r.req_id, response, false)),
+                    Err(e) => {
+                        tracing::error!(error = %e, "signing the denial failed");
+                        None
+                    }
+                };
             }
             Err(e) => {
                 tracing::warn!(error = %e, "request not handled");

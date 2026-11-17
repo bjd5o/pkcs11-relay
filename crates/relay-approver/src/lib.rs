@@ -134,17 +134,24 @@ impl PendingRequest {
     }
 }
 
-/// The outcome of [`Engine::check_request`].
+/// A request that failed a check. Answer it with [`Engine::sign_rejection`] (a device-key
+/// signature, so possibly a biometric prompt) when the person is present, or let it expire.
+#[derive(Debug, Clone)]
+pub struct Rejection {
+    pub req_id: [u8; 16],
+    request: SignedRequest,
+    reason: Reason,
+    /// For the local log.
+    pub why: String,
+}
+
+/// The outcome of [`Engine::check_request`]. Checking signs nothing.
 #[derive(Debug)]
 pub enum Checked {
     /// Show it to the person, then call [`Engine::approve`] or [`Engine::deny`].
     Show(Box<PendingRequest>),
-    /// It failed a check: post this signed denial. `why` is for the local log.
-    Denied {
-        req_id: [u8; 16],
-        response: Vec<u8>,
-        why: String,
-    },
+    /// It failed a check.
+    Rejected(Box<Rejection>),
 }
 
 /// The result of [`Engine::approve`]: always a signed response to post.
@@ -475,23 +482,18 @@ impl Engine {
     }
 
     /// Run every approver check on a request from the relay (spec: "Check every request").
-    /// A request that fails is answered with a signed denial; one that passes comes back with
-    /// its approval view.
+    /// One that passes comes back with its approval view; one that fails as a [`Rejection`].
+    /// Nothing is signed here.
     pub fn check_request(&self, bytes: &[u8], now: u64) -> Result<Checked> {
         let req = SignedRequest::decode(bytes).map_err(invalid)?;
         let id = req.fields.req_id;
-        let att = self.current_attestation()?;
         let deny = |reason: Reason, why: String| -> Result<Checked> {
-            Ok(Checked::Denied {
+            Ok(Checked::Rejected(Box::new(Rejection {
                 req_id: id,
-                response: self.sign_response(UnsignedResponse::denied(
-                    &req,
-                    Some(reason),
-                    &att,
-                    now,
-                ))?,
+                request: req.clone(),
+                reason,
                 why,
-            })
+            })))
         };
         let Some(client) = self
             .clients
@@ -543,6 +545,17 @@ impl Engine {
             slot,
             alg,
         })))
+    }
+
+    /// The signed denial for a request that failed its checks.
+    pub fn sign_rejection(&self, r: &Rejection, now: u64) -> Result<Vec<u8>> {
+        let att = self.current_attestation()?;
+        self.sign_response(UnsignedResponse::denied(
+            &r.request,
+            Some(r.reason),
+            &att,
+            now,
+        ))
     }
 
     /// The person denied it.
