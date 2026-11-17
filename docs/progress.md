@@ -76,5 +76,5 @@ Part A:
 - [x] 5.2 `relay-ffi` (UniFFI 0.32.2): `DeviceKey` and `CardChannel` foreign traits, an `Approver` object, saved state. `RelayFFI.xcframework` covers iOS, the simulator and Apple silicon macOS.
 - [x] 5.3 App skeleton: SwiftUI multiplatform (XcodeGen), Setup, Enrollment, Approval, Pairing and Status screens, Secure Enclave keys, storage; `relayctl app-config` writes the setup file.
 - [x] 5.4 NFC `CardChannel` (CoreNFC, ISO 7816). Builds; not yet run on a device.
-- [x] 5.5 Simulator end-to-end test (`tests/sim-e2e.sh`), passing locally (2026-11-17). A relay runs on the Mac; the app in the iOS simulator uses relay-ffi's software test card; an XCUITest enrolls, approves the pairing and approves an RSA-OAEP decrypt with the PIN; `relay-test-approver sim-client` verifies the plaintext as the provider would. CI job `apple` (macos-15) added, not yet run.
+- [x] 5.5 Simulator end-to-end test (`tests/sim-e2e.sh`), passing locally (2026-11-17). A relay runs on the Mac; the app in the iOS simulator uses relay-ffi's software test card; an XCUITest enrolls, approves the pairing and approves an RSA-OAEP decrypt with the PIN; `relay-test-approver sim-client` verifies the plaintext as the provider would. CI job `apple` (macos-15) passes too (first run 2026-11-17).
 - [ ] Gate on Brian's iPhone over NFC with YubiKey <serial>
