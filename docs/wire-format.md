@@ -329,7 +329,7 @@ Every authenticated relay call carries:
 
 | Header | Value |
 |---|---|
-| `X-Relay-Key` | fingerprint of the signing key (a client identity key or a device key) |
+| `X-Relay-Key` | fingerprint of the signing key (a client identity key, or a device's relay-auth key, §8.4) |
 | `X-Relay-Time` | Unix seconds, ASCII decimal, no leading zeros |
 | `X-Relay-Nonce` | 16 random bytes from the OS CSPRNG, base64 (24 characters) |
 | `X-Relay-Signature` | base64 of the 64-byte signature (§1.4) |
@@ -366,6 +366,18 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
 Envelope bodies (`POST /v1/requests`, `POST /v1/requests/{id}/response`, and the result of `GET …/result`) are `application/cbor`, carrying the envelope's exact bytes. The relay stores and forwards them byte for byte.
+
+### 8.4 Device relay-auth key
+
+A device may authenticate its relay calls with a separate P-256 key instead of its device key. That lets the device key require a biometric for every signature (Secure Enclave `.biometryCurrentSet`) without one for every poll. The device key vouches for the auth key once, at enrollment, by signing these bytes (signature per §1.4):
+
+```
+"relay-pkcs11/auth-key/v1" || 0x00 || device_id || 0x00 || fingerprint(auth_key)
+```
+
+The registration (`POST /v1/devices`, §10) then carries `auth_key` (base64 SPKI) and `auth_key_sig` (base64, 64 bytes), and is itself signed by the auth key. The relay checks the binding with `relay_core::relay_auth::verify_auth_key_binding` and authenticates that device's later calls with the auth key only. Without `auth_key` the device key authenticates, as before.
+
+The auth key carries no trust for clients: responses are still signed by the attested device key, so a copied auth key can poll the device's queue (which the relay sees anyway) but cannot answer a request. This is relay hygiene, like the rest of §8.
 
 ## 9. Manifest
 
@@ -442,7 +454,7 @@ These are not signed messages: the relay is untrusted and every field is a hint.
 | `POST /v1/clients/pending` | the new client's key, which is in the body (proof of possession) | `{"client_id", "public_key", "host"}` → `202 {"status": "pending", "code"}`, or `200 {"status": "approved"}` if already paired. Allowed networks only, at most 4 pending, dropped after 10 min. |
 | `GET /v1/clients/self` | a pending or paired client | → `{"status": "pending", "client_id", "code"}` or `{"status": "approved", "client_id", "approved_keys"}`. |
 | `POST /v1/clients/{id}/approval` | any registered device | `{"fingerprint", "keys": [fingerprint]}` → `204`. `fingerprint` must be that of the pending client key whose code the person compared; `keys` (1–64) are chosen from the manifest and need not be on this device. |
-| `POST /v1/devices` | the device key in the body | `{"device_id", "device_key", "attestation", "keys": [{"public_key", "token"}], "push": {"kind": "none" \| "ntfy", "topic"}}` → `204`. A device id stays bound to its first key until `relay-server admin devices revoke`. The relay checks only that the attestation decodes and names this device and key; clients check its signer. |
+| `POST /v1/devices` | the auth key in the body, or else the device key | `{"device_id", "device_key", "attestation", "keys": [{"public_key", "token"}], "push": {"kind": "none" \| "ntfy", "topic"}, "auth_key"?, "auth_key_sig"?}` → `204`; 400 `BadAuthKey` when the binding (§8.4) does not verify. A device id stays bound to its first key until `relay-server admin devices revoke`. The relay checks only that the attestation decodes and names this device and key; clients check its signer. |
 | `GET /v1/devices/{id}/pending?wait=N` | that device | → `{"requests": [envelope], "pairings": [{"client_id", "public_key", "fingerprint", "host", "code", "received_at"}]}`. |
 | `GET /v1/devices/{id}/ws` | that device (headers on the upgrade) | WebSocket. The relay sends `{"type": "pending"}` when there may be something to fetch. |
 

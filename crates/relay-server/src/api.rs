@@ -232,7 +232,7 @@ async fn authenticate_device(
     id: &str,
 ) -> ApiResult<DeviceRecord> {
     let a = parse_auth(h)?;
-    let Some(d) = db::device_by_fingerprint(&st.db, a.key.as_str())
+    let Some(d) = db::device_by_auth_fingerprint(&st.db, a.key.as_str())
         .await
         .map_err(internal)?
     else {
@@ -250,7 +250,7 @@ async fn authenticate_device(
             "authenticated as a different device",
         ));
     }
-    let key = PublicKey::from_spki(&d.device_key).map_err(internal)?;
+    let key = PublicKey::from_spki(&d.auth_key).map_err(internal)?;
     check_auth(st, &a, m, uri, body, &key)?;
     if !st.lock().allow(
         &format!("device:{}", d.device_id),
@@ -590,7 +590,7 @@ async fn post_response(
     body: Bytes,
 ) -> ApiResult<Response> {
     let a = parse_auth(&h)?;
-    let d = db::device_by_fingerprint(&st.db, a.key.as_str())
+    let d = db::device_by_auth_fingerprint(&st.db, a.key.as_str())
         .await
         .map_err(internal)?
         .ok_or_else(|| {
@@ -864,7 +864,7 @@ async fn approve_client(
     body: Bytes,
 ) -> ApiResult<Response> {
     let a = parse_auth(&h)?;
-    let d = db::device_by_fingerprint(&st.db, a.key.as_str())
+    let d = db::device_by_auth_fingerprint(&st.db, a.key.as_str())
         .await
         .map_err(internal)?
         .ok_or_else(|| {
@@ -943,6 +943,12 @@ struct DeviceKeyBody {
 struct DeviceBody {
     device_id: String,
     device_key: String,
+    /// A separate relay-auth key (base64 SPKI, P-256) and the device key's signature over its
+    /// binding (wire-format §8.4). Without them the device key authenticates.
+    #[serde(default)]
+    auth_key: Option<String>,
+    #[serde(default)]
+    auth_key_sig: Option<String>,
     attestation: String,
     keys: Vec<DeviceKeyBody>,
     #[serde(default)]
@@ -970,7 +976,29 @@ async fn register_device(
             "device keys are P-256",
         ));
     }
-    check_auth(&st, &parse_auth(&h)?, &m, &uri, &body, &key)?;
+    let auth_key = match (&b.auth_key, &b.auth_key_sig) {
+        (Some(a), Some(s)) => {
+            let auth = PublicKey::from_spki(&b64d(a, "auth_key")?)?;
+            relay_core::relay_auth::verify_auth_key_binding(
+                &key,
+                &b.device_id,
+                &auth,
+                &b64d(s, "auth_key_sig")?,
+            )
+            .map_err(|e| err(StatusCode::BAD_REQUEST, "BadAuthKey", e.to_string()))?;
+            auth
+        }
+        (None, None) => key.clone(),
+        _ => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "BadAuthKey",
+                "auth_key and auth_key_sig come together",
+            ))
+        }
+    };
+    // The call is signed by the key that will authenticate this device from now on.
+    check_auth(&st, &parse_auth(&h)?, &m, &uri, &body, &auth_key)?;
     let attestation = b64d(&b.attestation, "attestation")?;
     let stmt = AttestationStatement::decode(&attestation)?;
     if stmt.fields.device_key != key || stmt.fields.device_id != b.device_id {
@@ -1029,6 +1057,8 @@ async fn register_device(
         device_id: b.device_id.clone(),
         device_key: spki,
         fingerprint: fp,
+        auth_key: auth_key.spki().to_vec(),
+        auth_fingerprint: auth_key.fingerprint().to_string(),
         attestation,
         keys,
         push: b.push,

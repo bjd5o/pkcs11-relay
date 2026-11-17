@@ -245,7 +245,7 @@ impl Approver {
     async fn register(&self) -> Result<(), String> {
         let body = self
             .engine
-            .registration(self.cfg.push.clone())
+            .registration(self.cfg.push.clone(), None)
             .map_err(|e| e.to_string())?;
         let r = self.relay.post_json("/v1/devices", &body).await?;
         if !r.status.is_success() {

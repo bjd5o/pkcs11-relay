@@ -191,3 +191,17 @@ Decision (Brian approved the fix): `CardTransport` gains `session(f)` and relay-
 - **gpg conflict:** a sharing violation is reported as "card busy" with the gpg fix (`pcsc-shared` or `gpgconf --kill scdaemon`), because gpg's scdaemon holds the card exclusively by default.
 
 Consequences: relayctl (list, export, attest) and the test approver (key discovery, attestation, every operation) use sessions. Not yet verified on hardware: whether macOS's PC/SC layer honors `SCARD_RESET_CARD` at the end of a transaction. A one-command check against slots 85–89 needs Brian's approval.
+
+## 2026-11-17: Separate relay-auth key for devices (spec updated)
+
+Context: the device key signs every relay HTTP call as well as responses. With `.biometryCurrentSet` on the Secure Enclave key, every long-poll would need Face ID.
+Decision (Brian): devices may register a separate P-256 relay-auth key.
+- The device key signs `relay-pkcs11/auth-key/v1 || 0 || device_id || 0 || fingerprint(auth_key)` once at enrollment. Registrations carry `auth_key` and `auth_key_sig`, and are signed by the auth key.
+- The relay verifies the binding (`relay_core::relay_auth::verify_auth_key_binding`) and from then on authenticates the device's calls by the auth key.
+- Without an auth key, the device key authenticates as before; the test approver works this way.
+
+Consequences:
+- Relay `devices` table: new `auth_key` and `auth_fingerprint` columns, with a migration that fills them from the device key for existing rows.
+- wire-format §8.4 and §10 and spec updated.
+- Clients are unaffected: responses still carry the device-key signature and its attestation.
+- `relay-test-approver/tests/app_flow.rs` runs the app path against a real relay: blocking client, separate auth key, pairing and one request.

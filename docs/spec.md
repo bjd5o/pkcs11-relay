@@ -196,7 +196,7 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 
 **Responsibilities**
 
-- **Authenticate both sides.** Clients sign every request with their identity key; approver devices authenticate with their device key. Every HTTP call also carries a signature over its method, path, time, a random nonce and the body hash, and the relay rejects replayed nonces.
+- **Authenticate both sides.** Clients sign every request with their identity key; approver devices authenticate with their device key, or with a separate relay-auth key that the device key vouched for once at enrollment, so a device key that needs a biometric per signature is not used for routine polling. Every HTTP call also carries a signature over its method, path, time, a random nonce and the body hash, and the relay rejects replayed nonces.
 - **Advertise keys.** Keep, per approver device, the hardware keys it registered and its current attestation, and serve the combined list to clients. Advertisements are untrusted hints: the provider filters them through the manifest.
 - **Route by approval.** A client may only address keys it was approved for at pairing; anything else is rejected before it is queued.
 - **Queue with expiry.** Keep pending requests in memory until their `expires_at`; accept exactly one response per request id; reject duplicate ids.
@@ -272,6 +272,7 @@ The approver app is the only place a request becomes an operation: it checks who
 | Manifest URL and signer | same values as clients | Knowing each key's role |
 | Device id | `brian-iphone` | Addressing on the relay |
 | Device key | generated at enrollment, non-exportable | Signing responses, denials and errors |
+| Relay-auth key | generated at enrollment, non-exportable, no biometric; bound to the device key by one signature | Authenticating relay calls |
 | Attestation | current statement and its `not_after` | Proving to clients that the device is enrolled |
 | Attestation window | 30 days, set at enrollment | How long each statement lasts; renewal starts at 75% |
 | Paired clients | client id → display name, signing public key, approved keys, rate limit | Deciding which requests can even be shown |

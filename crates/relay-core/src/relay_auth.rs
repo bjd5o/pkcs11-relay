@@ -12,6 +12,8 @@ use crate::keys::{Fingerprint, PublicKey};
 use crate::signing::{random_bytes, SoftwareKey};
 
 pub const CONTEXT: &str = "relay-pkcs11/relay-auth/v1";
+/// Context of the device key's signature over a separate relay-auth key (wire-format §8.4).
+pub const AUTH_KEY_CONTEXT: &str = "relay-pkcs11/auth-key/v1";
 pub const HEADER_KEY: &str = "x-relay-key";
 pub const HEADER_TIME: &str = "x-relay-time";
 pub const HEADER_NONCE: &str = "x-relay-nonce";
@@ -32,6 +34,34 @@ pub struct AuthHeaders {
     pub time: u64,
     pub nonce: [u8; 16],
     pub signature: [u8; 64],
+}
+
+/// The bytes the device key signs to let `auth_key` authenticate this device's relay calls:
+/// `AUTH_KEY_CONTEXT || 0x00 || device_id || 0x00 || auth_key fingerprint` (wire-format §8.4).
+pub fn auth_key_binding(device_id: &str, auth_key: &PublicKey) -> Vec<u8> {
+    let mut out = Vec::new();
+    for part in [AUTH_KEY_CONTEXT, device_id] {
+        out.extend_from_slice(part.as_bytes());
+        out.push(0);
+    }
+    out.extend_from_slice(auth_key.fingerprint().as_str().as_bytes());
+    out
+}
+
+/// Check that `device_key` vouched for `auth_key` as this device's relay-auth key. Both keys
+/// are P-256 (Secure Enclave and similar).
+pub fn verify_auth_key_binding(
+    device_key: &PublicKey,
+    device_id: &str,
+    auth_key: &PublicKey,
+    sig: &[u8],
+) -> Result<()> {
+    if auth_key.algorithm() != crate::keys::Algorithm::P256 {
+        return Err(Error::Crypto("relay-auth keys are P-256".into()));
+    }
+    device_key
+        .verify_message(&auth_key_binding(device_id, auth_key), sig)
+        .map_err(|_| Error::Crypto("auth key binding signature does not verify".into()))
 }
 
 /// The bytes a caller signs for one HTTP call.
@@ -281,5 +311,27 @@ mod tests {
             AuthHeaders::parse(Some(fp.as_str()), Some("1"), Some("AAAA"), Some(&ok_sig)).is_err()
         );
         assert!(AuthHeaders::parse(None, Some("1"), Some(&ok_nonce), Some(&ok_sig)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+
+    #[test]
+    fn auth_key_binding_round_trip() {
+        let device = SoftwareKey::generate_p256();
+        let auth = SoftwareKey::generate_p256().public_key();
+        let sig = device.sign(&auth_key_binding("phone", &auth));
+        verify_auth_key_binding(&device.public_key(), "phone", &auth, &sig).unwrap();
+        // Bound to the device id and the auth key.
+        assert!(verify_auth_key_binding(&device.public_key(), "other", &auth, &sig).is_err());
+        let other = SoftwareKey::generate_p256().public_key();
+        assert!(verify_auth_key_binding(&device.public_key(), "phone", &other, &sig).is_err());
+        // Signed by the device key, not by the auth key itself.
+        assert!(verify_auth_key_binding(&auth, "phone", &auth, &sig).is_err());
+        let ed = SoftwareKey::generate_ed25519().public_key();
+        let sig = device.sign(&auth_key_binding("phone", &ed));
+        assert!(verify_auth_key_binding(&device.public_key(), "phone", &ed, &sig).is_err());
     }
 }

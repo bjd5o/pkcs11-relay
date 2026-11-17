@@ -27,7 +27,9 @@ const SCHEMA: &[&str] = &[
         keys TEXT NOT NULL,
         push TEXT NOT NULL,
         last_seen INTEGER NOT NULL,
-        created_at INTEGER NOT NULL)",
+        created_at INTEGER NOT NULL,
+        auth_key BLOB,
+        auth_fingerprint TEXT)",
     "CREATE TABLE IF NOT EXISTS audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts INTEGER NOT NULL,
@@ -71,6 +73,7 @@ pub async fn open(data_dir: &Path) -> Result<Db, String> {
             .await
             .map_err(|e| e.to_string())?;
     }
+    migrate(&pool).await.map_err(|e| e.to_string())?;
     Ok(pool)
 }
 
@@ -118,6 +121,11 @@ pub struct DeviceRecord {
     #[serde(skip)]
     pub device_key: Vec<u8>,
     pub fingerprint: String,
+    /// The key that signs this device's relay calls: a separate key the device key vouched
+    /// for (wire-format §8.4), or the device key itself.
+    #[serde(skip)]
+    pub auth_key: Vec<u8>,
+    pub auth_fingerprint: String,
     #[serde(skip)]
     pub attestation: Vec<u8>,
     pub keys: Vec<AdvertisedKey>,
@@ -149,6 +157,8 @@ fn device_from_row(r: &sqlx::sqlite::SqliteRow) -> DeviceRecord {
         device_id: r.get("device_id"),
         device_key: r.get("device_key"),
         fingerprint: r.get("fingerprint"),
+        auth_key: r.get("auth_key"),
+        auth_fingerprint: r.get("auth_fingerprint"),
         attestation: r.get("attestation"),
         keys: serde_json::from_str(r.get::<&str, _>("keys")).unwrap_or_default(),
         push: serde_json::from_str(r.get::<&str, _>("push")).unwrap_or_default(),
@@ -212,13 +222,16 @@ pub async fn delete_client(db: &Db, id: &str) -> R<bool> {
         > 0)
 }
 
-pub async fn device_by_fingerprint(db: &Db, fp: &str) -> R<Option<DeviceRecord>> {
-    Ok(sqlx::query("SELECT * FROM devices WHERE fingerprint = ?")
-        .bind(fp)
-        .fetch_optional(db)
-        .await?
-        .as_ref()
-        .map(device_from_row))
+/// The device whose relay-auth key has this fingerprint.
+pub async fn device_by_auth_fingerprint(db: &Db, fp: &str) -> R<Option<DeviceRecord>> {
+    Ok(
+        sqlx::query("SELECT * FROM devices WHERE auth_fingerprint = ?")
+            .bind(fp)
+            .fetch_optional(db)
+            .await?
+            .as_ref()
+            .map(device_from_row),
+    )
 }
 
 pub async fn device_by_id(db: &Db, id: &str) -> R<Option<DeviceRecord>> {
@@ -232,14 +245,17 @@ pub async fn device_by_id(db: &Db, id: &str) -> R<Option<DeviceRecord>> {
 
 pub async fn upsert_device(db: &Db, d: &DeviceRecord) -> R<()> {
     sqlx::query(
-        "INSERT INTO devices (device_id, device_key, fingerprint, attestation, keys, push, last_seen, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO devices (device_id, device_key, fingerprint, auth_key, auth_fingerprint, attestation, keys, push, last_seen, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(device_id) DO UPDATE SET attestation = excluded.attestation, keys = excluded.keys,
-           push = excluded.push, last_seen = excluded.last_seen",
+           push = excluded.push, last_seen = excluded.last_seen,
+           auth_key = excluded.auth_key, auth_fingerprint = excluded.auth_fingerprint",
     )
     .bind(&d.device_id)
     .bind(&d.device_key)
     .bind(&d.fingerprint)
+    .bind(&d.auth_key)
+    .bind(&d.auth_fingerprint)
     .bind(&d.attestation)
     .bind(serde_json::to_string(&d.keys).expect("json"))
     .bind(serde_json::to_string(&d.push).expect("json"))
@@ -365,4 +381,33 @@ pub async fn audit_since(db: &Db, since: i64) -> R<Vec<AuditEvent>> {
             response: r.get("response"),
         })
         .collect())
+}
+
+/// Bring a database made before relay-auth keys up to date: add the columns, and let devices
+/// registered without a separate key authenticate with their device key.
+async fn migrate(db: &Db) -> R<()> {
+    let cols: Vec<String> = sqlx::query("PRAGMA table_info(devices)")
+        .fetch_all(db)
+        .await?
+        .iter()
+        .map(|r| r.get::<String, _>("name"))
+        .collect();
+    for (col, ty) in [("auth_key", "BLOB"), ("auth_fingerprint", "TEXT")] {
+        if !cols.iter().any(|c| c == col) {
+            sqlx::query(&format!("ALTER TABLE devices ADD COLUMN {col} {ty}"))
+                .execute(db)
+                .await?;
+        }
+    }
+    sqlx::query(
+        "UPDATE devices SET auth_key = device_key, auth_fingerprint = fingerprint WHERE auth_fingerprint IS NULL",
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS devices_auth_fingerprint ON devices(auth_fingerprint)",
+    )
+    .execute(db)
+    .await?;
+    Ok(())
 }

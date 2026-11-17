@@ -314,10 +314,32 @@ fn pairing_code_is_derived_not_trusted() {
 #[test]
 fn registration_lists_operable_keys_without_the_attest_key() {
     let f = fixture(86_400);
-    let r = f.engine.registration(serde_json::Value::Null).unwrap();
+    let r = f
+        .engine
+        .registration(serde_json::Value::Null, None)
+        .unwrap();
     assert_eq!(r["device_id"], "phone");
     assert_eq!(r["keys"].as_array().unwrap().len(), 1);
     assert_eq!(r["push"]["kind"], "none");
+    assert!(r.get("auth_key").is_none());
+
+    // A separate relay-auth key, vouched for once by the device key.
+    let auth = SoftwareKey::generate_p256().public_key();
+    let b = f.engine.bind_auth_key(&auth).unwrap();
+    relay_core::relay_auth::verify_auth_key_binding(
+        &f.engine.device_key(),
+        "phone",
+        &auth,
+        &b.signature,
+    )
+    .unwrap();
+    let r = f
+        .engine
+        .registration(serde_json::Value::Null, Some(&b))
+        .unwrap();
+    let b64 = base64::engine::general_purpose::STANDARD;
+    assert_eq!(r["auth_key"], b64.encode(auth.spki()));
+    assert_eq!(r["auth_key_sig"], b64.encode(&b.signature));
 }
 
 /// A platform signer that signs the wrong bytes is caught before anything is posted.

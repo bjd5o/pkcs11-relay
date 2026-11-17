@@ -162,6 +162,15 @@ pub struct Approval {
     pub renewal_error: Option<String>,
 }
 
+/// The device key's signature letting a separate key authenticate this device's relay calls
+/// (wire-format §8.4). Made once at enrollment and sent with every registration, so routine
+/// relay traffic never needs the device key (which may require a biometric per signature).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthBinding {
+    pub auth_key: PublicKey,
+    pub signature: Vec<u8>,
+}
+
 /// A pending pairing, checked: the code is derived here from the client's key, never taken
 /// from the relay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -409,9 +418,27 @@ impl Engine {
         self.accept_attestation(signed)
     }
 
+    /// Have the device key vouch for `auth_key` as this device's relay-auth key: one device-key
+    /// signature, at enrollment. Store the result and pass it to every
+    /// [`registration`](Self::registration).
+    pub fn bind_auth_key(&self, auth_key: &PublicKey) -> Result<AuthBinding> {
+        let msg = relay_core::relay_auth::auth_key_binding(&self.cfg.device_id, auth_key);
+        let sig = sign_checked(self.signer.as_ref(), &msg)
+            .map_err(|e| ApproverError::Signer(e.to_string()))?;
+        Ok(AuthBinding {
+            auth_key: auth_key.clone(),
+            signature: sig.to_vec(),
+        })
+    }
+
     /// The body of `POST /v1/devices`: device key, attestation, the keys this device operates,
-    /// and the push registration (`{"kind": "none"}` when there is none).
-    pub fn registration(&self, push: serde_json::Value) -> Result<serde_json::Value> {
+    /// the push registration (`{"kind": "none"}` when there is none), and the relay-auth key
+    /// binding when the device uses one (the call must then be signed by that key).
+    pub fn registration(
+        &self,
+        push: serde_json::Value,
+        auth: Option<&AuthBinding>,
+    ) -> Result<serde_json::Value> {
         let b64 = base64::engine::general_purpose::STANDARD;
         let att = self.attestation().ok_or(ApproverError::NotEnrolled)?;
         let keys: Vec<_> = self
@@ -419,13 +446,18 @@ impl Engine {
             .iter()
             .map(|k| json!({"public_key": b64.encode(k.public_key.spki()), "token": k.token}))
             .collect();
-        Ok(json!({
+        let mut body = json!({
             "device_id": self.cfg.device_id,
             "device_key": b64.encode(self.signer.public_key().spki()),
             "attestation": b64.encode(att),
             "keys": keys,
             "push": if push.is_null() { json!({"kind": "none"}) } else { push },
-        }))
+        });
+        if let Some(a) = auth {
+            body["auth_key"] = b64.encode(a.auth_key.spki()).into();
+            body["auth_key_sig"] = b64.encode(&a.signature).into();
+        }
+        Ok(body)
     }
 
     fn current_attestation(&self) -> Result<AttestationStatement> {
