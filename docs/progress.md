@@ -58,4 +58,11 @@ Update this file as tasks finish. Each milestone's gate is defined in `docs/mile
 - [x] `relayctl relay clients|devices|audit` (wraps `relay-server admin`)
 - [x] `relay-test-approver run --pcsc` (`pcsc_serial` in the config)
 - [x] Tests without hardware: manifest round trip, rollback and tamper checks, attestation through the softcard, one-PIN-attempt rule, gpg signing in a throwaway `GNUPGHOME` (`crates/relayctl/tests/flows.rs`); fatal startup PIN (`crates/relay-test-approver/tests/e2e.rs`)
-- [ ] Gate on Brian's Mac with a real YubiKey (waiting for the serial number and slots)
+- [x] `relay-test-approver run --pin-stdin`: the PIN is read without echo and never written to disk
+- [x] Gate passed (2026-11-16) on Brian's Mac (macOS, Apple silicon) with YubiKey <serial>, slots 85–89, run by Brian per `docs/m4-gate.md`:
+  - Keys: attest P-256, hw-sign P-256, hw-auth P-256, hw-unseal RSA-2048, hw-sign-ed25519 Ed25519. They were generated with ykman, because the card's management key is AES-256 (see decisions).
+  - The manifest was built with `relayctl manifest add` from the PEM files, signed through gpg by Brian, and checked with `relayctl manifest verify`.
+  - The local relay ran with TLS. `relay-test-approver --pcsc --pin-stdin` attested with slot 85.
+  - The provider ran as a macOS `.dylib` under opensc `pkcs11-tool`, paired, and listed one token with four keys.
+  - ECDSA-SHA256 (hw-sign), raw ECDSA (hw-auth), RSA-OAEP decryption (hw-unseal) and EdDSA (hw-sign-ed25519) all succeeded, and OpenSSL verified each result. The role and mechanism refusals returned the expected codes.
+  - Not covered by this gate: `relayctl key generate` on hardware (needs a 3DES management key) and `relayctl attest sign` on hardware. The softcard tests cover both.
