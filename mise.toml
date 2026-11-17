@@ -9,6 +9,8 @@
 rust = { version = "1.93.0", components = "rustfmt,clippy", targets = "aarch64-apple-ios,aarch64-apple-ios-sim" }
 # Fuzzing (fuzz/run.sh adds the pinned nightly toolchain it needs through rustup).
 "cargo:cargo-fuzz" = "0.13.2"
+# Generates apps/apple/RelayApprover.xcodeproj from project.yml (milestone 5).
+xcodegen = "2.45.4"
 
 [env]
 # The machine's current Docker context points at a remote host; every docker and
