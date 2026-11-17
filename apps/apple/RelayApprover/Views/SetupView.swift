@@ -21,7 +21,9 @@ struct SetupView: View {
                     Section("Check before you continue") {
                         LabeledContent("Relay", value: c.relay_url)
                         LabeledContent("Device id", value: c.device_id)
-                        LabeledContent("Attestation", value: "\(c.attestation_window_secs / 86_400) days")
+                        LabeledContent("Attestation", value: c.attestation_window_secs >= 86_400
+                            ? "\(c.attestation_window_secs / 86_400) days"
+                            : "\(c.attestation_window_secs / 60) minutes")
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Manifest signer fingerprint").font(.caption).foregroundStyle(.secondary)
                             Text(grouped(fingerprint)).font(.system(.body, design: .monospaced))
