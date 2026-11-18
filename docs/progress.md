@@ -78,6 +78,14 @@ Part A:
 - [x] 5.4 NFC `CardChannel` (CoreNFC, ISO 7816). Builds; not yet run on a device.
 - [x] 5.5 Simulator end-to-end test (`tests/sim-e2e.sh`), passing locally (2026-11-17). A relay runs on the Mac; the app in the iOS simulator uses relay-ffi's software test card; an XCUITest enrolls, approves the pairing and approves an RSA-OAEP decrypt with the PIN; `relay-test-approver sim-client` verifies the plaintext as the provider would. CI job `apple` (macos-15) passes too (first run 2026-11-17).
 - [ ] Gate on Brian's iPhone over NFC with YubiKey <serial>
+  - 2026-11-18, with the setup-link flow and the new key layout (operation keys imported onto two YubiKeys, an attest key generated on each, both attestation chains in the manifest, version 2, signed with gpg):
+    - [x] Setup: `relayctl app-link` QR code scanned; the relay admitted the phone by its setup link
+    - [x] Enrollment over NFC; pairing of the Linux client (code compared on the phone), `hw-unseal` only
+    - [x] Decrypt: `pkcs11-tool` RSA-OAEP with `hw-unseal` after Face ID, PIN and an NFC tap; the plaintext matched
+    - [x] Denial: `C_Decrypt` returned `CKR_FUNCTION_REJECTED` (0x200), seen through OpenSC's PKCS#11 spy, because `pkcs11-tool` retries with `C_DecryptUpdate` and prints that code instead
+    - [x] Expiry: `C_Decrypt` returned `CKR_FUNCTION_CANCELED` (0x50) after the provider's 110 s
+    - [ ] Renewal
+    - [ ] Wrong PIN: skipped unless Brian asks (it spends one of the card's PIN tries)
 
 Hardware attestation of attest keys (design `docs/hw-attestation.md`, approved 2026-11-17):
 - [x] Spec, wire-format §9.2/§9.4 and decisions updated
