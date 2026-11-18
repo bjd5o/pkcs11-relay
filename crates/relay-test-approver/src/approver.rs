@@ -231,7 +231,7 @@ impl Approver {
         let t = now();
         if !b.expired_attestation {
             if let Ok(bytes) = std::fs::read(&path) {
-                if engine.load_attestation(&bytes, t).is_ok() && !engine.renewal_due(t) {
+                if engine.load_attestation(&bytes).is_ok() && !engine.renewal_due(t) {
                     return Ok(());
                 }
             }

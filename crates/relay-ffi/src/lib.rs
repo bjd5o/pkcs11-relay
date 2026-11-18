@@ -522,9 +522,10 @@ impl Approver {
         }
         engine.restore_key_map(&key_map);
         if let Some(a) = &saved.attestation {
-            // An attestation that no longer verifies (expired, attest key removed) is dropped;
-            // the status then shows the device as not enrolled.
-            let _ = engine.load_attestation(a, t);
+            // One the manifest no longer vouches for (attest key removed, another device key) is
+            // dropped, and the status shows the device as not enrolled. An expired one is kept:
+            // the next approval renews it.
+            let _ = engine.load_attestation(a);
         }
         Ok(Arc::new(Approver {
             cfg: config,

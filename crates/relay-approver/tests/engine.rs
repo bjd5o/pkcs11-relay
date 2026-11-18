@@ -268,10 +268,37 @@ fn renewal_rides_along_with_an_approval() {
         Outcome::Approved(_)
     ));
     // A restart restores it; a statement for another device key is refused.
-    f.engine.load_attestation(&renewed, NOW + 90).unwrap();
+    f.engine.load_attestation(&renewed).unwrap();
     let mut g = fixture(100);
-    assert!(g.engine.load_attestation(&renewed, NOW + 90).is_err());
+    assert!(g.engine.load_attestation(&renewed).is_err());
     let _ = &mut g.card;
+}
+
+#[test]
+fn an_expired_attestation_is_kept_and_renewed_by_the_next_approval() {
+    let mut f = fixture(100);
+    let old = f.engine.attestation().unwrap();
+    // Long past its window (NOW..NOW+100): a restart still restores it.
+    let info = f.engine.load_attestation(&old).unwrap();
+    assert_eq!(info.not_after, NOW + 100);
+    assert!(f.engine.renewal_due(NOW + 1_000));
+    let (req, reply) = f.request("sign", NOW + 1_000);
+    let p = f.show(&req, NOW + 1_000);
+    let a = f.engine.approve(&p, &mut f.card, PIN, NOW + 1_000).unwrap();
+    assert!(a.approved, "{:?}", a.renewal_error);
+    assert!(
+        a.renewed_attestation.is_some(),
+        "renewed in the same session"
+    );
+    let info = f.engine.attestation_info().unwrap();
+    assert_eq!(
+        (info.not_before, info.not_after),
+        (NOW + 1_000, NOW + 1_100)
+    );
+    assert!(matches!(
+        f.outcome(&a.response, &req, NOW + 1_010, reply),
+        Outcome::Approved(_)
+    ));
 }
 
 #[test]

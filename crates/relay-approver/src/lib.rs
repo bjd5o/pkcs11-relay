@@ -425,14 +425,18 @@ impl Engine {
             .is_none_or(|i| now >= i.renew_at || i.not_after - i.not_before > max)
     }
 
-    /// Restore a stored attestation: it must verify against the manifest now and vouch for this
-    /// device's key.
-    pub fn load_attestation(&self, bytes: &[u8], now: u64) -> Result<AttestationInfo> {
+    /// Restore a stored attestation: an `attest` key in the current manifest must have signed it,
+    /// and it must vouch for this device's key. An expired one is kept too (spec: "An expired
+    /// device can still fetch requests"): the next approval renews it (`renewal_due`), and
+    /// clients reject this device's responses until then. Dropping it would leave the device
+    /// unable to answer at all, so it could never renew.
+    pub fn load_attestation(&self, bytes: &[u8]) -> Result<AttestationInfo> {
         let mut manifest = self.manifest();
         // A window longer than the manifest now allows is kept, and renewed at the next approval
         // (`renewal_due`); everything else about it must verify.
         manifest.max_attestation_window_secs = u64::MAX;
-        let v = verify_attestation(bytes, &manifest, now, self.cfg.skew_secs).map_err(invalid)?;
+        let v = relay_core::attestation::verify_attestation_signer(bytes, &manifest)
+            .map_err(invalid)?;
         if v.device_key != self.signer.public_key() {
             return Err(invalid("the stored attestation is for another device key"));
         }
