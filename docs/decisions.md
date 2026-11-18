@@ -236,3 +236,13 @@ Decision (Brian):
 Consequences: new Failure handling row (signer revoked or expired, seen by the relay); `AttestationWindowTooLong` joins the attestation row; wire-format §5.1 step 5, §9.2 fields, §10 and a new §11.
 - Correction (Brian, 2026-11-18): the new Failure handling row first said "Zero slots". The provider builds slots from the manifest's tokens and fills them from the relay's key list, so with the signer unusable it keeps the slots and lists no keys in them. The row now says "Slots without keys"; the provider is unchanged.
 
+## 2026-11-18: Milestone 5 Part B design (USB card access and APNs)
+
+Context: plan items 5.6 and 5.7. The design is in `docs/milestone-5b.md`.
+Decision (Brian):
+- **USB card access:** one Swift `TKSmartCard` (CryptoTokenKit) transport for Mac, iPad and USB-C iPhone. It replaces the plan's `relay-pcsc` on the Mac.
+- **PIN state:** CryptoTokenKit has no card reset, so every session ends with `VERIFY` P1=`FF` (NIST SP 800-73-4, reset security status). It is confirmed on the YubiKey 5C Nano before it is relied on, each command approved by Brian.
+- **APNs:** reqwest's `http2` feature is enabled (h2 was already in the tree). The relay signs ES256 tokens with relay-core's P-256 signing.
+- **Gate:** the USB-C iPad is part of the Part B gate.
+- **Setup picker:** 15- and 30-minute attestation windows are added.
+
