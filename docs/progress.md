@@ -99,5 +99,5 @@ Signed setup links (design `docs/setup-link.md`, approved 2026-11-17):
 - [x] `relay-ffi::setup_from_link` (with `relay-approver::setup`): time window, pinned CA, signer fingerprint, link signature, keyserver identity and status, manifest; the FFI flow test sets up this way
 - [x] App: `poh://` URL scheme, confirm screen (fingerprint, identity or warning, link times, device, window picker), file import removed
 - [x] Docker gate: a revoked signer makes the relay list no keys (checked last)
-- [ ] Spec wording: the new Failure handling row says "Zero slots"; the provider actually keeps the manifest's slots and lists no keys in them (question for Brian)
+- [x] Spec wording fixed (Brian, 2026-11-18): with the signer unusable the provider keeps the manifest's slots and lists no keys in them
 

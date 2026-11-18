@@ -429,7 +429,7 @@ Every failure surfaces to the consumer as an ordinary PKCS#11 error, so existing
 | Manifest signature invalid, rolled back or expired | Keeps a valid cached copy if it has one; otherwise lists no slots | Zero slots |
 | Manifest's hardware attestation missing (when required), invalid or outside policy | Keeps a valid cached copy if it has one; otherwise lists no slots | Zero slots |
 | Relay's own manifest copy invalid | The relay advertises no keys; the provider uses its valid cached manifest and key list if it has them | Zero slots, or last known slots |
-| Manifest signer revoked or expired (seen by the relay) | The relay advertises no keys, cancels pending requests and refuses new ones | Zero slots; `CKR_DEVICE_ERROR` for a request in flight |
+| Manifest signer revoked or expired (seen by the relay) | The relay advertises no keys, cancels pending requests and refuses new ones; the provider keeps the manifest's slots, with no keys in them | Slots without keys; `CKR_DEVICE_ERROR` for a request in flight |
 | Relay unreachable during discovery | Uses its cached key list until that expires | Last known slots |
 | Operation outside the key's role | Rejected locally, no request sent | `CKR_KEY_FUNCTION_NOT_PERMITTED` |
 | Mechanism not allowed for the key | Rejected locally, no request sent | `CKR_MECHANISM_INVALID` |

@@ -234,4 +234,5 @@ Decision (Brian):
 - **Relay watches the signer key:** from its file (every minute) and keys.openpgp.org (every 15 minutes). While the key is revoked or expired, it advertises no keys, cancels pending requests and refuses client and device calls. It fails open when the keyserver is unreachable. A seen revocation persists until the signer key changes.
 
 Consequences: new Failure handling row (signer revoked or expired, seen by the relay); `AttestationWindowTooLong` joins the attestation row; wire-format §5.1 step 5, §9.2 fields, §10 and a new §11.
+- Correction (Brian, 2026-11-18): the new Failure handling row first said "Zero slots". The provider builds slots from the manifest's tokens and fills them from the relay's key list, so with the signer unusable it keeps the slots and lists no keys in them. The row now says "Slots without keys"; the provider is unchanged.
 

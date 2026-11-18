@@ -348,7 +348,8 @@ The relay stops service to clients and logs the reason at error level, once per 
 | `GET /v1/manifest`, `.asc`, `/v1/manifest-signer.asc`, `/v1/relay-ca.pem` | Still served, so an operator, the app or `relayctl` can see what is wrong |
 | `/healthz` | Still `ok` (the process is healthy); `/metrics` exposes `relay_signer_usable 0` |
 
-In the provider, an empty key list gives zero slots, and a 503 on a request gives
+In the provider, an empty key list leaves the manifest's slots with no keys in them (slots come
+from the manifest's tokens, keys from the relay's list), and a 503 on a request gives
 `CKR_DEVICE_ERROR`.
 
 **What this adds to the threat model:** clients still don't check revocation themselves,
@@ -419,7 +420,7 @@ takes one away.
     - unreachable, keeping the last status;
     - a revocation persisted across a restart, and cleared by a new signer key.
 - **Integration:** the m3 gate gets two more checks. After the relay sees its signer revoked,
-  `pkcs11-tool -L` lists zero slots and a decrypt returns `CKR_DEVICE_ERROR`. This covers the
+  `pkcs11-tool -O` lists no keys; cancelling a request in flight is tested in Rust. This covers the
   new Failure handling row.
 - **Provider and integration:** a device with a too-long attestation, whose responses get
   `CKR_DEVICE_ERROR`.
@@ -446,7 +447,7 @@ These are draft text, not yet applied.
 - **Trust manifest, "Signer" paragraph:** replace "Clients do not check PGP revocation, because headless hosts cannot be relied on to reach keyservers." with
   > Clients do not check PGP revocation, because headless hosts cannot be relied on to reach keyservers. The relay does: it watches the signer key at keys.openpgp.org and stops serving clients while the key is revoked or expired, and the app refuses setup with such a key.
 - **Failure handling:** a new row
-  > | Manifest signer revoked or expired (seen by the relay) | The relay advertises no keys and refuses requests | Zero slots; `CKR_DEVICE_ERROR` for a request in flight |
+  > | Manifest signer revoked or expired (seen by the relay) | The relay advertises no keys, cancels pending requests and refuses new ones; the provider keeps the manifest's slots, with no keys in them | Slots without keys; `CKR_DEVICE_ERROR` for a request in flight |
 - **Approver application:** setup by link. The identity lookup at keys.openpgp.org is
   display-only.
 - **Threat model, "PGP manifest key" row:** "also decides whether attest keys need hardware
