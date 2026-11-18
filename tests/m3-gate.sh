@@ -142,14 +142,15 @@ check "attest key without touch always: zero slots" sh -c \
   "RELAY_PKCS11_CONFIG=$W/hw/provider.toml pkcs11-tool --module $MOD -L 2>&1 | tee $W/hw/out | grep -q 'Available slots' && ! grep -q '^Slot ' $W/hw/out && grep -q 'touch policy never' $W/hw/out || { RELAY_PKCS11_CONFIG=$W/hw/provider.toml pkcs11-tool --module $MOD -L; exit 1; }"
 
 # --- Last, because it stops the relay serving: the manifest signer is revoked. The relay
-# re-reads its signer file every minute; then it lists no keys, so the provider lists no slots.
-# (Requests in flight are cancelled with 503: relay-test-approver tests/setup_and_signer.rs.) ---
+# re-reads its signer file every minute; then it lists no keys, so every slot is empty. (Slots
+# come from the manifest's tokens; keys from the relay's list. Requests in flight are cancelled
+# with 503: relay-test-approver tests/setup_and_signer.rs.) ---
 cp /fixtures/signer-revoked.asc /fixtures/signer.asc
 i=0
-until p11 -L 2>&1 | grep -q 'Available slots' && ! p11 -L 2>&1 | grep -q '^Slot '; do
+until ! p11 --token-label softcard-a -O 2>/dev/null | grep -q "label:"; do
   i=$((i + 1)); [ $i -gt 90 ] && break
   sleep 1
 done
-check "signer revoked: zero slots" sh -c "p11 -L 2>&1 | grep -q 'Available slots' && ! p11 -L 2>&1 | grep -q '^Slot '"
+check "signer revoked: the relay lists no keys" sh -c "! p11 --token-label softcard-a -O 2>/dev/null | grep -q 'label:'"
 
 if [ "$FAILS" -eq 0 ]; then echo "milestone 3 gate passed"; else echo "$FAILS check(s) failed"; exit 1; fi

@@ -333,6 +333,91 @@ pub fn manifest_signer_fingerprint(armored: String) -> Result<String, RelayError
         .fingerprint())
 }
 
+// ---------- setup from a signed link ----------
+
+/// What keys.openpgp.org says about the manifest signer (display only).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum SignerIdentity {
+    /// User IDs whose addresses their owner confirmed there.
+    Verified { user_ids: Vec<String> },
+    /// The key is there, but with no confirmed address.
+    NoIdentity,
+    /// Not published there.
+    NotFound,
+    /// Could not reach it; `reason` says why.
+    Unreachable { reason: String },
+    /// It returned a different or unreadable key.
+    Mismatch { reason: String },
+}
+
+/// Everything the setup confirm screen shows, already checked (docs/setup-link.md).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SetupPreview {
+    pub link: String,
+    pub relay_url: String,
+    pub relay_ca_pem: Option<String>,
+    pub manifest_url: String,
+    /// The signer's public key, armored, as the relay serves it.
+    pub manifest_signer: String,
+    pub signer_fingerprint: String,
+    pub identity: SignerIdentity,
+    pub device_id: String,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub max_attestation_window_secs: u64,
+    pub require_hardware_attestation: bool,
+}
+
+/// Testing overrides; the app passes `None` for both.
+#[derive(Debug, Clone, Default, uniffi::Record)]
+pub struct SetupOverrides {
+    /// Instead of https://keys.openpgp.org.
+    pub keyserver_url: Option<String>,
+    /// PEM roots that replace Yubico's attestation root.
+    pub attestation_roots_pem: Option<String>,
+}
+
+/// Check a `poh://setup?…` link and everything it points at. Blocks on the network.
+#[uniffi::export]
+pub fn setup_from_link(
+    link: String,
+    overrides: SetupOverrides,
+) -> Result<SetupPreview, RelayError> {
+    let mut opts = relay_approver::setup::SetupOptions::default();
+    if let Some(k) = overrides.keyserver_url {
+        opts.keyserver = k;
+    }
+    if let Some(pem) = &overrides.attestation_roots_pem {
+        let roots =
+            relay_core::hw_attestation::certificates_from_pem(pem.as_bytes()).map_err(invalid)?;
+        opts.policy = HardwarePolicy::with_roots(roots).map_err(invalid)?;
+    }
+    let p = relay_approver::setup::preview(&link, now(), &opts)?;
+    use relay_approver::setup::Identity;
+    Ok(SetupPreview {
+        link: p.link,
+        relay_url: p.relay_url,
+        relay_ca_pem: p.relay_ca_pem,
+        manifest_url: p.manifest_url,
+        manifest_signer: String::from_utf8(p.manifest_signer).map_err(|_| {
+            invalid("the relay serves the signer key in binary; it must be armored")
+        })?,
+        signer_fingerprint: p.signer_fingerprint,
+        identity: match p.identity {
+            Identity::Verified(user_ids) => SignerIdentity::Verified { user_ids },
+            Identity::NoIdentity => SignerIdentity::NoIdentity,
+            Identity::NotFound => SignerIdentity::NotFound,
+            Identity::Unreachable(reason) => SignerIdentity::Unreachable { reason },
+            Identity::Mismatch(reason) => SignerIdentity::Mismatch { reason },
+        },
+        device_id: p.device_id,
+        issued_at: p.issued_at,
+        expires_at: p.expires_at,
+        max_attestation_window_secs: p.max_attestation_window_secs,
+        require_hardware_attestation: p.require_hardware_attestation,
+    })
+}
+
 // ---------- the approver ----------
 
 #[derive(Default)]

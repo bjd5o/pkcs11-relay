@@ -278,3 +278,34 @@ pub fn verify_setup_link(
 pub fn spki_pin(spki_der: &[u8]) -> [u8; 32] {
     Sha256::digest(spki_der).into()
 }
+
+/// Check the relay CA certificate the app fetched without TLS verification (wire-format
+/// §11.2): it must be a self-signed CA certificate whose SPKI hash is the link's `ca` pin.
+/// Returns its PEM, to be used as the only trust anchor from then on.
+pub fn check_relay_ca(pem: &[u8], pin: &[u8; 32]) -> Result<String> {
+    use x509_cert::der::{DecodePem, Encode, EncodePem};
+    let bad = |m: String| Error::SetupLinkInvalid(format!("relay CA: {m}"));
+    let text = std::str::from_utf8(pem).map_err(|_| bad("not UTF-8 PEM".into()))?;
+    let cert = x509_cert::Certificate::from_pem(text).map_err(|e| bad(e.to_string()))?;
+    let tbs = cert.tbs_certificate();
+    let spki = tbs
+        .subject_public_key_info()
+        .to_der()
+        .map_err(|e| bad(e.to_string()))?;
+    if spki_pin(&spki) != *pin {
+        return Err(bad("its key does not match the link's ca pin".into()));
+    }
+    if tbs.subject() != tbs.issuer() {
+        return Err(bad("not self-signed".into()));
+    }
+    let is_ca = tbs
+        .get_extension::<x509_cert::ext::pkix::BasicConstraints>()
+        .ok()
+        .flatten()
+        .is_some_and(|(_, bc)| bc.ca);
+    if !is_ca {
+        return Err(bad("not a CA certificate".into()));
+    }
+    cert.to_pem(x509_cert::der::pem::LineEnding::LF)
+        .map_err(|e| bad(e.to_string()))
+}

@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 
 pub mod relay;
+pub mod setup;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

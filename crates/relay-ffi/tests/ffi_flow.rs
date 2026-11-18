@@ -15,7 +15,8 @@ use relay_core::seal::ReplyKey;
 use relay_core::signing::SoftwareKey;
 use relay_core::{verify_manifest, ManifestSigner, Mechanism, Op};
 use relay_ffi::{
-    Approver, ApproverConfig, CardChannel, DeviceKey, PlatformError, RelayError, SavedState,
+    manifest_signer_fingerprint, setup_from_link, Approver, ApproverConfig, CardChannel, DeviceKey,
+    PlatformError, RelayError, SavedState, SetupOverrides, SignerIdentity,
 };
 use relay_softcard::SoftCard;
 use relay_test_approver::fixtures::CLIENT_ID;
@@ -105,20 +106,71 @@ fn the_app_surface_end_to_end() {
     let (cert, key) = (dir.join("relay-cert.pem"), dir.join("relay-key.pem"));
     rt.spawn(async move { relay_server::serve_tls(listener, st, &cert, &key).await });
 
+    // Setup as the app does it: scan the link, check it and everything it points at, show it,
+    // then build the config from what was checked. No keyserver in tests (closed port).
+    let roots = std::fs::read_to_string(dir.join("attestation-root.pem")).unwrap();
+    let link =
+        relay_test_approver::fixtures::setup_link(&dir, &url, "brian-iphone", now()).unwrap();
+    let closed = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", l.local_addr().unwrap())
+    };
+    let overrides = SetupOverrides {
+        keyserver_url: Some(closed),
+        attestation_roots_pem: Some(roots.clone()),
+    };
+    let start = Instant::now();
+    let preview = loop {
+        match setup_from_link(link.clone(), overrides.clone()) {
+            Ok(p) => break p,
+            Err(_) if start.elapsed() < Duration::from_secs(10) => {
+                std::thread::sleep(Duration::from_millis(100))
+            }
+            Err(e) => panic!("setup: {e}"),
+        }
+    };
+    assert_eq!(preview.relay_url, url);
+    assert_eq!(preview.device_id, "brian-iphone");
+    assert_eq!(
+        preview.relay_ca_pem.as_deref().map(str::trim),
+        Some(
+            std::fs::read_to_string(dir.join("relay-ca.pem"))
+                .unwrap()
+                .trim()
+        )
+    );
+    assert_eq!(
+        preview.signer_fingerprint,
+        manifest_signer_fingerprint(std::fs::read_to_string(dir.join("signer.asc")).unwrap())
+            .unwrap()
+    );
+    assert!(matches!(
+        preview.identity,
+        SignerIdentity::Unreachable { .. }
+    ));
+    assert_eq!(preview.max_attestation_window_secs, 7 * 86_400);
+    assert!(preview.require_hardware_attestation);
+    // Setup checks fail before anything is trusted.
+    let expired =
+        relay_test_approver::fixtures::setup_link(&dir, &url, "brian-iphone", now() - 8 * 86_400)
+            .unwrap();
+    assert!(setup_from_link(expired, overrides.clone())
+        .unwrap_err()
+        .to_string()
+        .contains("expired"));
+    let altered = link.replacen("brian-iphone", "brian-ipad", 1);
+    assert!(setup_from_link(altered, overrides.clone()).is_err());
+
     let config = ApproverConfig {
-        relay_url: url.clone(),
-        relay_ca_pem: Some(std::fs::read_to_string(dir.join("relay-ca.pem")).unwrap()),
-        manifest_url: format!("{url}/v1/manifest"),
-        manifest_signer: std::fs::read_to_string(dir.join("signer.asc")).unwrap(),
-        device_id: "brian-iphone".into(),
+        relay_url: preview.relay_url.clone(),
+        relay_ca_pem: preview.relay_ca_pem.clone(),
+        manifest_url: preview.manifest_url.clone(),
+        manifest_signer: preview.manifest_signer.clone(),
+        device_id: preview.device_id.clone(),
         attestation_window_secs: 86_400,
         skew_secs: 60,
-        attestation_roots_pem: Some(
-            std::fs::read_to_string(dir.join("attestation-root.pem")).unwrap(),
-        ),
-        setup_link: Some(
-            relay_test_approver::fixtures::setup_link(&dir, &url, "brian-iphone", now()).unwrap(),
-        ),
+        attestation_roots_pem: Some(roots),
+        setup_link: Some(preview.link.clone()),
     };
     let device: Arc<dyn DeviceKey> = Arc::new(EnclaveKey(SoftwareKey::generate_p256()));
     let auth: Arc<dyn DeviceKey> = Arc::new(EnclaveKey(SoftwareKey::generate_p256()));

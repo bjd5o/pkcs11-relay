@@ -367,3 +367,115 @@ fn the_keyserver_copy_revokes_renews_or_changes_nothing() {
     let w = watch(&dir, &vector("usable.asc"), String::new());
     assert_eq!(rt.block_on(w.fetch_keyserver(&client)), Lookup::Disabled);
 }
+
+#[test]
+fn app_setup_checks_the_link_pins_and_the_keyserver() {
+    use relay_approver::setup::{preview, Identity, SetupOptions};
+    let dir = temp_dir("app-setup");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!(
+        "https://localhost:{}",
+        listener.local_addr().unwrap().port()
+    );
+    relay_test_approver::fixtures::generate(
+        &dir,
+        dir.to_str().unwrap(),
+        &url,
+        &["127.0.0.0/8".into()],
+        now(),
+    )
+    .unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let st = rt
+        .block_on(relay_server::build_state(relay_config(
+            &dir,
+            &dir.join("signer.asc"),
+        )))
+        .unwrap();
+    let (cert, key) = (dir.join("relay-cert.pem"), dir.join("relay-key.pem"));
+    rt.spawn(async move { relay_server::serve_tls(listener, st, &cert, &key).await });
+    let policy = relay_core::hw_attestation::PolicyConfig {
+        roots_file: Some(dir.join("attestation-root.pem")),
+    }
+    .policy()
+    .unwrap();
+    let opts = |keyserver: String| SetupOptions {
+        keyserver,
+        policy: policy.clone(),
+        skew_secs: 60,
+    };
+    let link = setup_link(&dir, &url, "phone", now()).unwrap();
+    let signer_pub = std::fs::read(dir.join("signer.asc")).unwrap();
+
+    // Published with a confirmed address: shown.
+    let start = Instant::now();
+    let p = loop {
+        match preview(&link, now(), &opts(stub(200, signer_pub.clone()))) {
+            Ok(p) => break p,
+            Err(_) if start.elapsed() < Duration::from_secs(10) => {
+                std::thread::sleep(Duration::from_millis(100))
+            }
+            Err(e) => panic!("{e}"),
+        }
+    };
+    assert!(
+        matches!(&p.identity, Identity::Verified(ids) if ids.iter().any(|i| i.contains("fixtures@test.invalid"))),
+        "{:?}",
+        p.identity
+    );
+    assert_eq!(p.device_id, "phone");
+    // Not published, or another key: setup goes on, with the state shown.
+    let p = preview(&link, now(), &opts(stub(404, Vec::new()))).unwrap();
+    assert_eq!(p.identity, Identity::NotFound);
+    let other = PgpSecretKey::generate("other <o@test.invalid>").unwrap();
+    let p = preview(
+        &link,
+        now(),
+        &opts(stub(200, other.public_armored().unwrap().into_bytes())),
+    )
+    .unwrap();
+    assert!(
+        matches!(p.identity, Identity::Mismatch(_)),
+        "{:?}",
+        p.identity
+    );
+    // Revoked on the keyserver: setup stops.
+    let pgp =
+        PgpSecretKey::from_bytes(&std::fs::read(dir.join("signer-secret.asc")).unwrap()).unwrap();
+    let revoked = pgp.revoked_public_armored("gone").unwrap().into_bytes();
+    let e = preview(&link, now(), &opts(stub(200, revoked))).unwrap_err();
+    assert!(e.to_string().contains("revoked"), "{e}");
+
+    // A link pinning another CA: the fetched CA is refused before anything else.
+    let d = SetupLinkDraft {
+        relay: url.clone(),
+        ca: Some([9u8; 32]),
+        signer: ManifestSigner::from_bytes(&signer_pub)
+            .unwrap()
+            .fingerprint(),
+        device: "phone".into(),
+        iat: now() - 60,
+        exp: now() + 600,
+    };
+    let wrong_ca = d
+        .with_signature(
+            &pgp.sign_detached_binary(d.signed_bytes().unwrap().as_bytes())
+                .unwrap(),
+        )
+        .unwrap();
+    let e = preview(&wrong_ca, now(), &opts(stub(404, Vec::new()))).unwrap_err();
+    assert!(e.to_string().contains("ca pin"), "{e}");
+    // No pin at all: the private relay's certificate isn't trusted by the public roots.
+    let no_ca = SetupLinkDraft { ca: None, ..d };
+    let no_ca = no_ca
+        .with_signature(
+            &pgp.sign_detached_binary(no_ca.signed_bytes().unwrap().as_bytes())
+                .unwrap(),
+        )
+        .unwrap();
+    assert!(preview(&no_ca, now(), &opts(stub(404, Vec::new()))).is_err());
+}

@@ -238,3 +238,13 @@ pub fn signer_status(copies: &[SignedPublicKey], now: u64) -> Result<SignerStatu
         (None, None) => Ok(SignerStatus::CannotSign),
     }
 }
+
+/// The user IDs a copy of the key carries, as text (for display: keys.openpgp.org publishes
+/// only addresses their owner confirmed).
+pub fn user_ids(key: &SignedPublicKey) -> Vec<String> {
+    key.details
+        .users
+        .iter()
+        .map(|u| String::from_utf8_lossy(u.id.id()).into_owned())
+        .collect()
+}

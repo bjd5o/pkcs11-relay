@@ -299,3 +299,33 @@ fn copies_of_different_keys_are_refused() {
     assert!(e.to_string().contains("copies of different keys"), "{e}");
     assert!(signer_status(&[], T0).is_err());
 }
+
+#[test]
+fn the_relay_ca_must_be_the_pinned_self_signed_ca() {
+    use relay_core::hw_attestation::testing::{to_pem, TestHierarchy};
+    use relay_core::setup_link::{check_relay_ca, spki_pin};
+    use x509_cert::der::{Decode, Encode};
+    let h = TestHierarchy::new();
+    let root = h.root_der();
+    let spki = |der: &[u8]| {
+        x509_cert::Certificate::from_der(der)
+            .unwrap()
+            .tbs_certificate()
+            .subject_public_key_info()
+            .to_der()
+            .unwrap()
+    };
+    let pin = spki_pin(&spki(&root));
+    check_relay_ca(to_pem(std::slice::from_ref(&root)).as_bytes(), &pin).unwrap();
+    let e = check_relay_ca(to_pem(&[root]).as_bytes(), &[0u8; 32]).unwrap_err();
+    assert!(e.to_string().contains("pin"), "{e}");
+    // An intermediate (a CA, but not self-signed) with a matching pin is still refused.
+    let inter = h.intermediates()[1].clone();
+    let e = check_relay_ca(
+        to_pem(std::slice::from_ref(&inter)).as_bytes(),
+        &spki_pin(&spki(&inter)),
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("self-signed"), "{e}");
+    assert!(check_relay_ca(b"junk", &pin).is_err());
+}
