@@ -54,6 +54,8 @@ The context strings are ASCII, with no terminator besides the `0x00` shown:
 | Attestation statement | `relay-pkcs11/attestation/v1` | `sig` | manifest `attest` key |
 | Response | `relay-pkcs11/response/v1` | `device_sig` | device key |
 | Relay HTTP auth | `relay-pkcs11/relay-auth/v1` | `X-Relay-Signature` header | client or device key (§8) |
+| Client grant | `relay-pkcs11/client-grant/v1` | `sig` | manifest `attest` key (§12.1) |
+| Client revocation | `relay-pkcs11/client-revocation/v1` | `sig` | manifest `attest` key (§12.3) |
 
 The verifier never signs or hashes the bytes it received. It decodes them, which also enforces canonical form, removes the signature field, re-encodes the rest and verifies over that. Because decoding demands canonical input, the result equals the sender's bytes minus the signature entry.
 
@@ -278,13 +280,13 @@ Signed by the device key (ECDSA P-256). Context string `relay-pkcs11/response/v1
 
 ### 6.1 Reason codes
 
-`user_denied`, `policy` (the approver's checks refused the request), `expired`, `card_absent`, `wrong_pin`, `pin_blocked`, `card_error`, `internal`. The provider logs the code and maps every `denied` to `CKR_FUNCTION_REJECTED` and every `error` to `CKR_DEVICE_ERROR`, as the Failure handling table requires. A code is a hint from an attested device, nothing more.
+`user_denied`, `policy` (the approver's checks refused the request), `client_not_granted` (no usable grant for the client: missing, or its `attest` key left the manifest), `client_revoked` (a revocation, or the manifest's `revoked_clients`), `key_not_granted` (the key is outside the client's grant), `expired`, `card_absent`, `wrong_pin`, `pin_blocked`, `card_error`, `internal`. The provider logs the code and maps every `denied` to `CKR_FUNCTION_REJECTED` and every `error` to `CKR_DEVICE_ERROR`, as the Failure handling table requires. A code is a hint from an attested device, nothing more.
 
 ### 6.2 Verification (`verify_response(response, request_bytes, manifest, now, skew)`)
 
 The spec's five checks, in the spec's order, stopping at the first failure. Every failure discards the response and returns `CKR_DEVICE_ERROR`.
 
-1. Decode the response strictly. Run `verify_attestation` (§5.1, steps 1–3) on `attestation`: its signature verifies against a manifest `attest` key.
+1. Decode the response strictly. Run `verify_attestation` (§5.1, steps 1–3) on `attestation`: its signature verifies against a manifest `attest` key. Then check that the statement's `device_key_fingerprint` is not in the manifest's `revoked_devices` (§9.2). A listed key fails with `DeviceRevoked`, which has its own Failure handling row; the provider logs it loudly.
 2. §5.1 step 4: `now` is inside the statement's window, allowing `skew`.
 3. `response.device_key_fingerprint == statement.device_key_fingerprint`.
 4. `device_sig` verifies over `signed_bytes` with `statement.device_key`. Then `req_id == request.req_id` and `request_hash == SHA-256(request_bytes)`. The request hash covers the request's `key_fingerprint` and `mechanism`, so binding the hash binds both (the spec's "echoes this request's id, key and mechanism").
@@ -382,6 +384,20 @@ The registration (`POST /v1/devices`, §10) then carries `auth_key` (base64 SPKI
 
 The auth key carries no trust for clients: responses are still signed by the attested device key, so a copied auth key can poll the device's queue (which the relay sees anyway) but cannot answer a request. This is relay hygiene, like the rest of §8.
 
+### 8.5 Device admin-auth key
+
+A second P-256 key, generated at enrollment like the relay-auth key, but in the Secure Enclave with access control `.privateKeyUsage` + `.biometryCurrentSet` and accessibility `WhenUnlockedThisDeviceOnly`. The device key vouches for it once, over:
+
+```
+"relay-pkcs11/admin-auth-key/v1" || 0x00 || device_id || 0x00 || fingerprint(admin_key)
+```
+
+The registration (`POST /v1/devices`, §10) carries `admin_key` (base64 SPKI) and `admin_key_sig` (base64, 64 bytes). The relay checks the binding with `relay_core::relay_auth::verify_admin_key_binding` and stores the key. The calls marked "admin key" in §10 must carry §8 headers signed by this key, and are refused with 403 `AdminKeyRequired` otherwise. Every other device call is refused if signed with it.
+
+The app evaluates one `LAContext` when a Clients or Approvers screen opens and passes it to each admin-key signature (`kSecUseAuthenticationContext`). It invalidates the context after 3 600 s or when the app moves to the background, whichever comes first. During an approval, the approval's own context signs any grant post the approval makes. The time limit is enforced by the app: the Secure Enclave checks only that a biometric happened in that context.
+
+Like the relay-auth key, the admin-auth key carries no trust for clients or other approvers. It gates access to listings and changes at the relay; every grant, revocation and attestation fetched with it is verified on the device.
+
 ## 9. Manifest
 
 ### 9.1 Files
@@ -407,6 +423,9 @@ The signature is checked **before** any JSON parsing. Rules for it:
   "valid_until": 1797292800,
   "require_hardware_attestation": true,
   "max_attestation_window_secs": 604800,
+  "max_client_grant_window_secs": 2592000,
+  "revoked_clients": ["sha256:9b2e…"],
+  "revoked_devices": [],
   "keys": [
     {
       "fingerprint": "sha256:4f1c…",
@@ -427,6 +446,9 @@ The signature is checked **before** any JSON parsing. Rules for it:
 | `version` | integer | ≥ 1; monotonic |
 | `require_hardware_attestation` | bool | Required. When true, every `attest` key must carry a valid `hardware_attestation` (§9.4) |
 | `max_attestation_window_secs` | integer | Required. 60–31 536 000. The longest `not_after − not_before` accepted for an attestation (§5.1 step 5) |
+| `max_client_grant_window_secs` | integer | Required. 60–31 536 000. The longest `window_secs` accepted in a client grant (§12.2) |
+| `revoked_clients` | array, optional | 0–1 024 client identity-key fingerprints (§1.1), sorted bytewise, no duplicates. Absent means empty. The relay refuses these clients and approvers deny their requests (`client_revoked`) |
+| `revoked_devices` | array, optional | 0–1 024 device-key fingerprints, sorted bytewise, no duplicates. Absent means empty. The relay refuses these devices; providers reject their responses (§6.2 check 1) |
 | `issued_at`, `valid_until` | integer | Unix seconds, `issued_at < valid_until`. The spec's table shows dates, which `relayctl manifest show` displays; on the wire they are integers, per the defaults table. |
 | `keys` | array | 0–64 entries; no two with the same `fingerprint` |
 | `keys[].fingerprint` | string | §1.1 |
@@ -494,11 +516,17 @@ These are not signed messages: the relay is untrusted and every field is a hint.
 | `POST /v1/requests/{id}/response` | a device addressed by the request | response envelope → `204`; 409 `AlreadyAnswered` (the first response wins); 404 if expired. |
 | `POST /v1/clients/pending` | the new client's key, which is in the body (proof of possession) | `{"client_id", "public_key", "host"}` → `202 {"status": "pending", "code"}`, or `200 {"status": "approved"}` if already paired. Allowed networks only, at most 4 pending, dropped after 10 min. |
 | `GET /v1/clients/self` | a pending or paired client | → `{"status": "pending", "client_id", "code"}` or `{"status": "approved", "client_id", "approved_keys"}`. |
-| `POST /v1/clients/{id}/approval` | any registered device | `{"fingerprint", "keys": [fingerprint]}` → `204`. `fingerprint` must be that of the pending client key whose code the person compared; `keys` (1–64) are chosen from the manifest and need not be on this device. |
-| `POST /v1/devices` | the auth key in the body, or else the device key | `{"device_id", "device_key", "attestation", "keys": [{"public_key", "token"}], "push": {"kind": "none"} \| {"kind": "ntfy", "topic"} \| {"kind": "apns", "token"}, "auth_key"?, "auth_key_sig"?, "setup_link"?}` → `204`. `setup_link` is required for a device id the relay does not hold (also after revocation) and checked per §11.3, with 400 `SetupLinkInvalid` / `SetupLinkWrongSigner` / `SetupLinkSignatureInvalid` / `SetupLinkExpired` / `SetupLinkWrongDevice` / `SetupLinkUsed` / `SetupLinkRequired`; 400 `BadAuthKey` when the binding (§8.4) does not verify. A device id stays bound to its first key until `relay-server admin devices revoke`. The relay checks that the attestation decodes and names this device and key. When it has a valid manifest it also checks that one of the manifest's `attest` keys signed it (§5.1 steps 1–3, `verify_attestation_signer`; not the window, so an expired device can re-register after renewing), and rejects a failure with 400 `AttestationInvalid`. Clients check it again either way. |
+| `POST /v1/clients/{id}/approval` | any registered device (relay-auth key; the grant carries the trust) | `{"grant"}` (base64 CBOR, §12.1) → `204`. The grant's `client_key` must be the pending client key whose code the person compared, `client_id` must equal `{id}`, and `seq` must be 1. The relay runs `verify_client_grant_signer` (§12.2) and answers 400 `GrantInvalid` on failure. |
+| `GET /v1/clients` | a registered device (admin key) | → `{"clients": [{"client_id", "host", "grant", "last_seen"}], "revocations": [revocation]}`, with `grant` and each revocation as base64 CBOR, and every live revocation (§12.3). |
+| `POST /v1/clients/{id}/grant` | a registered device (admin key, or the relay-auth key for a renewal made during an approval) | `{"grant"}` → `204`. Checked as for the approval; `client_key` must be the stored client's, and `seq` must be greater than the stored grant's (409 `GrantStale` otherwise). Replaces the client's routable keys with the grant's `keys`. |
+| `POST /v1/clients/{id}/revocation` | a registered device (admin key) | `{"revocation"}` (base64 CBOR, §12.3) → `204`. The relay verifies it (§12.3), deletes the client, refuses its calls with 403 `ClientRevoked`, and keeps the revocation until `not_after` of the last grant it cancels. 400 `RevocationInvalid` on failure. |
+| `GET /v1/devices` | a registered device (admin key) | → `{"devices": [{"device_id", "device_key", "attestation", "keys": [{"public_key", "token"}], "push_kind", "last_seen"}]}`. `push_kind` only, never a push token or topic. |
+| `POST /v1/devices` | the auth key in the body, or else the device key | `{"device_id", "device_key", "attestation", "keys": [{"public_key", "token"}], "push": {"kind": "none"} \| {"kind": "ntfy", "topic"} \| {"kind": "apns", "token"}, "auth_key"?, "auth_key_sig"?, "admin_key"?, "admin_key_sig"?, "setup_link"?}` → `204`. `setup_link` is required for a device id the relay does not hold (also after revocation) and checked per §11.3, with 400 `SetupLinkInvalid` / `SetupLinkWrongSigner` / `SetupLinkSignatureInvalid` / `SetupLinkExpired` / `SetupLinkWrongDevice` / `SetupLinkUsed` / `SetupLinkRequired`; 400 `BadAuthKey` when the binding (§8.4) does not verify, and 400 `BadAdminKey` for the admin-key binding (§8.5); 403 `DeviceRevoked` when `device_key`'s fingerprint is in the manifest's `revoked_devices`. A device id stays bound to its first key until `relay-server admin devices revoke`. The relay checks that the attestation decodes and names this device and key. When it has a valid manifest it also checks that one of the manifest's `attest` keys signed it (§5.1 steps 1–3, `verify_attestation_signer`; not the window, so an expired device can re-register after renewing), and rejects a failure with 400 `AttestationInvalid`. Clients check it again either way. |
 | (APNs) | the relay | To a device registered with `{"kind": "apns", "token"}`: HTTP/2 POST `/3/device/<token>` with an ES256 provider token (refreshed every 30 minutes), `apns-push-type: alert`, `apns-priority: 10`, `apns-expiration` = now + the relay's max TTL, and the fixed body `{"aps":{"alert":{"title":"Relay Approver","body":"1 pending request"},"sound":"default"}}`. On 410, or 400 `BadDeviceToken` / `DeviceTokenNotForTopic`, the relay forgets that device's token. |
-| `GET /v1/devices/{id}/pending?wait=N` | that device | → `{"requests": [envelope], "pairings": [{"client_id", "public_key", "fingerprint", "host", "code", "received_at"}]}`. |
+| `GET /v1/devices/{id}/pending?wait=N` | that device | → `{"requests": [envelope], "grants": [grant], "revocations": [revocation], "pairings": [{"client_id", "public_key", "fingerprint", "host", "code", "received_at"}]}`. `grants` holds the latest stored grant for each client with a request in `requests`; `revocations` holds every live revocation (§12.3). Both are base64 CBOR. |
 | `GET /v1/devices/{id}/ws` | that device (headers on the upgrade) | WebSocket. The relay sends `{"type": "pending"}` when there may be something to fetch. |
+
+**Manifest revocations at the relay.** With a valid manifest, the relay refuses every call authenticated by a client whose identity-key fingerprint is in `revoked_clients` (403 `ClientRevoked`), and every call from a device whose device-key fingerprint is in `revoked_devices`, whichever of its keys signs it (403 `DeviceRevoked`). When it loads such a manifest it deletes their registrations, stops routing to listed devices, and discards any response from one. `POST /v1/requests` also returns 403 `ClientRevoked` for a client with a stored revocation, and 403 `KeyNotApproved` for a key outside the client's latest grant.
 
 ### 10.1 Pairing code
 
@@ -551,6 +579,55 @@ Over every copy of the signer key seen (the relay's file, keys.openpgp.org):
 - Otherwise **usable**.
 
 The relay recomputes it from its file at least every minute, fetches `https://keys.openpgp.org/vks/v1/by-fingerprint/<FPR>` every 900 seconds by default, keeps its last status when the keyserver is unreachable or does not have the key, and persists a revocation until `manifest_signer` changes to another fingerprint. The app applies the same function at setup and refuses a revoked or expired key.
+
+## 12. Client grants and revocations
+
+### 12.1 Client grant
+
+Signed by a manifest `attest` key (ECDSA P-256), on the card like an attestation (§5: the approver sends `SHA-256(signed_bytes)` with `GENERAL AUTHENTICATE`). Context string `relay-pkcs11/client-grant/v1`, signature field `sig`.
+
+| Key (canonical order) | Type | Rules |
+|---|---|---|
+| `v` | uint | `1` |
+| `seq` | uint | ≥ 1; 1 at pairing; each change or renewal adds 1 |
+| `sig` | bstr | 64 bytes, ECDSA P-256 `r ‖ s` |
+| `keys` | array of tstr | 1–64 key fingerprints, sorted bytewise, no duplicates |
+| `client_id` | tstr | §1.1 |
+| `issued_at` | uint | Unix seconds |
+| `not_after` | uint | must equal `issued_at + window_secs` |
+| `client_key` | bstr | SPKI of the client identity key (§2) |
+| `approved_by` | tstr | device id of the approving device; display only, not trusted |
+| `window_secs` | uint | 60–31 536 000 |
+| `attest_key_fingerprint` | tstr | fingerprint of the signing attest key |
+
+### 12.2 Verification (`verify_client_grant(grant, manifest, now, skew)`)
+
+1. Decode strictly. Find `attest_key_fingerprint` among the manifest's keys with role `attest`, and verify `sig` over `signed_bytes` with it; otherwise `GrantInvalid`.
+2. Require `not_after = issued_at + window_secs` and `window_secs ≤ manifest.max_client_grant_window_secs`; otherwise `GrantInvalid`.
+3. Every fingerprint in `keys` is a manifest key with a role other than `attest`; otherwise `GrantInvalid`.
+4. `fingerprint(client_key)` is not in the manifest's `revoked_clients`; otherwise `ClientRevoked`.
+5. Time: require `issued_at − skew ≤ now`, otherwise `GrantInvalid` (not yet valid). If `now > not_after + skew`, the grant verifies but is returned as **lapsed**: the approver shows its client's requests only with the renewal notice.
+
+`verify_client_grant_signer(grant, manifest)` runs steps 1–3, without revocation or time; the relay uses it.
+
+An approver keeps, per client key, the verified grant with the highest `seq`. It refuses a grant whose `seq` is lower than or equal to one it holds unless the two are byte-identical, and any grant that a held revocation cancels (§12.3).
+
+### 12.3 Client revocation
+
+Signed by a manifest `attest` key. Context string `relay-pkcs11/client-revocation/v1`, signature field `sig`.
+
+| Key (canonical order) | Type | Rules |
+|---|---|---|
+| `v` | uint | `1` |
+| `seq` | uint | the highest grant `seq` it cancels |
+| `sig` | bstr | 64 bytes, ECDSA P-256 `r ‖ s` |
+| `issued_at` | uint | Unix seconds |
+| `client_key` | bstr | SPKI of the client identity key |
+| `attest_key_fingerprint` | tstr | fingerprint of the signing attest key |
+
+`verify_client_revocation(revocation, manifest)`: decode strictly, then verify `sig` with the manifest `attest` key named by `attest_key_fingerprint`; otherwise `RevocationInvalid`. There is no time check. A device keeps a verified revocation for good and refuses every grant for `client_key` with `seq` at or below it.
+
+A revocation is **live** at the relay until `now` passes `not_after` of the last grant it cancels. The relay sends every live revocation with each `/pending` response and in `GET /v1/clients`, with no acknowledgement. A compromised relay can withhold one; the bound is the grant window and the person approving (spec, Enrollment).
 
 ## Departures from the spec
 
