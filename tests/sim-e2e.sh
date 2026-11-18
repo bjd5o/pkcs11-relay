@@ -4,7 +4,7 @@
 # sim-client` as the client. The UI test enrolls, approves the pairing and approves one
 # RSA-OAEP decrypt with the PIN; the client checks the plaintext as the provider would.
 #
-#   tests/sim-e2e.sh [simulator name]     (default: the first iPhone simulator xcodebuild offers)
+#   tests/sim-e2e.sh [simulator name]     (default: an iPhone on the newest runtime the SDK covers)
 # Needs: Xcode, the iOS Rust targets (mise.toml), xcodegen (mise.toml), python3. No YubiKey.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -26,18 +26,38 @@ cargo build -q -p relay-server -p relay-test-approver -p relayctl
 FEATURES=test-card PROFILE=dev apps/apple/build-xcframework.sh
 (cd apps/apple && xcodegen -q)
 
-# Ask xcodebuild, not simctl: simctl also lists devices whose runtime this Xcode cannot test
-# on. Without an argument, take the first iPhone it offers, by id (names repeat across
-# runtimes).
+# Target the simulator by id: a name alone means "that name on the newest runtime", and fails
+# when the device exists only on an older one (iPhone 17 Pro on iOS 26 next to iOS 27). Without
+# an argument, take the first iPhone on the newest iOS runtime this Xcode's SDK covers.
 if [ -n "$SIM" ]; then
   DEST="platform=iOS Simulator,name=$SIM"
 else
-  LINE=$(xcodebuild -project apps/apple/RelayApprover.xcodeproj -scheme RelayApprover -showdestinations 2>/dev/null |
-    grep 'platform:iOS Simulator' | grep 'name:iPhone' | head -1)
-  ID=$(printf '%s\n' "$LINE" | sed -n 's/.*[{,] *id:\([^,]*\),.*/\1/p')
-  [ -n "$ID" ] || { echo "no iPhone simulator that xcodebuild can test on"; exit 1; }
-  SIM="$(printf '%s\n' "$LINE" | sed -n 's/.*name:\([^}]*[^ }]\) *}.*/\1/p') (iOS $(printf '%s\n' "$LINE" | sed -n 's/.*OS:\([^,]*\),.*/\1/p'))"
-  DEST="platform=iOS Simulator,id=$ID"
+  SDK=$(xcrun --sdk iphonesimulator --show-sdk-version)
+  PICK=$(xcrun simctl list devices available -j | python3 -I -c '
+import json, sys
+sdk = tuple(int(x) for x in sys.argv[1].split("."))
+best = None
+for rt, devs in json.load(sys.stdin)["devices"].items():
+    name = rt.rsplit(".", 1)[-1]
+    if not name.startswith("iOS-"):
+        continue
+    parts = name[4:].split("-")
+    if not all(p.isdigit() for p in parts):
+        continue  # device-specific runtimes such as iOS-27-2-iPhone19-4
+    ver = tuple(int(p) for p in parts)
+    phones = [d for d in devs if d["name"].startswith("iPhone")]
+    if phones and ver <= sdk and (best is None or ver > best[0]):
+        best = (ver, phones[0])
+if best:
+    print(best[1]["udid"], best[1]["name"], "(iOS " + ".".join(map(str, best[0])) + ")")
+' "$SDK")
+  [ -n "$PICK" ] || {
+    echo "no available iPhone simulator for the iOS $SDK SDK; xcodebuild offers:"
+    xcodebuild -project apps/apple/RelayApprover.xcodeproj -scheme RelayApprover -showdestinations 2>&1 | tail -30
+    exit 1
+  }
+  DEST="platform=iOS Simulator,id=${PICK%% *}"
+  SIM=${PICK#* }
 fi
 
 echo "== fixtures and relay on https://localhost:$PORT"
