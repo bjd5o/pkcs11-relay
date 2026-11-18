@@ -452,7 +452,7 @@ YubiKey PIV attestation, firmware 5.7.4 and later. The chain, leaf first, is: th
    - intermediates: the chain after the leaf;
    - time: `now`, with no skew; Yubico's certificates are valid until 9999;
    - signature algorithms: RSA PKCS#1 v1.5 (2048–8192 bits) with SHA-256/384/512, and ECDSA P-256/SHA-256 and P-384/SHA-384;
-   - extended key usage: the leaf must have none;
+   - extended key usage: not checked; Yubico's chains do not use it, and the PIV branch and the leaf extensions decide;
    - no revocation checking.
 
    webpki checks signatures, issuer chaining, CA flags, path length, validity and unknown critical extensions.

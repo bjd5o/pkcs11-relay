@@ -51,6 +51,8 @@ pub enum Error {
     ManifestVersionConflict { version: u64 },
     #[error("manifest expired: valid_until {valid_until}, now {now}")]
     ManifestExpired { valid_until: u64, now: u64 },
+    #[error("manifest hardware attestation invalid: {0}")]
+    HardwareAttestationInvalid(String),
 
     // --- Local operation checks ---
     #[error("operation not permitted for the key's role")]
@@ -118,7 +120,8 @@ impl Error {
             | ManifestMalformed(_)
             | ManifestRolledBack { .. }
             | ManifestVersionConflict { .. }
-            | ManifestExpired { .. } => FailureRow::ManifestRejected,
+            | ManifestExpired { .. }
+            | HardwareAttestationInvalid(_) => FailureRow::ManifestRejected,
             KeyFunctionNotPermitted => FailureRow::RoleViolation,
             MechanismInvalid | MechanismParamInvalid | DataLenRange => {
                 FailureRow::MechanismNotAllowed
@@ -153,7 +156,8 @@ impl Error {
             | ManifestMalformed(_)
             | ManifestRolledBack { .. }
             | ManifestVersionConflict { .. }
-            | ManifestExpired { .. } => return None,
+            | ManifestExpired { .. }
+            | HardwareAttestationInvalid(_) => return None,
             KeyFunctionNotPermitted => ckr::KEY_FUNCTION_NOT_PERMITTED,
             MechanismInvalid => ckr::MECHANISM_INVALID,
             MechanismParamInvalid => ckr::MECHANISM_PARAM_INVALID,
@@ -172,6 +176,7 @@ impl Error {
             ManifestRolledBack { .. } => "ManifestRolledBack",
             ManifestVersionConflict { .. } => "ManifestVersionConflict",
             ManifestExpired { .. } => "ManifestExpired",
+            HardwareAttestationInvalid(_) => "HardwareAttestationInvalid",
             KeyFunctionNotPermitted => "KeyFunctionNotPermitted",
             MechanismInvalid => "MechanismInvalid",
             MechanismParamInvalid => "MechanismParamInvalid",

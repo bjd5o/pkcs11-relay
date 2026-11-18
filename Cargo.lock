@@ -3048,6 +3048,8 @@ dependencies = [
  "rand_core 0.6.4",
  "relay-core",
  "rsa 0.10.0",
+ "rustls-pki-types",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "sha2 0.11.1",

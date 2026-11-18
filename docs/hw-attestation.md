@@ -155,7 +155,7 @@ is deployed outside the test setup.
    - `UnixTime` from `now`;
    - the algorithms `RSA_PKCS1_2048_8192_SHA256/384/512`, `ECDSA_P256_SHA256` and
      `ECDSA_P384_SHA384`, from webpki's `ring` provider;
-   - a custom `ExtendedKeyUsageValidator` that accepts a leaf with no EKU, and nothing else;
+   - a custom `ExtendedKeyUsageValidator` that accepts any EKU, since Yubico's chains do not use it;
    - no revocation.
 
    webpki checks signatures, issuer/subject chaining, CA flags, path length, validity, and rejects
@@ -260,7 +260,6 @@ reports any mismatch. This is a sanity check; enforcement is on the clients.
     - non-CA intermediate;
     - expired certificate;
     - unknown critical extension;
-    - EKU present;
     - missing serial;
     - touch not `always`;
     - PIN policy `never`;

@@ -9,6 +9,7 @@ pub mod attestation;
 pub mod cbor;
 pub mod content;
 pub mod error;
+pub mod hw_attestation;
 pub mod keys;
 pub mod manifest;
 pub mod mechanism;
@@ -24,6 +25,7 @@ pub mod symmetric;
 
 pub use attestation::{check_id, verify_attestation};
 pub use error::{Error, FailureRow, Result};
+pub use hw_attestation::{verify_piv_attestation, HardwarePolicy, PivAttestation};
 pub use keys::{Algorithm, Fingerprint, PublicKey, Role};
 pub use manifest::{
     verify_manifest, DraftKey, Manifest, ManifestDraft, ManifestKey, ManifestSigner, PgpSecretKey,

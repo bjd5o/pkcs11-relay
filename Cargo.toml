@@ -53,6 +53,10 @@ hex = "=0.4.3"
 base64 = "=0.23.1"
 data-encoding = "=2.11.1"
 x509-cert = { version = "=0.3.0", features = ["builder"] }
+# Approved 2026-11-17 (hardware attestation): X.509 path validation for YubiKey attestation
+# chains. Already in the provider and iOS trees through rustls.
+rustls-webpki = { version = "=0.103.17", default-features = false, features = ["std", "ring"] }
+rustls-pki-types = { version = "=1.16.0", features = ["std"] }
 proptest = "=1.12.0"
 # Approved 2026-11-15: constant-time primitives for the OAEP decoding vendored from rsa 0.10.
 subtle = "=2.6.1"
