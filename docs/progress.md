@@ -109,3 +109,14 @@ Signed setup links (design `docs/setup-link.md`, approved 2026-11-17):
 - [x] Docker gate: a revoked signer makes the relay list no keys (checked last)
 - [x] Spec wording fixed (Brian, 2026-11-18): with the signer unusable the provider keeps the manifest's slots and lists no keys in them
 
+Part B (design `docs/milestone-5b.md`, approved 2026-11-18):
+- [x] Setup picker: 15- and 30-minute attestation windows
+- [x] `VERIFY` P1=`FF` security-status reset (relay-core, softcard), `relayctl key check-security-reset`
+- [x] USB YubiKey transport through CryptoTokenKit (`USBCard.swift`, Mac, iPad, USB-C iPhone); relay-ffi ends sessions that can't reset the card with `VERIFY` P1=`FF` (`CardChannel::resets_on_end`); USB is preferred over NFC; "Touch your YubiKey if it blinks"
+- [x] Mac: menu-bar extra with the count of what's waiting; keeps running with the window closed; Touch ID through the same biometric prompt
+- [x] Relay APNs notifier (`notify.kind = "apns"`): ES256 provider tokens, HTTP/2 (reqwest `http2`), content-free alert, dead tokens forgotten; tested against an HTTP/2 stub
+- [x] App: notification permission, APNs token sent with registrations (`Approver::set_push_token`), tap opens Requests; `aps-environment` entitlements
+- [ ] Hardware: `relayctl key check-security-reset` on the 5C Nano (slot to choose; Brian approves the command)
+- [ ] APNs: Brian's `.p8` key, key id and team id; push enabled for the app id; then a push on the iPhone
+- [ ] Part B gate: the Mac and the USB-C iPad over USB (enrollment, a decrypt), push on the iPhone
+
