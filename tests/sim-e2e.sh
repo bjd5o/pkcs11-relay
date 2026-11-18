@@ -4,14 +4,14 @@
 # sim-client` as the client. The UI test enrolls, approves the pairing and approves one
 # RSA-OAEP decrypt with the PIN; the client checks the plaintext as the provider would.
 #
-#   tests/sim-e2e.sh [simulator name]     (default: the first available iPhone)
+#   tests/sim-e2e.sh [simulator name]     (default: the first iPhone simulator xcodebuild offers)
 # Needs: Xcode, the iOS Rust targets (mise.toml), xcodegen (mise.toml), python3. No YubiKey.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 W=$(mktemp -d)
 PORT=${RELAY_PORT:-18443}
-SIM=${1:-$(xcrun simctl list devices available | sed -n 's/^ *\(iPhone[^(]*\) (.*/\1/p' | head -1 | sed 's/ *$//')}
+SIM=${1:-}
 RELAY_PID=""
 CLIENT_PID=""
 cleanup() {
@@ -25,6 +25,20 @@ echo "== build"
 cargo build -q -p relay-server -p relay-test-approver -p relayctl
 FEATURES=test-card PROFILE=dev apps/apple/build-xcframework.sh
 (cd apps/apple && xcodegen -q)
+
+# Ask xcodebuild, not simctl: simctl also lists devices whose runtime this Xcode cannot test
+# on. Without an argument, take the first iPhone it offers, by id (names repeat across
+# runtimes).
+if [ -n "$SIM" ]; then
+  DEST="platform=iOS Simulator,name=$SIM"
+else
+  LINE=$(xcodebuild -project apps/apple/RelayApprover.xcodeproj -scheme RelayApprover -showdestinations 2>/dev/null |
+    grep 'platform:iOS Simulator' | grep 'name:iPhone' | head -1)
+  ID=$(printf '%s\n' "$LINE" | sed -n 's/.*[{,] *id:\([^,]*\),.*/\1/p')
+  [ -n "$ID" ] || { echo "no iPhone simulator that xcodebuild can test on"; exit 1; }
+  SIM="$(printf '%s\n' "$LINE" | sed -n 's/.*name:\([^}]*[^ }]\) *}.*/\1/p') (iOS $(printf '%s\n' "$LINE" | sed -n 's/.*OS:\([^,]*\),.*/\1/p'))"
+  DEST="platform=iOS Simulator,id=$ID"
+fi
 
 echo "== fixtures and relay on https://localhost:$PORT"
 target/debug/relay-test-approver gen-fixtures --out "$W" --root "$W" \
@@ -62,7 +76,7 @@ TEST_RUNNER_RELAY_TEST_SETUP="$(cat "$W/setup.json")" \
 TEST_RUNNER_RELAY_TEST_CARD="$(cat "$W/card.json")" \
 TEST_RUNNER_RELAY_TEST_PIN="$(tr -d '\n' <"$W/pin")" \
 xcodebuild -project apps/apple/RelayApprover.xcodeproj -scheme RelayApprover \
-  -destination "platform=iOS Simulator,name=$SIM" \
+  -destination "$DEST" \
   -only-testing:RelayApproverUITests \
   SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) DEBUG RELAY_TEST_CARD' \
   test >"$W/xcodebuild.log" 2>&1 || {
