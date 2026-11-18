@@ -11,3 +11,6 @@ apps/apple/Generated/
 apps/apple/RelayApprover.xcodeproj/
 apps/apple/Config/Local.xcconfig
 gate-m5/
+
+# APNs auth keys (developer account); never committed
+*.p8
