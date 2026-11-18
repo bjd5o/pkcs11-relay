@@ -378,9 +378,23 @@ fn ring(st: &Arc<AppState>, devices: Vec<DeviceRecord>) {
         let fut = st.notifier.ring(&d.device_id, &d.push);
         let st = st.clone();
         tokio::spawn(async move {
-            if let Err(e) = fut.await {
-                Metrics::inc(&st.metrics.push_failures);
-                tracing::warn!(device_id = d.device_id, error = e, "push failed");
+            match fut.await {
+                Ok(()) => {}
+                Err(crate::notify::PushError::Unregistered(e)) => {
+                    Metrics::inc(&st.metrics.push_failures);
+                    tracing::warn!(
+                        device_id = d.device_id,
+                        error = e,
+                        "push token no longer valid; forgetting it"
+                    );
+                    if let Err(e) = db::clear_push(&st.db, &d.device_id).await {
+                        tracing::error!(error = %e, "could not forget the push token");
+                    }
+                }
+                Err(e) => {
+                    Metrics::inc(&st.metrics.push_failures);
+                    tracing::warn!(device_id = d.device_id, error = %e, "push failed");
+                }
             }
         });
     }

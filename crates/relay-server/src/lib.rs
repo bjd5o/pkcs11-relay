@@ -42,6 +42,28 @@ pub async fn build_state(cfg: Config) -> Result<Arc<AppState>, String> {
             };
             Arc::new(notify::NtfyNotifier::new(url.clone(), token)?)
         }
+        NotifyConfig::Apns {
+            key_file,
+            key_id,
+            team_id,
+            topic,
+            environment,
+            url,
+        } => {
+            let pem = zeroize::Zeroizing::new(
+                std::fs::read_to_string(key_file)
+                    .map_err(|e| format!("APNs key {}: {e}", key_file.display()))?,
+            );
+            Arc::new(Arc::new(notify::ApnsNotifier::new(
+                &pem,
+                key_id.clone(),
+                team_id.clone(),
+                topic.clone(),
+                environment,
+                url.clone(),
+                cfg.max_ttl_secs,
+            )?))
+        }
     };
     Ok(Arc::new(AppState {
         cfg,

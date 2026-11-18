@@ -382,6 +382,16 @@ pub async fn record_signer_revocation(
     Ok(())
 }
 
+/// Forget a device's push token (the push service said it is no longer valid).
+pub async fn clear_push(db: &Db, id: &str) -> R<()> {
+    sqlx::query("UPDATE devices SET push = ? WHERE device_id = ?")
+        .bind(serde_json::to_string(&PushTarget::None).expect("json"))
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 pub async fn touch_device(db: &Db, id: &str, now: i64) -> R<()> {
     sqlx::query("UPDATE devices SET last_seen = ? WHERE device_id = ?")
         .bind(now)

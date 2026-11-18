@@ -92,6 +92,24 @@ pub enum NotifyConfig {
         url: String,
         token_file: Option<PathBuf>,
     },
+    /// Apple Push Notification service, token-based (docs/milestone-5b.md).
+    Apns {
+        /// The `.p8` auth key from the developer account (PKCS#8 P-256). Keep it off the repo.
+        key_file: PathBuf,
+        key_id: String,
+        team_id: String,
+        /// The app's bundle id.
+        topic: String,
+        /// `sandbox` for Xcode builds, `production` for TestFlight and the App Store.
+        #[serde(default = "default_apns_environment")]
+        environment: String,
+        /// Testing only: send to this base URL instead of Apple's.
+        url: Option<String>,
+    },
+}
+
+fn default_apns_environment() -> String {
+    "sandbox".into()
 }
 
 impl Default for Config {
