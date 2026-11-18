@@ -84,7 +84,7 @@ Part A:
     - [x] Decrypt: `pkcs11-tool` RSA-OAEP with `hw-unseal` after Face ID, PIN and an NFC tap; the plaintext matched
     - [x] Denial: `C_Decrypt` returned `CKR_FUNCTION_REJECTED` (0x200), seen through OpenSC's PKCS#11 spy, because `pkcs11-tool` retries with `C_DecryptUpdate` and prints that code instead
     - [x] Expiry: `C_Decrypt` returned `CKR_FUNCTION_CANCELED` (0x50) after the provider's 110 s
-    - [ ] Renewal
+    - [x] Renewal (16:19 UTC): an approved decrypt renewed the attestation in the same NFC tap (new window 16:19:37–17:19:37, signed during the approval); the plaintext matched, and the app re-registered with the new statement. The first attempt found the expired-attestation bug fixed in `7f68e18`
     - [ ] Wrong PIN: skipped unless Brian asks (it spends one of the card's PIN tries)
 
 Hardware attestation of attest keys (design `docs/hw-attestation.md`, approved 2026-11-17):
@@ -119,7 +119,7 @@ Part B (design `docs/milestone-5b.md`, approved 2026-11-18):
 - [x] Hardware: `relayctl key check-security-reset` on a real YubiKey 5, slot 9a, run by Brian (2026-11-18): after `VERIFY` P1=`FF` the card refused to sign without the PIN
 - [x] APNs on hardware (2026-11-18): the gate relay with Brian's `.p8` key (kept in git-ignored `gate-m5/secrets/`; `*.p8` is ignored repo-wide), sandbox environment. With the app in the background a client request produced the "1 pending request" notification within seconds; tapping it opened the request, and Brian denied it (signed denial accepted 12 s after queueing)
 - [x] Fix found by the iPhone gate: an expired attestation was dropped on load, so the app said "not enrolled" and could never renew; it is now kept and renewed at the next approval (spec: an expired device keeps fetching requests)
-- [ ] iPhone gate renewal step: re-enrolled with a 1-hour window; approve a request after 75%
+- [x] iPhone gate renewal step: done (see the iPhone gate above)
 - [x] Part B gate, Mac over USB (2026-11-18): the macOS app built and signed from Xcode with the smart-card and push entitlements; set up from a `relayctl app-link` link at `https://localhost:8443`; enrolled over USB (`hw-auth`, `hw-sign`); `linux-client` re-paired from the Mac (`hw-unseal`, `hw-sign`); an ECDSA-SHA256 `pkcs11-tool --sign` with `hw-sign` approved with Touch ID and PIN on the Mac, and the signature verified with OpenSSL against the manifest's key
   - Found: the relay can't add a key to a paired client; the client has to be revoked (`relay-server admin clients revoke`) and paired again
 - [x] Part B gate, USB-C iPad over USB (2026-11-18): set up from a `relayctl app-link` QR code at the Mac's LAN address; enrolled over USB (`hw-unseal`) once Face ID was set up; `linux-client` re-paired from the iPad; an RSA-OAEP `pkcs11-tool --decrypt` with `hw-unseal` approved on the iPad, and the plaintext matched
