@@ -150,3 +150,25 @@ fn hw_attestation_vectors() {
         }
     }
 }
+
+#[test]
+fn setup_link_vectors() {
+    use relay_core::setup_link::verify_setup_link;
+    for (name, v) in cases("setup-link") {
+        let signer =
+            relay_core::ManifestSigner::from_bytes(v["signer"].as_str().unwrap().as_bytes())
+                .unwrap();
+        let r = verify_setup_link(
+            v["link"].as_str().unwrap(),
+            &signer,
+            u(&v, "now"),
+            u(&v, "skew"),
+        );
+        let expect = v["expect"].as_str().unwrap();
+        if expect == "ok" {
+            assert_eq!(r.unwrap().id(), v["id"].as_str().unwrap(), "{name}");
+        } else {
+            assert_eq!(kind_of(r), expect, "{name}");
+        }
+    }
+}

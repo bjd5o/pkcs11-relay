@@ -102,6 +102,16 @@ pub enum Error {
     #[error("relay authentication failed: {0}")]
     RelayAuth(String),
 
+    // --- Setup links (wire-format §11; checked by the app and the relay) ---
+    #[error("not a valid setup link: {0}")]
+    SetupLinkInvalid(String),
+    #[error("the setup link names signer {link}, not the manifest signer {expected}")]
+    SetupLinkWrongSigner { link: String, expected: String },
+    #[error("the setup link's signature is not valid: {0}")]
+    SetupLinkSignatureInvalid(String),
+    #[error("the setup link is valid from {iat} to {exp}; it is now {now}")]
+    SetupLinkExpired { iat: u64, exp: u64, now: u64 },
+
     // --- Everything else ---
     #[error("decode error: {0}")]
     Decode(String),
@@ -143,7 +153,11 @@ impl Error {
             | UnknownKey
             | KeyNotApproved
             | RequestInvalid(_)
-            | RelayAuth(_) => FailureRow::RequestRejected,
+            | RelayAuth(_)
+            | SetupLinkInvalid(_)
+            | SetupLinkWrongSigner { .. }
+            | SetupLinkSignatureInvalid(_)
+            | SetupLinkExpired { .. } => FailureRow::RequestRejected,
             Decode(_) | InvalidKey(_) | Card(_) | Crypto(_) => FailureRow::Internal,
         }
     }
@@ -200,6 +214,10 @@ impl Error {
             KeyNotApproved => "KeyNotApproved",
             RequestInvalid(_) => "RequestInvalid",
             RelayAuth(_) => "RelayAuth",
+            SetupLinkInvalid(_) => "SetupLinkInvalid",
+            SetupLinkWrongSigner { .. } => "SetupLinkWrongSigner",
+            SetupLinkSignatureInvalid(_) => "SetupLinkSignatureInvalid",
+            SetupLinkExpired { .. } => "SetupLinkExpired",
             Decode(_) => "Decode",
             InvalidKey(_) => "InvalidKey",
             Card(_) => "Card",

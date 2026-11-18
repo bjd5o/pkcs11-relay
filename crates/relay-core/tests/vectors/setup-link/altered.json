@@ -1,0 +1,9 @@
+{
+  "description": "device changed after signing",
+  "expect": "SetupLinkSignatureInvalid",
+  "id": "54d6610a2d518c81be440055dcbc2ad114362b5bac27d90825118bf2a8d211e3",
+  "link": "poh://setup?v=1&relay=https://10.0.0.170:8443&ca=rx_PTnkQvY_iJDl5iVs50ODqR_qKhJj9KqrT4m6skLo&signer=874DAEA489C7472A4B433B2274885F7EAA3E6232&device=brian-ipad&iat=1794982127&exp=1794983027&sig=wnUEABYIAB0WIQSHTa6kicdHKktDOyJ0iF9-qj5iMgUCav1BKwAKCRB0iF9-qj5iMv3kAQDZ8IKmKIIiIz1PHMmbR5QNLL7zJFQYgfOb5LbPXAwuhAEAlOfbM6ix942JsCq5Y3JtgY3PrrIcqLjEwdizPCPkUwA",
+  "now": 1794982187,
+  "signer": "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nxjMEav1BKxYJKwYBBAHaRw8BAQdA4kUTQoCbIOMXGU580i98/1xfmV67IpIelmeG\nae9+dOzNJ3NldHVwIGxpbmsgdmVjdG9ycyA8bGlua3NAdGVzdC5pbnZhbGlkPsKG\nBBMWCAAuBQJq/UErFiEEh02upInHRypLQzsidIhffqo+YjICGwMCHgEBCwEVARYB\nJwIZAQAKCRB0iF9+qj5iMubCAPkBif1Axy81pZAetStmoo+y0PU4Zs8rwm34s6c9\ngyJqpgEAkfGtm3iieaOfbnstYu6oJMiMm88fCiAYGsmlJ+UAIgQ=\n=eD+r\n-----END PGP PUBLIC KEY BLOCK-----\n",
+  "skew": 60
+}

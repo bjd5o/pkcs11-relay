@@ -114,6 +114,73 @@ fn generate_hw_attestation() {
     );
 }
 
+/// Only the setup-link vectors (wire-format §11):
+///
+///     cargo test -p relay-core --test gen_vectors generate_setup_link -- --ignored
+#[test]
+#[ignore]
+fn generate_setup_link() {
+    use relay_core::setup_link::SetupLinkDraft;
+    // rPGP signs at the real time, so these vectors are anchored at generation time.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let k = relay_core::PgpSecretKey::generate("setup link vectors <links@test.invalid>").unwrap();
+    let signer = k.public_armored().unwrap();
+    let fpr = relay_core::ManifestSigner::from_bytes(signer.as_bytes())
+        .unwrap()
+        .fingerprint();
+    let d = SetupLinkDraft {
+        relay: "https://10.0.0.170:8443".into(),
+        ca: Some(relay_core::setup_link::spki_pin(b"example CA SPKI")),
+        signer: fpr,
+        device: "brian-iphone".into(),
+        iat: now - 60,
+        exp: now + 840,
+    };
+    let bytes = d.signed_bytes().unwrap();
+    let good = d
+        .with_signature(&k.sign_detached_binary(bytes.as_bytes()).unwrap())
+        .unwrap();
+    let id = relay_core::setup_link::parse(&good).unwrap().id();
+    let v = |name: &str, desc: &str, link: &str, now: u64, expect: &str| {
+        write(
+            "setup-link",
+            name,
+            json!({"description": desc, "link": link, "signer": signer, "now": now, "skew": SKEW, "expect": expect, "id": id}),
+        );
+    };
+    v(
+        "valid",
+        "a link inside its window, signed by the signer",
+        &good,
+        now,
+        "ok",
+    );
+    v(
+        "expired",
+        "the same link after exp + skew",
+        &good,
+        d.exp + SKEW + 1,
+        "SetupLinkExpired",
+    );
+    v(
+        "altered",
+        "device changed after signing",
+        &good.replacen("brian-iphone", "brian-ipad", 1),
+        now,
+        "SetupLinkSignatureInvalid",
+    );
+    v(
+        "percent-encoded",
+        "a URL rewritten with percent-encoding",
+        &good.replacen("10.0.0.170", "10%2E0.0.170", 1),
+        now,
+        "SetupLinkInvalid",
+    );
+}
+
 fn attestation_vectors(fx: &Fx) {
     let a = |name: &str, desc: &str, bytes: &[u8], now: u64, expect: &str| {
         write(

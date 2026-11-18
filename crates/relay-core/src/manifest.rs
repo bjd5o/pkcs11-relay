@@ -74,8 +74,13 @@ impl ManifestSigner {
         Ok(ManifestSigner { key })
     }
 
+    /// The parsed key, for [`crate::signer::signer_status`].
+    pub fn key(&self) -> &SignedPublicKey {
+        &self.key
+    }
+
     /// Verify a detached signature over `data` (wire-format §9.1 rules).
-    fn verify(&self, data: &[u8], signature: &[u8], now: u64, skew: u64) -> Result<()> {
+    pub(crate) fn verify(&self, data: &[u8], signature: &[u8], now: u64, skew: u64) -> Result<()> {
         let bad = |m: &str| Error::ManifestSignatureInvalid(m.to_string());
         let sigs: Vec<DetachedSignature> =
             DetachedSignature::from_reader_many(Cursor::new(signature))
@@ -596,6 +601,20 @@ impl PgpSecretKey {
         SignedPublicKey::from(self.0.clone())
             .to_armored_string(Default::default())
             .map_err(|e| Error::Crypto(e.to_string()))
+    }
+
+    /// A binary detached signature packet over the exact bytes of `data` (setup links).
+    pub fn sign_detached_binary(&self, data: &[u8]) -> Result<Vec<u8>> {
+        use pgp::ser::Serialize;
+        let sig = DetachedSignature::sign_binary_data(
+            rand_core_06::OsRng,
+            &self.0.primary_key,
+            &pgp::types::Password::empty(),
+            HashAlgorithm::Sha256,
+            data,
+        )
+        .map_err(|e| Error::Crypto(format!("OpenPGP signing: {e}")))?;
+        sig.to_bytes().map_err(|e| Error::Crypto(e.to_string()))
     }
 
     /// An armored detached signature over the exact bytes of `data`.

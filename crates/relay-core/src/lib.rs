@@ -20,6 +20,8 @@ pub mod relay_auth;
 pub mod request;
 pub mod response;
 pub mod seal;
+pub mod setup_link;
+pub mod signer;
 pub mod signing;
 pub mod symmetric;
 
