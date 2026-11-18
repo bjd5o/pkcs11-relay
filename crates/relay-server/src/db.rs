@@ -50,6 +50,20 @@ const SCHEMA: &[&str] = &[
         request BLOB,
         response BLOB)",
     "CREATE INDEX IF NOT EXISTS audit_ts ON audit (ts)",
+    // Setup links already used to admit a device (wire-format §11.3), by SHA-256 of their
+    // signed bytes. Kept when the device is revoked.
+    "CREATE TABLE IF NOT EXISTS used_setup_links (
+        link_id TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        exp INTEGER NOT NULL,
+        used_at INTEGER NOT NULL)",
+    // Revocations of the manifest signer the relay has seen (wire-format §11.4). Permanent for
+    // that key.
+    "CREATE TABLE IF NOT EXISTS signer_revocations (
+        fingerprint TEXT PRIMARY KEY,
+        revoked_at INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        seen_at INTEGER NOT NULL)",
 ];
 
 pub async fn open(data_dir: &Path) -> Result<Db, String> {
@@ -132,6 +146,8 @@ pub struct DeviceRecord {
     pub push: PushTarget,
     pub last_seen: i64,
     pub created_at: i64,
+    /// SHA-256 of the signed bytes of the setup link that admitted this device, if any.
+    pub setup_link_id: Option<String>,
 }
 
 impl DeviceRecord {
@@ -164,6 +180,7 @@ fn device_from_row(r: &sqlx::sqlite::SqliteRow) -> DeviceRecord {
         push: serde_json::from_str(r.get::<&str, _>("push")).unwrap_or_default(),
         last_seen: r.get("last_seen"),
         created_at: r.get("created_at"),
+        setup_link_id: r.get("setup_link_id"),
     }
 }
 
@@ -261,6 +278,105 @@ pub async fn upsert_device(db: &Db, d: &DeviceRecord) -> R<()> {
     .bind(serde_json::to_string(&d.push).expect("json"))
     .bind(d.last_seen)
     .bind(d.created_at)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Why a first registration was refused.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AdmitError {
+    /// The setup link was used before.
+    LinkUsed,
+    /// Another registration took the device id first.
+    DeviceIdTaken,
+}
+
+/// Admit a new device with the setup link that names it: record the link as used and insert
+/// the device, in one transaction (wire-format §11.3).
+pub async fn admit_device(db: &Db, d: &DeviceRecord, link_exp: u64) -> R<Result<(), AdmitError>> {
+    let link_id = d.setup_link_id.as_deref().unwrap_or_default();
+    let mut tx = db.begin().await?;
+    let used: Option<(String,)> =
+        sqlx::query_as("SELECT link_id FROM used_setup_links WHERE link_id = ?")
+            .bind(link_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if used.is_some() {
+        return Ok(Err(AdmitError::LinkUsed));
+    }
+    let taken: Option<(String,)> =
+        sqlx::query_as("SELECT device_id FROM devices WHERE device_id = ?")
+            .bind(&d.device_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if taken.is_some() {
+        return Ok(Err(AdmitError::DeviceIdTaken));
+    }
+    sqlx::query(
+        "INSERT INTO used_setup_links (link_id, device_id, exp, used_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(link_id)
+    .bind(&d.device_id)
+    .bind(link_exp as i64)
+    .bind(d.created_at)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO devices (device_id, device_key, fingerprint, auth_key, auth_fingerprint, attestation, keys, push, last_seen, created_at, setup_link_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&d.device_id)
+    .bind(&d.device_key)
+    .bind(&d.fingerprint)
+    .bind(&d.auth_key)
+    .bind(&d.auth_fingerprint)
+    .bind(&d.attestation)
+    .bind(serde_json::to_string(&d.keys).expect("json"))
+    .bind(serde_json::to_string(&d.push).expect("json"))
+    .bind(d.last_seen)
+    .bind(d.created_at)
+    .bind(&d.setup_link_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Ok(()))
+}
+
+/// Forget used setup links that expired before `before`: the time check rejects them anyway.
+pub async fn prune_setup_links(db: &Db, before: u64) -> R<u64> {
+    Ok(sqlx::query("DELETE FROM used_setup_links WHERE exp < ?")
+        .bind(before as i64)
+        .execute(db)
+        .await?
+        .rows_affected())
+}
+
+/// A revocation of the manifest signer seen earlier: `(revoked_at, reason)`.
+pub async fn signer_revocation(db: &Db, fingerprint: &str) -> R<Option<(u64, String)>> {
+    let r: Option<(i64, String)> =
+        sqlx::query_as("SELECT revoked_at, reason FROM signer_revocations WHERE fingerprint = ?")
+            .bind(fingerprint)
+            .fetch_optional(db)
+            .await?;
+    Ok(r.map(|(at, reason)| (at as u64, reason)))
+}
+
+pub async fn record_signer_revocation(
+    db: &Db,
+    fingerprint: &str,
+    revoked_at: u64,
+    reason: &str,
+    now: u64,
+) -> R<()> {
+    sqlx::query(
+        "INSERT INTO signer_revocations (fingerprint, revoked_at, reason, seen_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(fingerprint) DO NOTHING",
+    )
+    .bind(fingerprint)
+    .bind(revoked_at as i64)
+    .bind(reason)
+    .bind(now as i64)
     .execute(db)
     .await?;
     Ok(())
@@ -392,7 +508,11 @@ async fn migrate(db: &Db) -> R<()> {
         .iter()
         .map(|r| r.get::<String, _>("name"))
         .collect();
-    for (col, ty) in [("auth_key", "BLOB"), ("auth_fingerprint", "TEXT")] {
+    for (col, ty) in [
+        ("auth_key", "BLOB"),
+        ("auth_fingerprint", "TEXT"),
+        ("setup_link_id", "TEXT"),
+    ] {
         if !cols.iter().any(|c| c == col) {
             sqlx::query(&format!("ALTER TABLE devices ADD COLUMN {col} {ty}"))
                 .execute(db)

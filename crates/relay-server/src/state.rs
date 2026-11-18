@@ -157,6 +157,7 @@ pub struct AppState {
     pub notifier: Arc<dyn Notifier>,
     pub metrics: Metrics,
     pub manifest_check: crate::trust::ManifestCheck,
+    pub signer_watch: crate::signer_watch::SignerWatch,
 }
 
 impl AppState {

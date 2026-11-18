@@ -42,6 +42,29 @@ pub struct Config {
     pub manifest_signer: Option<PathBuf>,
     /// Hardware attestation policy for that check, as in the provider.
     pub hardware_attestation: relay_core::hw_attestation::PolicyConfig,
+    /// The CA certificate (PEM) that issued `tls_cert`, served at `/v1/relay-ca.pem` for app
+    /// setup.
+    pub tls_ca: Option<PathBuf>,
+    /// Watching the manifest signer key for revocation and expiry (wire-format §11.4).
+    pub signer_check: SignerCheckConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SignerCheckConfig {
+    /// `https://keys.openpgp.org`; empty turns the online check off (the file is still
+    /// checked).
+    pub keyserver: String,
+    pub interval_secs: u64,
+}
+
+impl Default for SignerCheckConfig {
+    fn default() -> Self {
+        SignerCheckConfig {
+            keyserver: "https://keys.openpgp.org".into(),
+            interval_secs: 900,
+        }
+    }
 }
 
 impl Config {
@@ -101,6 +124,8 @@ impl Default for Config {
             manifest_signature_file: None,
             manifest_signer: None,
             hardware_attestation: Default::default(),
+            tls_ca: None,
+            signer_check: Default::default(),
         }
     }
 }

@@ -35,6 +35,12 @@ async fn gate_in_process() {
         data_dir: dir.join("relay"),
         manifest_file: Some(dir.join("manifest.json")),
         manifest_signer: Some(dir.join("signer.asc")),
+        tls_ca: Some(dir.join("relay-ca.pem")),
+        // No keyserver in tests.
+        signer_check: relay_server::config::SignerCheckConfig {
+            keyserver: String::new(),
+            ..Default::default()
+        },
         hardware_attestation: relay_core::hw_attestation::PolicyConfig {
             roots_file: Some(dir.join("attestation-root.pem")),
         },

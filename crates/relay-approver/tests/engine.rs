@@ -324,7 +324,7 @@ fn registration_lists_operable_keys_without_the_attest_key() {
     let f = fixture(86_400);
     let r = f
         .engine
-        .registration(serde_json::Value::Null, None)
+        .registration(serde_json::Value::Null, None, None)
         .unwrap();
     assert_eq!(r["device_id"], "phone");
     assert_eq!(r["keys"].as_array().unwrap().len(), 1);
@@ -343,7 +343,7 @@ fn registration_lists_operable_keys_without_the_attest_key() {
     .unwrap();
     let r = f
         .engine
-        .registration(serde_json::Value::Null, Some(&b))
+        .registration(serde_json::Value::Null, Some(&b), None)
         .unwrap();
     let b64 = base64::engine::general_purpose::STANDARD;
     assert_eq!(r["auth_key"], b64.encode(auth.spki()));

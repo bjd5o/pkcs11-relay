@@ -90,6 +90,12 @@ fn the_app_surface_end_to_end() {
         data_dir: dir.join("relay"),
         manifest_file: Some(dir.join("manifest.json")),
         manifest_signer: Some(dir.join("signer.asc")),
+        tls_ca: Some(dir.join("relay-ca.pem")),
+        // No keyserver in tests.
+        signer_check: relay_server::config::SignerCheckConfig {
+            keyserver: String::new(),
+            ..Default::default()
+        },
         hardware_attestation: relay_core::hw_attestation::PolicyConfig {
             roots_file: Some(dir.join("attestation-root.pem")),
         },
@@ -109,6 +115,9 @@ fn the_app_surface_end_to_end() {
         skew_secs: 60,
         attestation_roots_pem: Some(
             std::fs::read_to_string(dir.join("attestation-root.pem")).unwrap(),
+        ),
+        setup_link: Some(
+            relay_test_approver::fixtures::setup_link(&dir, &url, "brian-iphone", now()).unwrap(),
         ),
     };
     let device: Arc<dyn DeviceKey> = Arc::new(EnclaveKey(SoftwareKey::generate_p256()));

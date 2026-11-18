@@ -40,6 +40,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/keys", get(list_keys))
         .route("/v1/manifest", get(manifest))
         .route("/v1/manifest.asc", get(manifest_signature))
+        .route("/v1/manifest-signer.asc", get(manifest_signer))
+        .route("/v1/relay-ca.pem", get(relay_ca))
         .route("/v1/requests", post(submit_request))
         .route("/v1/requests/{id}/result", get(get_result))
         .route("/v1/requests/{id}/response", post(post_response))
@@ -88,6 +90,38 @@ async fn manifest_signature(State(st): S) -> Result<Response, ApiError> {
         .as_ref()
         .map(|_| st.cfg.manifest_signature_path());
     serve_file(sig.as_deref(), "application/pgp-signature")
+}
+
+/// The manifest signer's public key, for app setup (it checks the fingerprint the setup link
+/// pins).
+async fn manifest_signer(State(st): S) -> Result<Response, ApiError> {
+    let bytes = st.signer_watch.file_bytes().ok_or_else(|| {
+        err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no manifest signer configured",
+        )
+    })?;
+    Ok(([(header::CONTENT_TYPE, "application/pgp-keys")], bytes).into_response())
+}
+
+/// The CA that issued the relay's certificate, for app setup (it checks the SPKI hash the
+/// setup link pins).
+async fn relay_ca(State(st): S) -> Result<Response, ApiError> {
+    serve_file(st.cfg.tls_ca.as_deref(), "application/x-pem-file")
+}
+
+// ---------- signer gate ----------
+
+/// 503 `ManifestSignerUnusable` while the manifest signer is revoked or expired.
+fn signer_gate(st: &AppState) -> Result<(), ApiError> {
+    st.signer_watch.check().map_err(|reason| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ManifestSignerUnusable",
+            reason,
+        )
+    })
 }
 
 // ---------- errors ----------
@@ -370,7 +404,8 @@ async fn metrics(State(st): S) -> impl IntoResponse {
     };
     (
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-        st.metrics.render(depth, pairings),
+        st.metrics
+            .render(depth, pairings, st.signer_watch.check().is_ok()),
     )
 }
 
@@ -382,9 +417,14 @@ async fn list_keys(
     uri: OriginalUri,
 ) -> ApiResult<Json<serde_json::Value>> {
     let c = authenticate_client(&st, &h, &m, &uri, b"").await?;
+    if st.signer_watch.check().is_err() {
+        return Ok(Json(json!({"keys": []})));
+    }
     let devices = db::list_devices(&st.db).await.map_err(internal)?;
     let t = now();
-    let view = st.manifest_check.view(&st.cfg, t);
+    let view = st
+        .manifest_check
+        .view(&st.cfg, t, st.signer_watch.signer().as_ref());
     let mut keys: Vec<serde_json::Value> = Vec::new();
     for fp in &c.approved_keys {
         let holders: Vec<&DeviceRecord> = devices.iter().filter(|d| view.counts(d, fp)).collect();
@@ -411,6 +451,7 @@ async fn submit_request(
     body: Bytes,
 ) -> ApiResult<Response> {
     let c = authenticate_client(&st, &h, &m, &uri, &body).await?;
+    signer_gate(&st)?;
     if !st.lock().allow(
         &format!("client-requests:{}", c.client_id),
         st.cfg.client_requests_per_minute,
@@ -468,7 +509,9 @@ async fn submit_request(
         ));
     }
     let fp = f.key_fingerprint.to_string();
-    let view = st.manifest_check.view(&st.cfg, t);
+    let view = st
+        .manifest_check
+        .view(&st.cfg, t, st.signer_watch.signer().as_ref());
     let devices: Vec<DeviceRecord> = db::list_devices(&st.db)
         .await
         .map_err(internal)?
@@ -546,6 +589,7 @@ async fn get_result(
     let id = parse_req_id(&id)?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs(&st, &q));
     loop {
+        signer_gate(&st)?;
         let mut rx = {
             let mut inner = st.lock();
             let Some(p) = inner
@@ -590,6 +634,7 @@ async fn post_response(
     uri: OriginalUri,
     body: Bytes,
 ) -> ApiResult<Response> {
+    signer_gate(&st)?;
     let a = parse_auth(&h)?;
     let d = db::device_by_auth_fingerprint(&st.db, a.key.as_str())
         .await
@@ -716,6 +761,7 @@ async fn pending_client(
     uri: OriginalUri,
     body: Bytes,
 ) -> ApiResult<Response> {
+    signer_gate(&st)?;
     let allowed = st
         .cfg
         .pairing_allowed_cidrs
@@ -815,6 +861,7 @@ async fn client_self(
     m: Method,
     uri: OriginalUri,
 ) -> ApiResult<Json<serde_json::Value>> {
+    signer_gate(&st)?;
     let a = parse_auth(&h)?;
     if let Some(c) = db::client_by_fingerprint(&st.db, a.key.as_str())
         .await
@@ -864,6 +911,7 @@ async fn approve_client(
     uri: OriginalUri,
     body: Bytes,
 ) -> ApiResult<Response> {
+    signer_gate(&st)?;
     let a = parse_auth(&h)?;
     let d = db::device_by_auth_fingerprint(&st.db, a.key.as_str())
         .await
@@ -954,6 +1002,10 @@ struct DeviceBody {
     keys: Vec<DeviceKeyBody>,
     #[serde(default)]
     push: PushTarget,
+    /// The signed setup link the app was set up from; required for a device id the relay
+    /// does not hold (wire-format §11.3).
+    #[serde(default)]
+    setup_link: Option<String>,
 }
 
 /// `POST /v1/devices`: register or update a device. The call is signed by the device key in
@@ -965,6 +1017,7 @@ async fn register_device(
     uri: OriginalUri,
     body: Bytes,
 ) -> ApiResult<Response> {
+    signer_gate(&st)?;
     let b: DeviceBody = serde_json::from_slice(&body)
         .map_err(|e| err(StatusCode::BAD_REQUEST, "BadJson", e.to_string()))?;
     relay_core::check_id(&b.device_id)?;
@@ -1011,7 +1064,10 @@ async fn register_device(
     }
     // With a valid manifest, the attestation must be signed by one of its attest keys. Its
     // window is the clients' check: an expired device re-registers when it renews.
-    if let crate::trust::View::Valid(mf) = st.manifest_check.view(&st.cfg, now()) {
+    if let crate::trust::View::Valid(mf) =
+        st.manifest_check
+            .view(&st.cfg, now(), st.signer_watch.signer().as_ref())
+    {
         if let Err(e) = relay_core::attestation::verify_attestation_signer(&attestation, &mf) {
             return Err(err(
                 StatusCode::BAD_REQUEST,
@@ -1064,6 +1120,31 @@ async fn register_device(
         }
         _ => {}
     }
+    // A device id the relay does not hold, including a revoked one, is admitted only with the
+    // setup link that names it (wire-format §11.3).
+    let admit = match (&existing, st.signer_watch.signer()) {
+        (None, Some(signer)) => {
+            let link = b.setup_link.as_deref().ok_or_else(|| {
+                err(
+                    StatusCode::BAD_REQUEST,
+                    "SetupLinkRequired",
+                    "a new device registers with the setup link it was set up from",
+                )
+            })?;
+            let l =
+                relay_core::setup_link::verify_setup_link(link, &signer, now(), st.cfg.skew_secs)
+                    .map_err(|e| err(StatusCode::BAD_REQUEST, e.kind(), e.to_string()))?;
+            if l.device != b.device_id {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "SetupLinkWrongDevice",
+                    format!("the setup link is for device {}", l.device),
+                ));
+            }
+            Some((l.id(), l.exp))
+        }
+        _ => None,
+    };
     let t = now() as i64;
     let rec = DeviceRecord {
         device_id: b.device_id.clone(),
@@ -1075,16 +1156,45 @@ async fn register_device(
         keys,
         push: b.push,
         last_seen: t,
-        created_at: existing.map(|e| e.created_at).unwrap_or(t),
+        created_at: existing.as_ref().map(|e| e.created_at).unwrap_or(t),
+        setup_link_id: admit
+            .as_ref()
+            .map(|(id, _)| id.clone())
+            .or_else(|| existing.as_ref().and_then(|e| e.setup_link_id.clone())),
     };
-    db::upsert_device(&st.db, &rec).await.map_err(internal)?;
+    match &admit {
+        Some((_, exp)) => match db::admit_device(&st.db, &rec, *exp)
+            .await
+            .map_err(internal)?
+        {
+            Ok(()) => {}
+            Err(db::AdmitError::LinkUsed) => {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "SetupLinkUsed",
+                    "this setup link was already used; make a new one with relayctl app-link",
+                ))
+            }
+            Err(db::AdmitError::DeviceIdTaken) => {
+                return Err(err(
+                    StatusCode::CONFLICT,
+                    "DeviceIdTaken",
+                    "device id is bound to a different key; revoke it first",
+                ))
+            }
+        },
+        None => db::upsert_device(&st.db, &rec).await.map_err(internal)?,
+    }
     audit(
         &st,
         AuditEvent {
             ts: t,
             event: "device_registered".into(),
             device_id: Some(rec.device_id.clone()),
-            detail: Some(format!("{} keys", rec.keys.len())),
+            detail: Some(match &admit {
+                Some((id, _)) => format!("{} keys; admitted by setup link {id}", rec.keys.len()),
+                None => format!("{} keys", rec.keys.len()),
+            }),
             ..Default::default()
         },
     )
@@ -1127,6 +1237,11 @@ async fn device_pending(
     let d = authenticate_device(&st, &h, &m, &uri, b"", &id).await?;
     let mut rx = st.lock().device_channel(&d.device_id);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs(&st, &q));
+    if st.signer_watch.check().is_err() {
+        // Nothing to hand out; wait out the poll so devices don't spin.
+        tokio::time::sleep_until(deadline).await;
+        return Ok(Json(json!({"requests": [], "pairings": []})));
+    }
     loop {
         rx.borrow_and_update();
         let v = pending_for_device(&st, &d);

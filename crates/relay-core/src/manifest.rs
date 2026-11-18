@@ -603,6 +603,38 @@ impl PgpSecretKey {
             .map_err(|e| Error::Crypto(e.to_string()))
     }
 
+    /// The public key with a key-revocation signature added: what keys.openpgp.org serves after
+    /// the owner revokes. Tests only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn revoked_public_armored(&self, reason: &str) -> Result<String> {
+        use pgp::packet::{RevocationCode, SignatureConfig, Subpacket, SubpacketData};
+        use pgp::types::{KeyDetails, Timestamp};
+        let e = |e: pgp::errors::Error| Error::Crypto(e.to_string());
+        let key = &self.0.primary_key;
+        let mut cfg =
+            SignatureConfig::from_key(rand_core_06::OsRng, key, SignatureType::KeyRevocation)
+                .map_err(e)?;
+        cfg.hashed_subpackets = vec![
+            Subpacket::regular(SubpacketData::IssuerFingerprint(key.fingerprint())).map_err(e)?,
+            Subpacket::regular(SubpacketData::SignatureCreationTime(Timestamp::now()))
+                .map_err(e)?,
+            Subpacket::regular(SubpacketData::RevocationReason(
+                RevocationCode::KeyCompromised,
+                reason.as_bytes().to_vec().into(),
+            ))
+            .map_err(e)?,
+        ];
+        let public = self.0.to_public_key();
+        let sig = cfg
+            .sign_key(key, &pgp::types::Password::empty(), &public.primary_key)
+            .map_err(e)?;
+        let mut revoked = public;
+        revoked.details.revocation_signatures.push(sig);
+        revoked
+            .to_armored_string(Default::default())
+            .map_err(|e| Error::Crypto(e.to_string()))
+    }
+
     /// A binary detached signature packet over the exact bytes of `data` (setup links).
     pub fn sign_detached_binary(&self, data: &[u8]) -> Result<Vec<u8>> {
         use pgp::ser::Serialize;

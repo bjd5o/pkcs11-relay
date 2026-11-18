@@ -25,11 +25,12 @@ pub enum View {
 struct Cached {
     bytes: Vec<u8>,
     sig: Vec<u8>,
+    signer: String,
     result: Result<Manifest, String>,
 }
 
+/// Verifies the manifest with the key the relay's signer watch currently holds.
 pub struct ManifestCheck {
-    signer: Option<ManifestSigner>,
     policy: HardwarePolicy,
     cached: Mutex<Option<Cached>>,
     /// The last problem logged, so a persistent one is logged once, not per request.
@@ -38,28 +39,12 @@ pub struct ManifestCheck {
 
 impl std::fmt::Debug for ManifestCheck {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ManifestCheck")
-            .field("configured", &self.signer.is_some())
-            .finish_non_exhaustive()
+        f.debug_struct("ManifestCheck").finish_non_exhaustive()
     }
 }
 
 impl ManifestCheck {
     pub fn new(cfg: &Config) -> Result<Self, String> {
-        let signer =
-            match (&cfg.manifest_file, &cfg.manifest_signer) {
-                (None, _) => None,
-                (Some(_), None) => return Err(
-                    "manifest_file needs manifest_signer: the relay checks the manifest it serves"
-                        .into(),
-                ),
-                (Some(_), Some(p)) => Some(
-                    ManifestSigner::from_bytes(
-                        &std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?,
-                    )
-                    .map_err(|e| format!("manifest_signer: {e}"))?,
-                ),
-            };
         let policy = cfg
             .hardware_attestation
             .policy()
@@ -68,7 +53,6 @@ impl ManifestCheck {
             tracing::warn!("{w}");
         }
         Ok(ManifestCheck {
-            signer,
             policy,
             cached: Mutex::new(None),
             last_logged: Mutex::new(None),
@@ -76,8 +60,8 @@ impl ManifestCheck {
     }
 
     /// Re-read the manifest files and verify them if they changed; then check freshness.
-    pub fn view(&self, cfg: &Config, now: u64) -> View {
-        let (Some(path), Some(signer)) = (&cfg.manifest_file, &self.signer) else {
+    pub fn view(&self, cfg: &Config, now: u64, signer: Option<&ManifestSigner>) -> View {
+        let (Some(path), Some(signer)) = (&cfg.manifest_file, signer) else {
             return View::Unconfigured;
         };
         let read =
@@ -87,7 +71,8 @@ impl ManifestCheck {
             Err(e) => View::Invalid(format!("manifest unreadable: {e}")),
             Ok((bytes, sig)) => {
                 let mut cached = self.cached.lock().unwrap_or_else(|e| e.into_inner());
-                let fresh = !matches!(&*cached, Some(c) if c.bytes == bytes && c.sig == sig);
+                let fpr = signer.fingerprint();
+                let fresh = !matches!(&*cached, Some(c) if c.bytes == bytes && c.sig == sig && c.signer == fpr);
                 if fresh {
                     let result = relay_core::verify_manifest(
                         &bytes,
@@ -106,7 +91,12 @@ impl ManifestCheck {
                             "manifest verified"
                         );
                     }
-                    *cached = Some(Cached { bytes, sig, result });
+                    *cached = Some(Cached {
+                        bytes,
+                        sig,
+                        signer: fpr,
+                        result,
+                    });
                 }
                 match &cached.as_ref().expect("cached").result {
                     Err(e) => View::Invalid(e.clone()),
@@ -211,6 +201,10 @@ mod tests {
             }
         }
 
+        fn signer(&self) -> ManifestSigner {
+            ManifestSigner::from_bytes(self.pgp.public_armored().unwrap().as_bytes()).unwrap()
+        }
+
         fn cfg(&self) -> Config {
             Config {
                 manifest_file: Some(self.dir.join("manifest.json")),
@@ -290,6 +284,7 @@ mod tests {
                 push: PushTarget::None,
                 last_seen: 0,
                 created_at: 0,
+                setup_link_id: None,
             }
         }
     }
@@ -305,12 +300,12 @@ mod tests {
             manifest_file: Some("/nonexistent/manifest.json".into()),
             ..Default::default()
         };
-        assert!(ManifestCheck::new(&cfg)
+        assert!(crate::signer_watch::SignerWatch::new(&cfg)
             .err()
             .is_some_and(|e| e.contains("manifest_signer")));
         let unconfigured = ManifestCheck::new(&Config::default()).unwrap();
         assert!(matches!(
-            unconfigured.view(&Config::default(), now()),
+            unconfigured.view(&Config::default(), now(), None),
             View::Unconfigured
         ));
     }
@@ -321,7 +316,7 @@ mod tests {
         fx.publish(true, now() + 86_400);
         let cfg = fx.cfg();
         let check = ManifestCheck::new(&cfg).unwrap();
-        let view = check.view(&cfg, now());
+        let view = check.view(&cfg, now(), Some(&fx.signer()));
         assert!(matches!(view, View::Valid(_)), "{view:?}");
         let t = now();
         let current = (t - 10, t + 3600);
@@ -365,10 +360,12 @@ mod tests {
         let sign_fp = fx.sign.fingerprint().to_string();
 
         // Missing file.
-        assert!(matches!(check.view(&cfg, t), View::Invalid(e) if e.contains("unreadable")));
+        assert!(
+            matches!(check.view(&cfg, t, Some(&fx.signer())), View::Invalid(e) if e.contains("unreadable"))
+        );
         // No hardware attestation while it is required.
         fx.publish(false, t + 86_400);
-        let v = check.view(&cfg, t);
+        let v = check.view(&cfg, t, Some(&fx.signer()));
         assert!(
             matches!(&v, View::Invalid(e) if e.contains("HardwareAttestationInvalid")),
             "{v:?}"
@@ -376,21 +373,21 @@ mod tests {
         assert!(!v.counts(&device, &sign_fp));
         // Expired.
         fx.publish(true, t + 30);
-        let v = check.view(&cfg, t + 3600);
+        let v = check.view(&cfg, t + 3600, Some(&fx.signer()));
         assert!(
             matches!(&v, View::Invalid(e) if e.contains("ManifestExpired")),
             "{v:?}"
         );
         // Bad signature.
         std::fs::write(fx.dir.join("manifest.json"), b"{}").unwrap();
-        let v = check.view(&cfg, t);
+        let v = check.view(&cfg, t, Some(&fx.signer()));
         assert!(
             matches!(&v, View::Invalid(e) if e.contains("ManifestSignatureInvalid")),
             "{v:?}"
         );
         // Fixed: valid again.
         fx.publish(true, t + 86_400);
-        let v = check.view(&cfg, t);
+        let v = check.view(&cfg, t, Some(&fx.signer()));
         assert!(v.counts(&device, &sign_fp), "{v:?}");
     }
 }

@@ -10,6 +10,7 @@ pub mod config;
 pub mod db;
 pub mod metrics;
 pub mod notify;
+pub mod signer_watch;
 pub mod state;
 pub mod trust;
 
@@ -24,7 +25,9 @@ use state::{now, AppState};
 pub async fn build_state(cfg: Config) -> Result<Arc<AppState>, String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let manifest_check = trust::ManifestCheck::new(&cfg)?;
+    let signer_watch = signer_watch::SignerWatch::new(&cfg)?;
     let db = db::open(&cfg.data_dir).await?;
+    signer_watch.recompute(&db, now()).await;
     let notifier: Arc<dyn notify::Notifier> = match &cfg.notify {
         NotifyConfig::Log => Arc::new(notify::LogNotifier),
         NotifyConfig::Ntfy { url, token_file } => {
@@ -47,7 +50,64 @@ pub async fn build_state(cfg: Config) -> Result<Arc<AppState>, String> {
         notifier,
         metrics: Default::default(),
         manifest_check,
+        signer_watch,
     }))
+}
+
+/// Watch the manifest signer: the file every minute, the keyserver every interval. When the
+/// key becomes unusable, cancel every pending request.
+pub fn spawn_signer_watch(st: Arc<AppState>) {
+    if st.signer_watch.status() == signer_watch::Status::Unconfigured {
+        return;
+    }
+    tokio::spawn(async move {
+        let client = match signer_watch::http_client() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "no HTTP client for the keyserver check");
+                return;
+            }
+        };
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        let mut next_lookup = tokio::time::Instant::now();
+        loop {
+            tick.tick().await;
+            st.signer_watch.reload_file();
+            if tokio::time::Instant::now() >= next_lookup {
+                next_lookup = tokio::time::Instant::now() + st.signer_watch.interval();
+                match st.signer_watch.fetch_keyserver(&client).await {
+                    signer_watch::Lookup::Found | signer_watch::Lookup::Disabled => {}
+                    other => {
+                        metrics::Metrics::inc(&st.metrics.signer_lookup_failures);
+                        tracing::warn!(result = ?other, "keyserver check of the manifest signer did not complete; keeping the last status");
+                    }
+                }
+                if let Err(e) =
+                    db::prune_setup_links(&st.db, now().saturating_sub(st.cfg.skew_secs)).await
+                {
+                    tracing::warn!(error = %e, "pruning used setup links");
+                }
+            }
+            on_signer_change(&st, st.signer_watch.recompute(&st.db, now()).await);
+        }
+    });
+}
+
+/// Cancel pending requests when the signer becomes unusable; their clients get 503.
+pub fn on_signer_change(st: &AppState, change: Option<signer_watch::Status>) {
+    if let Some(signer_watch::Status::Unusable(_)) = change {
+        let mut inner = st.lock();
+        let n = inner.pending.len();
+        inner.pending.clear();
+        inner.pairings.clear();
+        inner.wake_all();
+        if n > 0 {
+            tracing::warn!(
+                cancelled = n,
+                "pending requests cancelled: manifest signer unusable"
+            );
+        }
+    }
 }
 
 /// Expire pending requests, seen ids and pairings once a second.
@@ -79,6 +139,7 @@ pub fn spawn_sweeper(st: Arc<AppState>) {
 /// Serve until the listener closes or the process gets SIGTERM / Ctrl-C.
 pub async fn serve_on(listener: tokio::net::TcpListener, st: Arc<AppState>) -> Result<(), String> {
     spawn_sweeper(st.clone());
+    spawn_signer_watch(st.clone());
     let app = api::router(st).into_make_service_with_connect_info::<SocketAddr>();
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
@@ -114,6 +175,7 @@ pub async fn serve_tls(
         .await
         .map_err(|e| format!("loading TLS certificate and key: {e}"))?;
     spawn_sweeper(st.clone());
+    spawn_signer_watch(st.clone());
     let app = api::router(st).into_make_service_with_connect_info::<SocketAddr>();
     let handle = axum_server::Handle::new();
     let h = handle.clone();

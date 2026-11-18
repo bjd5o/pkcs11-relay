@@ -20,7 +20,7 @@ struct SetupFile: Codable, Equatable {
             relayUrl: relay_url, relayCaPem: relay_ca_pem, manifestUrl: manifest_url,
             manifestSigner: manifest_signer, deviceId: device_id,
             attestationWindowSecs: attestation_window_secs, skewSecs: 60,
-            attestationRootsPem: attestation_roots_pem)
+            attestationRootsPem: attestation_roots_pem, setupLink: nil)
     }
 }
 

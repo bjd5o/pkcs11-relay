@@ -47,6 +47,8 @@ pub struct Config {
     pub push: serde_json::Value,
     #[serde(default)]
     pub hardware_attestation: relay_core::hw_attestation::PolicyConfig,
+    /// The signed setup link for this device id, sent with its first registration.
+    pub setup_link: Option<String>,
 }
 
 fn default_window() -> u64 {
@@ -248,7 +250,7 @@ impl Approver {
     async fn register(&self) -> Result<(), String> {
         let body = self
             .engine
-            .registration(self.cfg.push.clone(), None)
+            .registration(self.cfg.push.clone(), None, self.cfg.setup_link.as_deref())
             .map_err(|e| e.to_string())?;
         let r = self.relay.post_json("/v1/devices", &body).await?;
         if !r.status.is_success() {

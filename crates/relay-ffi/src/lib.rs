@@ -181,6 +181,9 @@ pub struct ApproverConfig {
     pub skew_secs: u64,
     /// Testing only: PEM roots that replace Yubico's attestation root.
     pub attestation_roots_pem: Option<String>,
+    /// The signed setup link the app was set up from, sent with the first registration
+    /// (wire-format §11.3).
+    pub setup_link: Option<String>,
 }
 
 /// Everything the app persists between launches (Application Support, file protection
@@ -559,9 +562,11 @@ impl Approver {
                 signature: b.clone().expect("set above"),
             }
         };
-        let body = self
-            .engine
-            .registration(serde_json::Value::Null, Some(&binding))?;
+        let body = self.engine.registration(
+            serde_json::Value::Null,
+            Some(&binding),
+            self.cfg.setup_link.as_deref(),
+        )?;
         Ok(self.relay.register(&body)?)
     }
 

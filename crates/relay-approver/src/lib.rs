@@ -528,6 +528,7 @@ impl Engine {
         &self,
         push: serde_json::Value,
         auth: Option<&AuthBinding>,
+        setup_link: Option<&str>,
     ) -> Result<serde_json::Value> {
         let b64 = base64::engine::general_purpose::STANDARD;
         let att = self.attestation().ok_or(ApproverError::NotEnrolled)?;
@@ -546,6 +547,10 @@ impl Engine {
         if let Some(a) = auth {
             body["auth_key"] = b64.encode(a.auth_key.spki()).into();
             body["auth_key_sig"] = b64.encode(&a.signature).into();
+        }
+        // Only a device id the relay doesn't hold needs it; sending it again is harmless.
+        if let Some(l) = setup_link {
+            body["setup_link"] = l.into();
         }
         Ok(body)
     }

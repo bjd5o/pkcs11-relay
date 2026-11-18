@@ -15,6 +15,7 @@ pub struct Metrics {
     pub auth_failures: AtomicU64,
     pub approval_latency_seconds_sum: AtomicU64,
     pub approval_latency_count: AtomicU64,
+    pub signer_lookup_failures: AtomicU64,
 }
 
 impl Metrics {
@@ -22,7 +23,12 @@ impl Metrics {
         c.fetch_add(1, Relaxed);
     }
 
-    pub fn render(&self, queue_depth: usize, pending_pairings: usize) -> String {
+    pub fn render(
+        &self,
+        queue_depth: usize,
+        pending_pairings: usize,
+        signer_usable: bool,
+    ) -> String {
         let mut s = String::new();
         let mut counter = |name: &str, help: &str, v: u64| {
             let _ = writeln!(
@@ -80,8 +86,14 @@ impl Metrics {
             "Number of responses timed.",
             self.approval_latency_count.load(Relaxed),
         );
+        counter(
+            "signer_lookup_failures_total",
+            "Keyserver checks of the manifest signer that did not complete.",
+            self.signer_lookup_failures.load(Relaxed),
+        );
         let _ = writeln!(s, "# HELP relay_queue_depth Pending requests.\n# TYPE relay_queue_depth gauge\nrelay_queue_depth {queue_depth}");
         let _ = writeln!(s, "# HELP relay_pending_pairings Pending client pairings.\n# TYPE relay_pending_pairings gauge\nrelay_pending_pairings {pending_pairings}");
+        let _ = writeln!(s, "# HELP relay_signer_usable Whether the manifest signer key is usable (0 while revoked or expired).\n# TYPE relay_signer_usable gauge\nrelay_signer_usable {}", u8::from(signer_usable));
         s
     }
 }

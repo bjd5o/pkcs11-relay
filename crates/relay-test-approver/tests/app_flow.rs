@@ -52,6 +52,12 @@ fn app_path_with_a_separate_auth_key() {
         data_dir: dir.join("relay"),
         manifest_file: Some(dir.join("manifest.json")),
         manifest_signer: Some(dir.join("signer.asc")),
+        tls_ca: Some(dir.join("relay-ca.pem")),
+        // No keyserver in tests.
+        signer_check: relay_server::config::SignerCheckConfig {
+            keyserver: String::new(),
+            ..Default::default()
+        },
         hardware_attestation: relay_core::hw_attestation::PolicyConfig {
             roots_file: Some(dir.join("attestation-root.pem")),
         },
@@ -67,6 +73,7 @@ fn app_path_with_a_separate_auth_key() {
     let device: Arc<dyn DeviceSigner> = Arc::new(SoftwareKey::generate_p256()); // the Secure Enclave key
     let auth: Arc<dyn DeviceSigner> = Arc::new(SoftwareKey::generate_p256()); // the relay-auth key
     let rc = RelayClient::new(&url, Some(&ca), auth.clone()).unwrap();
+    let link = relay_test_approver::fixtures::setup_link(&dir, &url, "phone", now()).unwrap();
     let policy = relay_core::hw_attestation::PolicyConfig {
         roots_file: Some(dir.join("attestation-root.pem")),
     }
@@ -114,7 +121,7 @@ fn app_path_with_a_separate_auth_key() {
     let binding = engine.bind_auth_key(&auth.public_key()).unwrap();
     rc.register(
         &engine
-            .registration(serde_json::Value::Null, Some(&binding))
+            .registration(serde_json::Value::Null, Some(&binding), Some(&link))
             .unwrap(),
     )
     .unwrap();
@@ -130,7 +137,7 @@ fn app_path_with_a_separate_auth_key() {
         .unwrap()
         .register(
             &engine
-                .registration(serde_json::Value::Null, Some(&binding))
+                .registration(serde_json::Value::Null, Some(&binding), Some(&link))
                 .unwrap(),
         );
     assert!(matches!(r, Err(ApproverError::Relay(e)) if e.contains("401") || e.contains("400")));

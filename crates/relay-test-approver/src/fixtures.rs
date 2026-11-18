@@ -145,6 +145,42 @@ fn pem_certs(ders: &[Vec<u8>]) -> Result<String, String> {
     Ok(relay_core::hw_attestation::testing::to_pem(ders))
 }
 
+/// A setup link for `device_id`, signed by the fixture manifest signer and pinning the fixture
+/// relay CA, valid for nearly the 7 days a link may last (wire-format §11).
+pub fn setup_link(
+    out: &Path,
+    relay_url: &str,
+    device_id: &str,
+    now: u64,
+) -> Result<String, String> {
+    use x509_cert::der::{DecodePem, Encode};
+    let read = |n: &str| std::fs::read(out.join(n)).map_err(|e| format!("{n}: {e}"));
+    let pgp = PgpSecretKey::from_bytes(&read("signer-secret.asc")?).map_err(|e| e.to_string())?;
+    let signer = relay_core::ManifestSigner::from_bytes(
+        pgp.public_armored().map_err(|e| e.to_string())?.as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
+    let ca = x509_cert::Certificate::from_pem(read("relay-ca.pem")?).map_err(|e| e.to_string())?;
+    let spki = ca
+        .tbs_certificate()
+        .subject_public_key_info()
+        .to_der()
+        .map_err(|e| e.to_string())?;
+    let d = relay_core::setup_link::SetupLinkDraft {
+        relay: relay_url.trim_end_matches('/').into(),
+        ca: Some(relay_core::setup_link::spki_pin(&spki)),
+        signer: signer.fingerprint(),
+        device: device_id.into(),
+        iat: now - 60,
+        exp: now + relay_core::setup_link::MAX_LIFETIME - 120,
+    };
+    let bytes = d.signed_bytes().map_err(|e| e.to_string())?;
+    let sig = pgp
+        .sign_detached_binary(bytes.as_bytes())
+        .map_err(|e| e.to_string())?;
+    d.with_signature(&sig).map_err(|e| e.to_string())
+}
+
 fn w(path: &Path, data: impl AsRef<[u8]>) -> Result<(), String> {
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
@@ -254,6 +290,13 @@ pub fn generate(
         &out.join("manifest-touch-never.json.asc"),
         pgp.sign_detached(&weak).map_err(|e| e.to_string())?,
     )?;
+    // The same signer key, revoked: the m3 gate swaps it in last to check that the relay
+    // stops serving (Failure handling: manifest signer revoked or expired, seen by the relay).
+    w(
+        &out.join("signer-revoked.asc"),
+        pgp.revoked_public_armored("fixture: integration gate")
+            .map_err(|e| e.to_string())?,
+    )?;
     w(
         &out.join("signer-secret.asc"),
         pgp.to_armored().map_err(|e| e.to_string())?.as_bytes(),
@@ -299,12 +342,13 @@ pub fn generate(
         .map(|c| format!("{c:?}"))
         .collect::<Vec<_>>()
         .join(", ");
-    w(&out.join("relay.toml"), format!("listen = \"0.0.0.0:8443\"\ntls_cert = \"{root}/relay-cert.pem\"\ntls_key = \"{root}/relay-key.pem\"\ndata_dir = \"/data\"\n# Two gates in one minute: above the default of 30 requests per minute.\nclient_requests_per_minute = 120\npairing_allowed_cidrs = [{cidrs}]\nmanifest_file = \"{root}/manifest.json\"\nmanifest_signer = \"{root}/signer.asc\"\n\n[notify]\nkind = \"log\"\n{hw}"))?;
+    w(&out.join("relay.toml"), format!("listen = \"0.0.0.0:8443\"\ntls_cert = \"{root}/relay-cert.pem\"\ntls_key = \"{root}/relay-key.pem\"\ndata_dir = \"/data\"\n# Two gates in one minute: above the default of 30 requests per minute.\nclient_requests_per_minute = 120\npairing_allowed_cidrs = [{cidrs}]\nmanifest_file = \"{root}/manifest.json\"\nmanifest_signer = \"{root}/signer.asc\"\ntls_ca = \"{root}/relay-ca.pem\"\n\n[notify]\nkind = \"log\"\n\n[signer_check]\nkeyserver = \"\"\n{hw}"))?;
     for (card, approve) in [("a", true), ("b", false), ("c", false)] {
+        let link = setup_link(out, relay_url, &format!("approver-{card}"), now)?;
         let cfg = format!(
             "relay_url = {relay_url:?}\nrelay_ca_file = \"{root}/relay-ca.pem\"\ndevice_id = \"approver-{card}\"\ndata_dir = \"{root}/state/approver-{card}\"\n\
              manifest_url = \"file://{root}/manifest.json\"\nmanifest_signer = \"{root}/signer.asc\"\n\
-             softcard_dir = \"{root}/softcard-{card}\"\npin_file = \"{root}/pin\"\nattest_slot = \"95\"\n\n\
+             softcard_dir = \"{root}/softcard-{card}\"\npin_file = \"{root}/pin\"\nattest_slot = \"95\"\nsetup_link = \"{link}\"\n\n\
              [[trusted_clients]]\nclient_id = \"{CLIENT_ID}\"\npublic_key = \"{client_pub}\"\nkeys = {approved:?}\napprove_pairing = {approve}\n{hw}"
         );
         w(&out.join(format!("approver-{card}.toml")), cfg)?;
