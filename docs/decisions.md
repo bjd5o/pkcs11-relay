@@ -205,3 +205,18 @@ Consequences:
 - wire-format §8.4 and §10 and spec updated.
 - Clients are unaffected: responses still carry the device-key signature and its attestation.
 - `relay-test-approver/tests/app_flow.rs` runs the app path against a real relay: blocking client, separate auth key, pairing and one request.
+
+## 2026-11-17: Hardware attestation of attest keys (spec updated)
+
+Context: clients trusted an `attest` key only because the PGP-signed manifest listed it. Nothing showed it was generated on a YubiKey or that touch is enforced on it. Brian plans to generate the operation keys offline, import them onto two interchangeable YubiKeys, and generate one attest key on each card. The design is in `docs/hw-attestation.md`.
+Decision (Brian approved the design):
+- **Manifest:** keys may carry `hardware_attestation`, a YubiKey PIV attestation chain. It is required on `attest` keys by default; `require = false` turns that off explicitly.
+- **Accepted chains:** only firmware 5.7.4 and later, under `Yubico Attestation Root 1`. Minimum firmware is 5.7.4.
+- **Policy:** the attest key must have touch `always` and a PIN policy other than `never`. Any bad evidence invalidates the whole manifest.
+- **Verifier:** path validation uses `rustls-webpki` (=0.103.17, already in the provider and iOS trees through rustls). `x509-cert` reads the Yubico extensions. Both live in relay-core.
+- **No serial pinning,** on clients or on the relay. Pushing serials to every client costs more than the protection against a stolen PGP key is worth. On the relay, pinning adds nothing while the relay also serves the manifest.
+- **Relay:** it verifies the manifest it serves, filters `GET /v1/keys` through it, and rejects device registrations whose attestation does not verify. If the manifest is invalid it advertises nothing and logs why. Providers still verify everything.
+
+Consequences:
+- The serial is inside the leaf certificate, so the published manifest names the card serials. Real chains are never committed; tests use a synthetic hierarchy in relay-softcard.
+- Existing fixtures and gate manifests need chains, or `require = false`.

@@ -159,6 +159,7 @@ The provider holds no private keys and no key list of its own. It builds its slo
 - **Role enforcement.** Set `CKA_SIGN` only on `sign` and `auth` keys and `CKA_DECRYPT` only on `encrypt` keys, never expose `attest` keys, and reject any operation outside a key's role before sending anything.
 - **No PIN on the client.** Report tokens without `CKF_LOGIN_REQUIRED`, so consumers skip `C_Login`; accept and discard a PIN if one is sent anyway.
 - **Build and send the request.** Generate a one-time reply key pair, sign the request with the client identity key, post it to the relay, then wait on a long-poll or WebSocket until a response or the deadline. For `sign` keys, send the full message so the approver can hash and display it; for `auth` keys, send the digest.
+- **Verify the manifest's hardware attestation.** When the manifest is loaded, every `attest` key's YubiKey attestation chain (required unless configured otherwise) must verify against Yubico's attestation root, show touch `always`, a PIN policy other than `never` and firmware 5.7.4 or later; otherwise the whole manifest is invalid.
 - **Verify the response before using it**, in this order, discarding it at the first failure:
   1. the attestation statement's signature verifies against a key the manifest lists with role `attest`;
   2. the current time is inside the statement's validity window, allowing a small clock skew;
@@ -198,6 +199,7 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 
 - **Authenticate both sides.** Clients sign every request with their identity key; approver devices authenticate with their device key, or with a separate relay-auth key that the device key vouched for once at enrollment, so a device key that needs a biometric per signature is not used for routine polling. Every HTTP call also carries a signature over its method, path, time, a random nonce and the body hash, and the relay rejects replayed nonces.
 - **Advertise keys.** Keep, per approver device, the hardware keys it registered and its current attestation, and serve the combined list to clients. Advertisements are untrusted hints: the provider filters them through the manifest.
+- **Check the manifest.** Verify the manifest it serves with the same rules as clients. Advertise only keys it lists, only from devices attested by its `attest` keys, and reject registrations whose attestation does not verify. If the manifest is invalid, advertise nothing and log why. Clients still verify everything themselves.
 - **Route by approval.** A client may only address keys it was approved for at pairing; anything else is rejected before it is queued.
 - **Queue with expiry.** Keep pending requests in memory until their `expires_at`; accept exactly one response per request id; reject duplicate ids.
 - **Ring the doorbell.** Send a content-free push ("1 pending request") to every device advertising the requested key, through APNs, FCM, ntfy or Web Push. The first response wins; the request is withdrawn from the other devices.
@@ -230,6 +232,7 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 | Push credentials | APNs `.p8` key, key id, team id; or an FCM service account; or an ntfy topic and token | Sending the doorbell |
 | Limits | max TTL 120 s, max 4 pending per client, max body 64 KiB | Bounding abuse and approval spam |
 | Manifest copy (optional) | `manifest.json` and `manifest.json.asc` | Serving the signed manifest at `/v1/manifest` |
+| Manifest signer and hardware attestation policy (with the manifest copy) | the signer's public key file; `require = true` | Checking the manifest it serves and filtering advertisements through it |
 | Storage | SQLite file for registries; pending requests in memory | Persistence |
 | Audit log | SQLite (exportable as JSON lines) | Every request's metadata and outcome; full bytes only for sign operations |
 
@@ -303,7 +306,7 @@ The hardware key holds every private key that matters, the manifest says which o
 | --- | --- | --- |
 | Key slots | `9d` encrypt, `9c` sign, `9a` auth, a retired slot (`82` to `95`) attest | One role per key |
 | Algorithm | `encrypt`: RSA 2048 or 4096 (OpenBao's seal: RSA-OAEP), P-256, P-384, X25519 (firmware 5.7+). `sign`, `auth`: RSA, P-256, P-384, Ed25519 (5.7+). `attest`: P-256 | Matching what consumers need |
-| PIN and touch policy | PIN `once` or `always`; touch `always` on the `attest` key | How much each operation demands of the human |
+| PIN and touch policy | PIN `once` or `always`; touch `always` on the `attest` key. Generate the `attest` key on the card, never import it, so the card can attest it (firmware 5.7.4+). Never write slot `F9`: it holds Yubico's factory attestation key | How much each operation demands of the human |
 | Certificate | self-signed, generated with the key | Discovery by the app |
 | Credentials | PIN, PUK and management key changed from defaults | Protecting the card itself |
 
@@ -332,6 +335,7 @@ Keys generated on the card cannot be copied, so a backup is a second YubiKey: li
 | `keys[].token` | `yubikey-12345678` | Groups keys into slots |
 | `keys[].algorithm` | `rsa-4096` | Key type, checked against `keys[].public_key` |
 | `keys[].public_key` | `MIICIjAN…` | The key's DER SubjectPublicKeyInfo (base64); `fingerprint` must match it. It is where clients get every hardware key, `attest` keys included; the relay's list only says which keys are reachable |
+| `keys[].hardware_attestation` | `{format: "yubikey-piv", chain: […]}` | Optional. The YubiKey's attestation chain (firmware 5.7.4+) for a key generated on the card: proof that it is on a genuine YubiKey, with its serial, firmware and PIN/touch policy. Required on `attest` keys unless clients are configured otherwise. The chain names the card's serial |
 
 **Signer.** Your PGP key, ideally on the YubiKey's OpenPGP applet or on an offline second YubiKey. Clients do not check PGP revocation, because headless hosts cannot be relied on to reach keyservers. Revoking a hardware key means publishing a new version without it, and `valid_until` bounds how long an old cached copy keeps working. Rotating the PGP key itself means reconfiguring every client.
 
@@ -342,6 +346,7 @@ Keys generated on the card cannot be copied, so a backup is a second YubiKey: li
 **Responsibilities**
 
 - Generate keys on the YubiKey, one role per slot, and export their public keys and fingerprints.
+- Read each `attest` key's attestation chain from the card and store it in the manifest.
 - Edit the manifest, increase its `version`, set `valid_until`, sign it with your PGP key and publish it.
 - Re-sign and republish the manifest before `valid_until`, even when nothing changed.
 - If the `attest` key lives on an offline YubiKey, sign attestation renewals that approver devices request.
@@ -393,7 +398,7 @@ Compromising the relay, the manifest host or the push service yields denial of s
 | Relay | Every request in full (by design, for the audit log); can delay, drop or flood requests; can advertise keys or devices of its own | The manifest decides which keys exist; a device without a valid attestation cannot produce an accepted response; results are sealed to the reply key |
 | Manifest host | Can withhold the manifest or serve an old one | The PGP signature; `version` blocks rollback below a client's cache; `valid_until` bounds how stale a copy can be |
 | PGP manifest key | Decides which keys clients trust, including `attest` keys | Keep it on hardware, offline if possible; rotating it means reconfiguring every client |
-| `attest` key | Can vouch for an attacker's device, whose responses clients then accept | Touch `always`; keep it on a YubiKey you hold or offline; remove it from the manifest to void every attestation it signed |
+| `attest` key | Can vouch for an attacker's device, whose responses clients then accept | Touch `always`; keep it on a YubiKey you hold or offline; remove it from the manifest to void every attestation it signed; hardware attestation in the manifest proves it was generated on a YubiKey with touch `always` |
 | Push provider | Timing of pending requests | The push carries no content |
 | Client host (root) | Can request operations as that client; reads any result returned to the consumer (for OpenBao, the unsealed root key) | Each request needs approval; per-client key approvals and rate limits. Only approve what you initiated |
 | Client identity key, copied elsewhere | Same requests as the client host, from anywhere that reaches the relay | Approval; revoke it in the relay and the app |
@@ -413,6 +418,8 @@ Every failure surfaces to the consumer as an ordinary PKCS#11 error, so existing
 | --- | --- | --- |
 | Manifest unreachable, no valid cached copy | Lists no slots | `C_GetSlotList` reports zero slots |
 | Manifest signature invalid, rolled back or expired | Keeps a valid cached copy if it has one; otherwise lists no slots | Zero slots |
+| Manifest's hardware attestation missing (when required), invalid or outside policy | Keeps a valid cached copy if it has one; otherwise lists no slots | Zero slots |
+| Relay's own manifest copy invalid | The relay advertises no keys; the provider uses its valid cached manifest and key list if it has them | Zero slots, or last known slots |
 | Relay unreachable during discovery | Uses its cached key list until that expires | Last known slots |
 | Operation outside the key's role | Rejected locally, no request sent | `CKR_KEY_FUNCTION_NOT_PERMITTED` |
 | Mechanism not allowed for the key | Rejected locally, no request sent | `CKR_MECHANISM_INVALID` |
@@ -435,7 +442,7 @@ The MVP is built around one Rust core shared by every component: the provider, r
 
 | Component | Stack | Why |
 | --- | --- | --- |
-| Shared core | Rust: `ciborium` (CBOR), `p256`, `ed25519-dalek`, `hpke`, `sha2`, `pgp` (rPGP) | One implementation of every format and check; pure Rust, so it cross-compiles to iOS and Android |
+| Shared core | Rust: `ciborium` (CBOR), `p256`, `ed25519-dalek`, `hpke`, `sha2`, `pgp` (rPGP), `rustls-webpki` and `x509-cert` (YubiKey attestation chains) | One implementation of every format and check; pure Rust, so it cross-compiles to iOS and Android |
 | PKCS#11 provider | Rust `cdylib` and `staticlib`; PKCS#11 front end forked from google/native-pkcs11; `ureq` with `rustls` | A native C ABI without writing C; blocking HTTP avoids running an async runtime inside someone else's process |
 | Relay | Rust: `axum`, `tokio`, `sqlx` (SQLite); APNs, FCM HTTP v1 and ntfy senders | Shares the core's types; one static binary makes a small image |
 | Enrollment CLI | Rust: `yubikey` crate (PIV over PC/SC); rPGP or `gpg` for signing | Same core, run on the admin workstation |

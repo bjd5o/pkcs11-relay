@@ -429,17 +429,49 @@ The signature is checked **before** any JSON parsing. Rules for it:
 | `keys[].token` | string | 1–32 bytes UTF-8 (the `CK_TOKEN_INFO.label` limit); groups keys into slots |
 | `keys[].algorithm` | string | §2; must match `public_key` and be allowed for `role` |
 | `keys[].public_key` | string | base64 DER SPKI (§2); `fingerprint` must equal `fingerprint(public_key)` |
+| `keys[].hardware_attestation` | object, optional | `{"format": "yubikey-piv", "chain": [base64 DER, …]}`: 2–4 certificates, leaf first, root excluded, each at most 2 KiB DER; any other `format` is rejected. Verified per §9.4 |
 
 Parsing is strict: unknown fields, duplicate JSON object keys, non-integer numbers, and integers outside 0–2⁶⁴−1 are all rejected.
 
-### 9.3 Freshness (`verify_manifest(bytes, signature, signer, cached, now, skew)`)
+### 9.3 Freshness (`verify_manifest(bytes, signature, signer, policy, cached, now, skew)`)
 
 1. Verify the OpenPGP signature (§9.1).
 2. Parse and validate the JSON (§9.2), including `fingerprint(public_key) == fingerprint` and `algorithm` against `public_key` for every key.
+2a. Check hardware attestation against `policy` (§9.4).
 3. Reject `now > valid_until + skew` as expired.
 4. With a cached copy, reject `version < cached.version` as a rollback, and `version == cached.version` with different bytes as an error. The same version with identical bytes is accepted, which is the normal refetch.
 
 On any failure the caller keeps a valid cached copy if it has one (Failure handling table). The cached copy is re-checked against step 3 every time it is used.
+
+### 9.4 Hardware attestation (`verify_piv_attestation(chain, public_key, roots, now)`)
+
+YubiKey PIV attestation, firmware 5.7.4 and later. The chain, leaf first, is: the attestation certificate for the slot (from `GET ATTESTATION`, INS `F9`); the card's factory `F9` certificate (data object `5FFF01`); `Yubico PIV Attestation {A,B,B2} 1`; `Yubico Attestation Intermediate {A,B} 1`. The root, `Yubico Attestation Root 1`, is built in and never travels in the manifest.
+
+1. Path validation with `rustls-webpki`:
+   - trust anchor: the built-in root;
+   - intermediates: the chain after the leaf;
+   - time: `now`, with no skew; Yubico's certificates are valid until 9999;
+   - signature algorithms: RSA PKCS#1 v1.5 (2048–8192 bits) with SHA-256/384/512, and ECDSA P-256/SHA-256 and P-384/SHA-384;
+   - extended key usage: the leaf must have none;
+   - no revocation checking.
+
+   webpki checks signatures, issuer chaining, CA flags, path length, validity and unknown critical extensions.
+2. The verified path must include an intermediate whose subject common name starts with `Yubico PIV Attestation `. This excludes the root's FIDO, OpenPGP, Secure Domain and YubiHSM branches.
+3. The leaf's SubjectPublicKeyInfo must equal the key's `public_key` byte for byte.
+4. The leaf extensions under `1.3.6.1.4.1.41482.3` must be present and well formed:
+   - `.3`: firmware, 3 bytes, at least 5.7.4;
+   - `.7`: serial, a DER INTEGER that fits a u32;
+   - `.8`: PIN policy then touch policy, 1 byte each, values 1–3.
+
+   `.9` (form factor) is read if present.
+
+Policy, applied in step 2a of §9.3:
+
+- any key's chain fails steps 1–4 → the manifest is invalid;
+- an `attest` key whose chain shows touch other than `always` (`02`), or PIN policy `never` (`01`) → invalid;
+- `require` is set (the default) and an `attest` key has no chain → invalid.
+
+A failure in a cached copy's chain (for example after a configuration change) also makes that copy unusable.
 
 ## 10. Relay API bodies
 
@@ -447,14 +479,14 @@ These are not signed messages: the relay is untrusted and every field is a hint.
 
 | Call | Caller (auth key) | Body → response |
 |---|---|---|
-| `GET /v1/keys` | paired client | → `{"keys": [{"public_key", "token", "devices", "last_seen"}]}`, only the keys this client was approved for. The provider recomputes each fingerprint, keeps only manifest keys, and ignores `token`. |
+| `GET /v1/keys` | paired client | → `{"keys": [{"public_key", "token", "devices", "last_seen"}]}`, only the keys this client was approved for. The provider recomputes each fingerprint, keeps only manifest keys, and ignores `token`. A relay configured with a manifest lists only keys that the manifest gives a non-`attest` role, held by devices whose attestation currently verifies against it, and lists none while its manifest is invalid. |
 | `POST /v1/requests` | paired client | request envelope (`application/cbor`) → `202 {"req_id"}`. Rejections: 401 `RequestSignatureInvalid` or relay auth, 403 `UnpairedClient` / `KeyNotApproved`, 409 `DuplicateRequestId`, 410 `RequestExpired`, 422 `NoDevice`, 429 `TooManyPending` / `RateLimited`. |
 | `GET /v1/requests/{id}/result?wait=N` | the submitting client | → `200` response envelope (`application/cbor`), delivered once, after which the request is deleted; `204` if nothing yet after `N` ≤ 30 s; `404` once expired. |
 | `POST /v1/requests/{id}/response` | a device addressed by the request | response envelope → `204`; 409 `AlreadyAnswered` (the first response wins); 404 if expired. |
 | `POST /v1/clients/pending` | the new client's key, which is in the body (proof of possession) | `{"client_id", "public_key", "host"}` → `202 {"status": "pending", "code"}`, or `200 {"status": "approved"}` if already paired. Allowed networks only, at most 4 pending, dropped after 10 min. |
 | `GET /v1/clients/self` | a pending or paired client | → `{"status": "pending", "client_id", "code"}` or `{"status": "approved", "client_id", "approved_keys"}`. |
 | `POST /v1/clients/{id}/approval` | any registered device | `{"fingerprint", "keys": [fingerprint]}` → `204`. `fingerprint` must be that of the pending client key whose code the person compared; `keys` (1–64) are chosen from the manifest and need not be on this device. |
-| `POST /v1/devices` | the auth key in the body, or else the device key | `{"device_id", "device_key", "attestation", "keys": [{"public_key", "token"}], "push": {"kind": "none" \| "ntfy", "topic"}, "auth_key"?, "auth_key_sig"?}` → `204`; 400 `BadAuthKey` when the binding (§8.4) does not verify. A device id stays bound to its first key until `relay-server admin devices revoke`. The relay checks only that the attestation decodes and names this device and key; clients check its signer. |
+| `POST /v1/devices` | the auth key in the body, or else the device key | `{"device_id", "device_key", "attestation", "keys": [{"public_key", "token"}], "push": {"kind": "none" \| "ntfy", "topic"}, "auth_key"?, "auth_key_sig"?}` → `204`; 400 `BadAuthKey` when the binding (§8.4) does not verify. A device id stays bound to its first key until `relay-server admin devices revoke`. The relay checks that the attestation decodes and names this device and key. When it has a valid manifest it also verifies the attestation against the manifest's `attest` keys (§5.1), and rejects a failure with 400 `AttestationInvalid`. Clients check it again either way. |
 | `GET /v1/devices/{id}/pending?wait=N` | that device | → `{"requests": [envelope], "pairings": [{"client_id", "public_key", "fingerprint", "host", "code", "received_at"}]}`. |
 | `GET /v1/devices/{id}/ws` | that device (headers on the upgrade) | WebSocket. The relay sends `{"type": "pending"}` when there may be something to fetch. |
 
