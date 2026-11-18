@@ -42,6 +42,8 @@
 	</array>
 	<key>NFCReaderUsageDescription</key>
 	<string>Talks to your YubiKey to run approved operations.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Relay Approver connects to your relay, which may run on your local network.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Confirms that you approve each request before your device signs the answer.</string>
 	<key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>

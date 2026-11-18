@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct RelayApproverApp: App {
     @StateObject private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     #elseif os(macOS)
@@ -19,6 +20,9 @@ struct RelayApproverApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: Push.opened)) { _ in
                     model.tab = .requests
                     model.refresh()
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { model.becameActive() }
                 }
         }
         #if os(macOS)

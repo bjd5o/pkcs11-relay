@@ -63,10 +63,42 @@ final class AppModel: ObservableObject {
             return
         }
         let overrides = setupOverrides
-        await run("Checking the setup link") {
-            let p = try await Self.background { try setupFromLink(link: link, overrides: overrides) }
-            self.preview = p
+        busy = "Checking the setup link"
+        defer { busy = nil; linkRetryNow = false }
+        // A relay on the local network is unreachable until the person allows Local Network
+        // access, and iOS/macOS ask only on the first attempt, while that attempt fails. So a
+        // relay error is retried for about a minute, and at once when the app becomes active
+        // again (the permission prompt closing). Retrying only repeats the fetches; every check
+        // still runs on the attempt that succeeds. Other errors (bad signature, expired link)
+        // are shown straight away.
+        var last: Error?
+        for delay in [0, 2, 3, 5, 5, 10, 10, 15, 15] {
+            if delay > 0 {
+                busy = "Can't reach the relay yet. If asked, allow Local Network access."
+                for _ in 0..<(delay * 4) where !linkRetryNow {
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+                linkRetryNow = false
+            }
+            do {
+                preview = try await Self.background { try setupFromLink(link: link, overrides: overrides) }
+                return
+            } catch let e as RelayError {
+                guard case .Relay = e else { show(e); return }
+                last = e
+            } catch {
+                show(error)
+                return
+            }
         }
+        if let last { show(last) }
+    }
+
+    /// Set when the app becomes active, so a waiting setup-link check retries now.
+    private var linkRetryNow = false
+
+    func becameActive() {
+        if preview == nil, setup == nil, busy != nil { linkRetryNow = true }
     }
 
     func cancelSetup() {
