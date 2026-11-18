@@ -118,6 +118,10 @@ pub trait CardChannel: Send + Sync {
     fn begin_session(&self) -> Result<(), PlatformError>;
     fn transmit(&self, apdu: Vec<u8>) -> Result<Vec<u8>, PlatformError>;
     fn end_session(&self);
+    /// Whether ending the session resets the card (NFC: the card loses power). When it
+    /// doesn't (USB through CryptoTokenKit), every session ends with `VERIFY` P1=`FF`, so no
+    /// PIN stays verified (decisions, 2026-11-17 and 2026-11-18).
+    fn resets_on_end(&self) -> bool;
 }
 
 struct Signer {
@@ -160,8 +164,18 @@ impl piv::CardTransport for Card {
             .begin_session()
             .map_err(|e| PivError::Transport(e.to_string()))?;
         f(self);
+        // The PIV application is still selected: whatever `f` did, it ran inside SELECT.
+        let reset = if self.0.resets_on_end() {
+            Ok(())
+        } else {
+            piv::reset_security_status(self)
+        };
         self.0.end_session();
-        Ok(())
+        reset.map_err(|e| {
+            PivError::Transport(format!(
+                "the card did not clear the PIN at the end of the session ({e}); unplug the YubiKey"
+            ))
+        })
     }
 }
 
@@ -877,6 +891,9 @@ mod test_card {
         fn end_session(&self) {
             self.0.lock().expect("lock").reset();
         }
+        fn resets_on_end(&self) -> bool {
+            true
+        }
     }
 
     /// `slots_json`: `{"pin": "123456", "slots": [{"slot": "9d", "key_pem": ..., "cert_pem": ...}]}`.
@@ -895,5 +912,49 @@ mod test_card {
             .map_err(invalid)?;
         }
         Ok(Arc::new(SoftChannel(Mutex::new(card))))
+    }
+}
+
+#[cfg(test)]
+mod card_tests {
+    use super::*;
+    use relay_core::piv::CardTransport;
+    use relay_softcard::SoftCard;
+
+    /// A USB card as CryptoTokenKit gives it: ending the session doesn't reset it.
+    struct Usb(Mutex<SoftCard>);
+
+    impl CardChannel for Usb {
+        fn begin_session(&self) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn transmit(&self, apdu: Vec<u8>) -> Result<Vec<u8>, PlatformError> {
+            self.0
+                .lock()
+                .unwrap()
+                .transmit(&apdu)
+                .map_err(|e| PlatformError::Failed {
+                    message: e.to_string(),
+                })
+        }
+        fn end_session(&self) {}
+        fn resets_on_end(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn a_session_on_a_card_that_isnt_reset_ends_with_the_pin_cleared() {
+        let usb = Arc::new(Usb(Mutex::new(SoftCard::new(b"123456"))));
+        let mut card = Card(usb.clone());
+        piv::in_session(&mut card, |c| {
+            piv::select(c)?;
+            piv::verify_pin(c, b"123456")
+        })
+        .unwrap();
+        // Outside any session: the PIN is no longer verified, and no attempt was spent.
+        let mut raw = usb.0.lock().unwrap();
+        piv::select(&mut *raw).unwrap();
+        assert_eq!(piv::pin_retries(&mut *raw).unwrap(), Some(3));
     }
 }

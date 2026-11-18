@@ -56,6 +56,9 @@ impl CardChannel for Nfc {
     fn end_session(&self) {
         self.card.lock().unwrap().reset();
     }
+    fn resets_on_end(&self) -> bool {
+        true
+    }
 }
 
 fn temp_dir() -> PathBuf {

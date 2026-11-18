@@ -140,10 +140,20 @@ final class AppModel: ObservableObject {
     // MARK: actions (biometric, then PIN, then tap)
 
     /// Enrollment, first tap (no PIN): read which manifest keys the YubiKey holds.
+    /// The card for one operation: a plugged-in USB key, or NFC with `nfc` on the tap sheet.
+    /// With USB the person may need to touch the key, so the status line says so.
+    private func card(nfc: String) async throws -> CardChannel {
+        let card = try await Self.background { try CardSource.make(message: nfc) }
+        if card is USBCard {
+            busy = "Touch your YubiKey if it blinks"
+        }
+        return card
+    }
+
     func readYubiKey() async {
         guard let a = approver else { return }
         await run("Reading the YubiKey") {
-            let card = try CardSource.make(message: "Hold your YubiKey to the iPhone to read its keys")
+            let card = try await self.card(nfc: "Hold your YubiKey to the iPhone to read its keys")
             let keys = try await Self.background { try a.discover(card: card) }
             self.discovered = keys
             self.discoveryReport = a.lastDiscovery()
@@ -158,7 +168,7 @@ final class AppModel: ObservableObject {
         await run("Enrolling") {
             key.use(try await evaluateBiometrics(reason: "Enroll this device as an approver"))
             defer { key.use(nil) }
-            let card = try CardSource.make(message: "Hold your YubiKey to the iPhone to enroll")
+            let card = try await self.card(nfc: "Hold your YubiKey to the iPhone to enroll")
             let pin = Data(pin.utf8)
             _ = try await Self.background { try a.enroll(card: card, pin: pin) }
             self.refresh()
@@ -171,7 +181,7 @@ final class AppModel: ObservableObject {
         await run("Approving") {
             key.use(try await evaluateBiometrics(reason: "Approve \(r.operation) with \(r.keyLabel)"))
             defer { key.use(nil) }
-            let card = try CardSource.make(message: "Hold your YubiKey to the iPhone to \(r.operation)")
+            let card = try await self.card(nfc: "Hold your YubiKey to the iPhone to \(r.operation)")
             let pin = Data(pin.utf8)
             outcome = try await Self.background {
                 try a.approve(requestId: r.requestId, card: card, pin: pin)

@@ -80,6 +80,11 @@ final class NFCCard: NSObject, CardChannel, NFCTagReaderSessionDelegate, @unchec
         tag = nil
     }
 
+    /// The card loses power when the tap ends, which clears the PIN.
+    func resetsOnEnd() -> Bool {
+        true
+    }
+
     // MARK: NFCTagReaderSessionDelegate
 
     func tagReaderSessionDidBecomeActive(_ session: NFCTagReaderSession) {}
@@ -109,8 +114,27 @@ final class NFCCard: NSObject, CardChannel, NFCTagReaderSessionDelegate, @unchec
 }
 #endif
 
-/// Which card channel to use for one operation.
+/// How the app reaches the YubiKey.
+enum CardKind {
+    case usb, nfc
+}
+
+/// Which card channel to use for one operation: a connected USB YubiKey first, then NFC where
+/// the device has it.
 enum CardSource {
+    /// What an operation would use right now (shown on the approval and status screens).
+    /// Never call on the main thread: looking for USB cards waits on CryptoTokenKit.
+    static func current() -> CardKind? {
+        #if RELAY_TEST_CARD
+        if ProcessInfo.processInfo.environment["RELAY_TEST_CARD"] != nil { return .nfc }
+        #endif
+        if USBCard.connected() != nil { return .usb }
+        #if canImport(CoreNFC) && os(iOS)
+        if NFCCard.isAvailable { return .nfc }
+        #endif
+        return nil
+    }
+
     static func make(message: String) throws -> CardChannel {
         #if RELAY_TEST_CARD
         // Simulator end-to-end test only: a software PIV card from relay-ffi's test-card build.
@@ -118,14 +142,16 @@ enum CardSource {
             return try testCard(slotsJson: json)
         }
         #endif
+        if let usb = USBCard.connected() {
+            return usb
+        }
         #if canImport(CoreNFC) && os(iOS)
         guard NFCCard.isAvailable else {
-            throw PlatformError.Failed(message: "This device cannot read NFC")
+            throw PlatformError.Failed(message: "Plug in your YubiKey")
         }
         return NFCCard(message: message)
         #else
-        // macOS and iPad over USB come in Part B (relay-pcsc / TKSmartCard).
-        throw PlatformError.Failed(message: "No YubiKey reader on this platform yet")
+        throw PlatformError.Failed(message: "Plug in your YubiKey")
         #endif
     }
 }
