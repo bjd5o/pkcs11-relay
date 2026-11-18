@@ -57,6 +57,8 @@ x509-cert = { version = "=0.3.0", features = ["builder"] }
 # chains. Already in the provider and iOS trees through rustls.
 rustls-webpki = { version = "=0.103.17", default-features = false, features = ["std", "ring"] }
 rustls-pki-types = { version = "=1.16.0", features = ["std"] }
+# Approved 2026-11-17 (setup links): QR codes in relayctl only; no image dependency.
+qrcode = { version = "=0.14.1", default-features = false, features = ["svg"] }
 proptest = "=1.12.0"
 # Approved 2026-11-15: constant-time primitives for the OAEP decoding vendored from rsa 0.10.
 subtle = "=2.6.1"

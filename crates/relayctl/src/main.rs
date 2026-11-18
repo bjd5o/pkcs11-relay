@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use relay_core::piv::Slot;
 use relay_core::{Algorithm, Role};
 use relayctl::keygen::{self, Pin, Touch};
-use relayctl::{card, hw, manifest, util};
+use relayctl::{card, hw, link, manifest, util};
 
 #[derive(Parser)]
 #[command(
@@ -36,6 +36,47 @@ enum Cmd {
     Attest {
         #[command(subcommand)]
         command: AttestCmd,
+    },
+    /// Print a signed setup link and its QR code for the approver app (wire-format §11).
+    AppLink {
+        #[arg(long)]
+        relay_url: Option<String>,
+        /// The relay's CA certificate (PEM); pinned by its key's hash.
+        #[arg(long, conflicts_with = "public_relay")]
+        relay_ca: Option<PathBuf>,
+        /// The relay has a publicly trusted certificate: no CA pin.
+        #[arg(long)]
+        public_relay: bool,
+        /// Sign with gpg using this key (e.g. your OpenPGP card's key id).
+        #[arg(long, conflicts_with = "pgp_secret")]
+        gpg_key: Option<String>,
+        #[arg(long, default_value = "gpg")]
+        gpg: String,
+        /// Sign with this unprotected software OpenPGP secret key instead (test setups).
+        #[arg(long)]
+        pgp_secret: Option<PathBuf>,
+        #[arg(long)]
+        device_id: Option<String>,
+        /// How long the link works, e.g. 15m (default), 2h, 7d (at most).
+        #[arg(long, value_parser = util::parse_duration)]
+        valid_for: Option<u64>,
+        /// The relay's config and binary, to check the device id isn't registered already.
+        #[arg(long)]
+        relay_config: Option<PathBuf>,
+        #[arg(long, default_value = "relay-server")]
+        relay_server: String,
+        /// Revoke an existing device with this id at the relay first (asks to confirm).
+        #[arg(long, requires = "relay_config")]
+        replace: bool,
+        /// Don't contact the relay to check its CA and signer.
+        #[arg(long)]
+        skip_relay_check: bool,
+        /// Also write the QR code as an SVG image.
+        #[arg(long)]
+        svg: Option<PathBuf>,
+        /// Fail instead of asking for anything not given.
+        #[arg(long)]
+        no_input: bool,
     },
     /// Write the setup file the approver app imports: relay URL and CA, manifest URL and
     /// signer, device id and attestation window. Public material only.
@@ -602,6 +643,46 @@ fn run(cli: Cli) -> Result<(), String> {
                 util::utc(t + days * 86_400),
                 out.display()
             );
+            Ok(())
+        }
+        Cmd::AppLink {
+            relay_url,
+            relay_ca,
+            public_relay,
+            gpg_key,
+            gpg,
+            pgp_secret,
+            device_id,
+            valid_for,
+            relay_config,
+            relay_server,
+            replace,
+            skip_relay_check,
+            svg,
+            no_input,
+        } => {
+            let signer = match (&gpg_key, &pgp_secret) {
+                (Some(k), None) => Some(link::LinkSigner::Gpg {
+                    key: k,
+                    program: &gpg,
+                }),
+                (None, Some(p)) => Some(link::LinkSigner::Software(p)),
+                _ => None,
+            };
+            let l = link::make(link::Options {
+                relay_url,
+                relay_ca,
+                public_relay,
+                signer,
+                device_id,
+                valid_for,
+                no_input,
+                skip_relay_check,
+                svg,
+                relay_admin: relay_config.map(|c| (relay_server, c)),
+                replace,
+            })?;
+            print!("{}", link::show(&l)?);
             Ok(())
         }
         Cmd::AppConfig {

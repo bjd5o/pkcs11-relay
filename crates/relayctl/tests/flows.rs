@@ -406,3 +406,100 @@ fn pin_reset_check() {
         .unwrap_err()
         .contains("cannot sign"));
 }
+
+#[test]
+fn app_link_signs_a_verifiable_link_and_draws_it() {
+    use relayctl::link;
+    let dir = tmp("link");
+    let (sec, public) = pgp(&dir);
+    // Any CA certificate will do for the pin; the relay check is skipped here (the simulator
+    // end-to-end test runs it against a real relay).
+    relay_test_ca(&dir);
+    let svg = dir.join("link.svg");
+    let l = link::make(link::Options {
+        relay_url: Some("https://10.0.0.170:8443".into()),
+        relay_ca: Some(dir.join("ca.pem")),
+        public_relay: false,
+        signer: Some(link::LinkSigner::Software(&sec)),
+        device_id: Some("iphone".into()),
+        valid_for: Some(900),
+        no_input: true,
+        skip_relay_check: true,
+        svg: Some(svg.clone()),
+        relay_admin: None,
+        replace: false,
+    })
+    .unwrap();
+    let signer = relay_core::ManifestSigner::from_bytes(&std::fs::read(&public).unwrap()).unwrap();
+    let v = relay_core::setup_link::verify_setup_link(&l.url, &signer, util::now(), 60).unwrap();
+    assert_eq!(v.device, "iphone");
+    assert_eq!(
+        v.ca,
+        Some(link::ca_pin(&std::fs::read(dir.join("ca.pem")).unwrap()).unwrap())
+    );
+    assert_eq!(l.exp - v.iat, 900);
+    assert!(std::fs::read_to_string(&svg).unwrap().contains("<svg"));
+    let shown = link::show(&l).unwrap();
+    assert!(shown.starts_with(&l.url));
+    assert!(shown.contains('▀') || shown.contains('▄') || shown.contains('█'));
+
+    // Missing values fail with --no-input; bad values fail before signing.
+    let base = || link::Options {
+        relay_url: Some("https://10.0.0.170:8443".into()),
+        relay_ca: None,
+        public_relay: true,
+        signer: Some(link::LinkSigner::Software(&sec)),
+        device_id: Some("iphone".into()),
+        valid_for: None,
+        no_input: true,
+        skip_relay_check: true,
+        svg: None,
+        relay_admin: None,
+        replace: false,
+    };
+    assert!(link::make(link::Options {
+        device_id: None,
+        ..base()
+    })
+    .err()
+    .unwrap()
+    .contains("--device-id"));
+    assert!(link::make(link::Options {
+        device_id: Some("Bad Id".into()),
+        ..base()
+    })
+    .is_err());
+    assert!(link::make(link::Options {
+        valid_for: Some(8 * 86_400),
+        ..base()
+    })
+    .err()
+    .unwrap()
+    .contains("7d"));
+    assert!(link::make(link::Options {
+        relay_url: Some("http://x".into()),
+        ..base()
+    })
+    .is_err());
+    assert!(link::make(link::Options {
+        replace: true,
+        ..base()
+    })
+    .err()
+    .unwrap()
+    .contains("--relay-config"));
+    // A publicly trusted relay has no CA pin.
+    let l = link::make(base()).unwrap();
+    assert!(!l.url.contains("&ca="));
+}
+
+/// Writes `ca.pem`: a self-signed P-256 certificate, as a relay CA would be.
+fn relay_test_ca(dir: &Path) {
+    let k = relay_softcard::SlotKey::generate(Algorithm::P256);
+    let der = k.self_signed_certificate("test relay CA");
+    std::fs::write(
+        dir.join("ca.pem"),
+        relay_core::hw_attestation::testing::to_pem(&[der]),
+    )
+    .unwrap();
+}

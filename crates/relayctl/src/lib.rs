@@ -5,5 +5,6 @@
 pub mod card;
 pub mod hw;
 pub mod keygen;
+pub mod link;
 pub mod manifest;
 pub mod util;
