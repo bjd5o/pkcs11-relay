@@ -117,6 +117,8 @@ Part B (design `docs/milestone-5b.md`, approved 2026-11-18):
 - [x] Relay APNs notifier (`notify.kind = "apns"`): ES256 provider tokens, HTTP/2 (reqwest `http2`), content-free alert, dead tokens forgotten; tested against an HTTP/2 stub
 - [x] App: notification permission, APNs token sent with registrations (`Approver::set_push_token`), tap opens Requests; `aps-environment` entitlements
 - [x] Hardware: `relayctl key check-security-reset` on a real YubiKey 5, slot 9a, run by Brian (2026-11-18): after `VERIFY` P1=`FF` the card refused to sign without the PIN
-- [ ] APNs: Brian's `.p8` key, key id and team id; push enabled for the app id; then a push on the iPhone
-- [ ] Part B gate: the Mac and the USB-C iPad over USB (enrollment, a decrypt), push on the iPhone
+- [x] APNs on hardware (2026-11-18): the gate relay with Brian's `.p8` key (kept in git-ignored `gate-m5/secrets/`; `*.p8` is ignored repo-wide), sandbox environment. With the app in the background a client request produced the "1 pending request" notification within seconds; tapping it opened the request, and Brian denied it (signed denial accepted 12 s after queueing)
+- [x] Fix found by the iPhone gate: an expired attestation was dropped on load, so the app said "not enrolled" and could never renew; it is now kept and renewed at the next approval (spec: an expired device keeps fetching requests)
+- [ ] iPhone gate renewal step: re-enrolled with a 1-hour window; approve a request after 75%
+- [ ] Part B gate: the Mac and the USB-C iPad over USB (enrollment, a decrypt); push on the iPhone is done
 

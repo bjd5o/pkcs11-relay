@@ -1,6 +1,6 @@
 # Milestone 5 Part B: USB card access and push (design)
 
-Status: **approved by Brian on 2026-11-18** (decisions below; the APNs key is still to come). It
+Status: **approved by Brian on 2026-11-18** (decisions below). It
 covers plan items 5.6 and 5.7 in `docs/milestone-5.md`. The iPhone gate's renewal step is still open; Brian chose to
 start Part B in parallel (2026-11-18).
 
@@ -155,8 +155,7 @@ About 1 200 lines (Swift about 600, Rust about 600), in roughly this commit orde
 
 ## Still open
 
-- **APNs key:** a `.p8` auth key with push enabled for the app id, plus its key id and team id.
-  The relay sender is built and tested against a stub meanwhile.
+- Nothing. The APNs key arrived on 2026-11-18 and push works on the iPhone (`docs/progress.md`).
 
 ## Sources
 
