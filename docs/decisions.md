@@ -246,3 +246,15 @@ Decision (Brian):
 - **Gate:** the USB-C iPad is part of the Part B gate.
 - **Setup picker:** 15- and 30-minute attestation windows are added.
 
+
+## 2026-11-18: Client grants, Clients and Approvers screens (post-MVP)
+
+Context: the Part B gate found that a new approver can't answer clients paired before it, that a client's keys can't change without a revoke, and that the app can't list clients or approvers. The design is in `docs/client-grants.md`.
+Decision (Brian):
+- **Grants:** at pairing, the approver's `attest` key signs a client grant (client key, keys, sequence, per-client window). Pairing therefore needs the YubiKey. Devices verify grants against the manifest's `attest` keys, so a new device needs no re-pairing and no tap.
+- **Windows:** grants expire and renew during approvals at 75%. Each client's window is chosen at pairing, up to a new manifest maximum, `max_client_grant_window_secs`. An unused client lapses; its next request is shown with a notice and renews the last known grant when approved.
+- **Revocation:** an `attest`-key-signed revocation. The relay sends every live revocation, with no acknowledgement; against a compromised relay, revocation is bounded by grant expiry and the person approving.
+- **Manifest lists:** optional `revoked_clients` (client-key fingerprints) and `revoked_devices` (device-key fingerprints). The relay refuses listed clients and devices; providers also reject responses from a listed device key, which extends check 1 of wire-format §6.2 without changing the order of the five checks.
+- **Screens and endpoints:** Clients and Approvers screens backed by `GET /v1/clients` and `GET /v1/devices`, and grant and revocation posts. They are signed by a new biometric-gated admin-auth key, bound by the device key, with one cached `LAContext` per screen session that ends after 1 hour or when the app goes to the background. Polling stays on the relay-auth key; each request carries its client's grant and all live revocations.
+- **Rejections:** the inbox shows why each request failed its checks.
+- **Migration:** local pairing records stay until each client has a grant, then are deleted.
