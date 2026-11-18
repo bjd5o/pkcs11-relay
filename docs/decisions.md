@@ -221,3 +221,17 @@ Consequences:
 - The serial is inside the leaf certificate, so the published manifest names the card serials. Real chains are never committed; tests use a synthetic hierarchy in relay-softcard.
 - Existing fixtures and gate manifests need chains, or `require = false`.
 - The relay checks only who signed a device's attestation, not its window (`relay_core::attestation::verify_attestation_signer`). Renewal happens during an approval, so a relay that dropped expired devices would never let them renew. Clients still reject expired attestations (Failure handling row unchanged).
+
+## 2026-11-17: Signed setup links, manifest device policy, relay watches the signer (spec updated)
+
+Context: the app was configured by copying a `setup.json`. Brian wants a QR code from `relayctl` instead. The design is in `docs/setup-link.md`, which Brian approved and edited.
+Decision (Brian):
+- **Setup link:** `relayctl app-link` prints a `poh://setup?…` link and its QR code. The link pins the relay CA (SPKI hash) and the manifest signer (fingerprint), names the device, carries `iat`/`exp` (default 15 minutes, at most 7 days) and is signed by the manifest signer over everything before `&sig=`. `qrcode =0.14.1` (relayctl only, no default features, `svg`) renders it.
+- **App:** it rejects a link outside its time window, checks both pins and the signature, and refuses a signer key that is revoked or expired, from the relay's copy or keys.openpgp.org's. It shows the signer identity keys.openpgp.org verified, or explains why it could not. No privacy note on that screen. The file import and `relayctl app-config` go away.
+- **Manifest:** `require_hardware_attestation` moves from client and app configs into the manifest. A new `max_attestation_window_secs` (default 7 days) caps every attestation window; each device chooses its own at setup.
+- **One link, one device:** the link fixes the device id. A device id the relay does not hold, including a revoked one, registers only with a setup link, which the relay checks (signed by its own manifest signer, signer usable, in time, same device id, unused).
+- **Single-use links (Brian's edits to the design):** `used_setup_links` stores the SHA-256 of the link's signed bytes only, never the signature, so a second valid signature over the same bytes cannot make a used link new. The device record and the audit log store the same hash.
+- **Relay watches the signer key:** from its file (every minute) and keys.openpgp.org (every 15 minutes). While the key is revoked or expired, it advertises no keys, cancels pending requests and refuses client and device calls. It fails open when the keyserver is unreachable. A seen revocation persists until the signer key changes.
+
+Consequences: new Failure handling row (signer revoked or expired, seen by the relay); `AttestationWindowTooLong` joins the attestation row; wire-format §5.1 step 5, §9.2 fields, §10 and a new §11.
+

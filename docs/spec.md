@@ -129,7 +129,7 @@ Enrollment has three independent parts: publishing keys in the manifest, enrolli
 
 **Publishing keys (steps 1 to 4).** Generate keys on the YubiKey, one role per slot. Add each public key's fingerprint, role, label and token to the manifest, increase its version, sign it with your PGP key and publish it. Removing a key works the same way: publish a new version without it.
 
-**Enrolling an approver (steps 5 to 8).** The app creates a non-exportable response-signing key in the Secure Enclave, Android Keystore or a TPM. You set the device's attestation window at enrollment, for example 30 days. The YubiKey's attest key signs an attestation statement binding the device key's fingerprint to that window (Keys and messages, below). The app then registers its device key, attestation and the hardware keys it can operate with the relay; that registration is what the relay advertises.
+**Enrolling an approver (steps 5 to 8).** The app is set up from a signed link that `relayctl app-link` prints as a URL and QR code: it pins the relay's CA and the manifest signer, names the device, expires, and is signed by the manifest signer. The app creates a non-exportable response-signing key in the Secure Enclave, Android Keystore or a TPM. You choose the device's attestation window at enrollment, up to the manifest's `max_attestation_window_secs`. The YubiKey's attest key signs an attestation statement binding the device key's fingerprint to that window (Keys and messages, below). The app then registers its device key, attestation and the hardware keys it can operate with the relay; that registration is what the relay advertises.
 
 **Renewing attestations.** When three quarters of the window has passed, the app gets a new statement during the next approval that already has the YubiKey present: one extra card operation, no extra tap. If the attest key lives on a separate offline YubiKey, renewal is a periodic ceremony instead. An expired device can still fetch requests, but every client rejects its responses until it is renewed.
 
@@ -159,10 +159,10 @@ The provider holds no private keys and no key list of its own. It builds its slo
 - **Role enforcement.** Set `CKA_SIGN` only on `sign` and `auth` keys and `CKA_DECRYPT` only on `encrypt` keys, never expose `attest` keys, and reject any operation outside a key's role before sending anything.
 - **No PIN on the client.** Report tokens without `CKF_LOGIN_REQUIRED`, so consumers skip `C_Login`; accept and discard a PIN if one is sent anyway.
 - **Build and send the request.** Generate a one-time reply key pair, sign the request with the client identity key, post it to the relay, then wait on a long-poll or WebSocket until a response or the deadline. For `sign` keys, send the full message so the approver can hash and display it; for `auth` keys, send the digest.
-- **Verify the manifest's hardware attestation.** When the manifest is loaded, every `attest` key's YubiKey attestation chain (required unless configured otherwise) must verify against Yubico's attestation root, show touch `always`, a PIN policy other than `never` and firmware 5.7.4 or later; otherwise the whole manifest is invalid.
+- **Verify the manifest's hardware attestation.** When the manifest is loaded, every `attest` key's YubiKey attestation chain (required when the manifest's `require_hardware_attestation` is true) must verify against Yubico's attestation root, show touch `always`, a PIN policy other than `never` and firmware 5.7.4 or later; otherwise the whole manifest is invalid.
 - **Verify the response before using it**, in this order, discarding it at the first failure:
   1. the attestation statement's signature verifies against a key the manifest lists with role `attest`;
-  2. the current time is inside the statement's validity window, allowing a small clock skew;
+  2. the current time is inside the statement's validity window, allowing a small clock skew, and the window is no longer than the manifest's `max_attestation_window_secs`;
   3. the key that signed the response matches the device key fingerprint in the statement;
   4. the response signature verifies and the response echoes this request's id, key and mechanism;
   5. for a signature result, the signature also verifies against the hardware key's public key.
@@ -199,7 +199,9 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 
 - **Authenticate both sides.** Clients sign every request with their identity key; approver devices authenticate with their device key, or with a separate relay-auth key that the device key vouched for once at enrollment, so a device key that needs a biometric per signature is not used for routine polling. Every HTTP call also carries a signature over its method, path, time, a random nonce and the body hash, and the relay rejects replayed nonces.
 - **Advertise keys.** Keep, per approver device, the hardware keys it registered and its current attestation, and serve the combined list to clients. Advertisements are untrusted hints: the provider filters them through the manifest.
-- **Check the manifest.** Verify the manifest it serves with the same rules as clients. Advertise only keys it lists, only from devices whose attestation one of its `attest` keys signed, and reject registrations whose attestation it did not sign. The relay ignores the attestation's window: an expired device keeps receiving requests so it can renew during an approval, and clients reject its responses until then. If the manifest is invalid, advertise nothing and log why. Clients still verify everything themselves.
+- **Check the manifest.** Verify the manifest it serves with the same rules as clients. Advertise only keys it lists, only from devices whose attestation one of its `attest` keys signed with a window no longer than the manifest's maximum, and reject registrations whose attestation fails these checks. The relay ignores whether the attestation's window has passed: an expired device keeps receiving requests so it can renew during an approval, and clients reject its responses until then. If the manifest is invalid, advertise nothing and log why. Clients still verify everything themselves.
+- **Admit devices by setup link.** A device id the relay does not hold (including one that was revoked) registers only with the setup link the app was set up from. The link must be signed by the relay's own manifest signer key, be inside its validity window, name this device id and not have been used before; the relay records the SHA-256 of the link's signed bytes, never the signature.
+- **Watch the manifest signer.** Check the signer key for revocation and expiry, from its own copy and from keys.openpgp.org every 15 minutes. While it is revoked or expired, advertise no keys, cancel pending requests and refuse every client and device call. If the keyserver is unreachable, keep the last known status.
 - **Route by approval.** A client may only address keys it was approved for at pairing; anything else is rejected before it is queued.
 - **Queue with expiry.** Keep pending requests in memory until their `expires_at`; accept exactly one response per request id; reject duplicate ids.
 - **Ring the doorbell.** Send a content-free push ("1 pending request") to every device advertising the requested key, through APNs, FCM, ntfy or Web Push. The first response wins; the request is withdrawn from the other devices.
@@ -213,12 +215,13 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 | --- | --- | --- |
 | `GET /v1/keys` | Provider | Advertised keys: public key, token, number of approver devices, last seen |
 | `GET /v1/manifest`, `GET /v1/manifest.asc` | Anyone | The signed manifest and its detached signature, served unchanged from configured files. A convenience for phones that cannot read local files; the signature, not the relay, makes it trustworthy |
+| `GET /v1/manifest-signer.asc`, `GET /v1/relay-ca.pem` | Approver app at setup | The manifest signer's public key and the relay's CA certificate, each checked by the app against the hash pinned in the signed setup link |
 | `POST /v1/requests` | Provider | Submit a signed request |
 | `GET /v1/requests/{id}/result` | Provider | Long-poll (or WebSocket) for the attested response |
 | `POST /v1/clients/pending` | New client | Start pairing; tailnet only, rate-limited |
 | `GET /v1/clients/self` | Pending or paired client | Learn whether pairing was approved, and for which keys |
 | `POST /v1/clients/{id}/approval` | Approver app | Approve a pending client for keys chosen from the manifest |
-| `POST /v1/devices` | Approver app | Register or update a device: device key, attestation, operable keys, push token |
+| `POST /v1/devices` | Approver app | Register or update a device: device key, attestation, operable keys, push token; for a device id the relay does not hold, the signed setup link |
 | `GET /v1/devices/{id}/pending` | Approver app | Fetch pending requests and pairings after a push |
 | `POST /v1/requests/{id}/response` | Approver app | Return the signed response: approval, denial or error |
 
@@ -232,7 +235,9 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 | Push credentials | APNs `.p8` key, key id, team id; or an FCM service account; or an ntfy topic and token | Sending the doorbell |
 | Limits | max TTL 120 s, max 4 pending per client, max body 64 KiB | Bounding abuse and approval spam |
 | Manifest copy (optional) | `manifest.json` and `manifest.json.asc` | Serving the signed manifest at `/v1/manifest` |
-| Manifest signer and hardware attestation policy (with the manifest copy) | the signer's public key file; `require = true` | Checking the manifest it serves and filtering advertisements through it |
+| Manifest signer (with the manifest copy) | the signer's public key file | Checking the manifest it serves, setup links and the signer's status; filtering advertisements |
+| Relay CA | the CA that issued the TLS certificate | Serving `/v1/relay-ca.pem` for app setup |
+| Signer check | keys.openpgp.org, every 15 minutes | Watching the manifest signer for revocation and expiry |
 | Storage | SQLite file for registries; pending requests in memory | Persistence |
 | Audit log | SQLite (exportable as JSON lines) | Every request's metadata and outcome; full bytes only for sign operations |
 
@@ -271,13 +276,14 @@ The approver app is the only place a request becomes an operation: it checks who
 
 | Setting | Example | Used for |
 | --- | --- | --- |
-| Relay URL and trust | `https://relay.tailnet.example:8443`, pinned SPKI hash | Fetching requests, posting responses |
+| Setup link | `poh://setup?v=1&relay=…&ca=…&signer=…&device=…&iat=…&exp=…&sig=…` | Configuring the app: scanned as a QR code, checked (expiry, CA and signer pins, signature by the signer) before anything is trusted |
+| Relay URL and trust | `https://relay.tailnet.example:8443`, CA pinned by SPKI hash from the setup link | Fetching requests, posting responses |
 | Manifest URL and signer | same values as clients | Knowing each key's role |
 | Device id | `brian-iphone` | Addressing on the relay |
 | Device key | generated at enrollment, non-exportable | Signing responses, denials and errors |
 | Relay-auth key | generated at enrollment, non-exportable, no biometric; bound to the device key by one signature | Authenticating relay calls |
 | Attestation | current statement and its `not_after` | Proving to clients that the device is enrolled |
-| Attestation window | 30 days, set at enrollment | How long each statement lasts; renewal starts at 75% |
+| Attestation window | 7 days, chosen at setup up to the manifest's maximum | How long each statement lasts; renewal starts at 75% |
 | Paired clients | client id → display name, signing public key, approved keys, rate limit | Deciding which requests can even be shown |
 | Key map | key fingerprint → YubiKey serial or CryptoTokenKit token id, slot | Finding the right key for each request |
 | Push and platform | APNs or FCM registration; NFC entitlement on iOS | Being woken; talking to the key |
@@ -321,12 +327,15 @@ Keys generated on the card cannot be copied, so a backup is a second YubiKey: li
 - List every key clients may trust, each with exactly one role.
 - Group keys by hardware token, so the provider can present one slot per token.
 - Let clients refuse rollbacks (`version`) and bound how long a stale copy stays usable (`valid_until`).
+- Set the device policy every client applies: whether attest keys need hardware attestation, and the longest attestation window.
 
 **Format.** JSON, with an OpenPGP detached signature next to it (`manifest.json.asc`).
 
 | Field | Example | Meaning |
 | --- | --- | --- |
 | `version` | `7` | Monotonic; clients reject anything lower than their cached copy |
+| `require_hardware_attestation` | `true` | Every `attest` key must carry a valid `hardware_attestation` |
+| `max_attestation_window_secs` | `604800` | The longest attestation window clients accept (`not_after − not_before`) |
 | `issued_at`, `valid_until` | `2026-11-15`, `2026-12-15` | Clients refuse an expired manifest, so re-sign before it lapses |
 | `keys[].fingerprint` | `sha256:4f1c…` | SHA-256 of the key's SubjectPublicKeyInfo |
 | `keys[].role` | `encrypt` | Exactly one of `sign`, `auth`, `encrypt`, `attest` |
@@ -335,9 +344,9 @@ Keys generated on the card cannot be copied, so a backup is a second YubiKey: li
 | `keys[].token` | `yubikey-12345678` | Groups keys into slots |
 | `keys[].algorithm` | `rsa-4096` | Key type, checked against `keys[].public_key` |
 | `keys[].public_key` | `MIICIjAN…` | The key's DER SubjectPublicKeyInfo (base64); `fingerprint` must match it. It is where clients get every hardware key, `attest` keys included; the relay's list only says which keys are reachable |
-| `keys[].hardware_attestation` | `{format: "yubikey-piv", chain: […]}` | Optional. The YubiKey's attestation chain (firmware 5.7.4+) for a key generated on the card: proof that it is on a genuine YubiKey, with its serial, firmware and PIN/touch policy. Required on `attest` keys unless clients are configured otherwise. The chain names the card's serial |
+| `keys[].hardware_attestation` | `{format: "yubikey-piv", chain: […]}` | Optional. The YubiKey's attestation chain (firmware 5.7.4+) for a key generated on the card: proof that it is on a genuine YubiKey, with its serial, firmware and PIN/touch policy. Required on `attest` keys when `require_hardware_attestation` is true. The chain names the card's serial |
 
-**Signer.** Your PGP key, ideally on the YubiKey's OpenPGP applet or on an offline second YubiKey. Clients do not check PGP revocation, because headless hosts cannot be relied on to reach keyservers. Revoking a hardware key means publishing a new version without it, and `valid_until` bounds how long an old cached copy keeps working. Rotating the PGP key itself means reconfiguring every client.
+**Signer.** Your PGP key, ideally on the YubiKey's OpenPGP applet or on an offline second YubiKey. Clients do not check PGP revocation, because headless hosts cannot be relied on to reach keyservers. The relay does: it watches the signer key at keys.openpgp.org and stops serving clients while the key is revoked or expired, and the app refuses setup with such a key. Revoking a hardware key means publishing a new version without it, and `valid_until` bounds how long an old cached copy keeps working. Rotating the PGP key itself means reconfiguring every client.
 
 ### Enrollment tool
 
@@ -397,7 +406,7 @@ Compromising the relay, the manifest host or the push service yields denial of s
 | --- | --- | --- |
 | Relay | Every request in full (by design, for the audit log); can delay, drop or flood requests; can advertise keys or devices of its own | The manifest decides which keys exist; a device without a valid attestation cannot produce an accepted response; results are sealed to the reply key |
 | Manifest host | Can withhold the manifest or serve an old one | The PGP signature; `version` blocks rollback below a client's cache; `valid_until` bounds how stale a copy can be |
-| PGP manifest key | Decides which keys clients trust, including `attest` keys | Keep it on hardware, offline if possible; rotating it means reconfiguring every client |
+| PGP manifest key | Decides which keys clients trust, including `attest` keys, whether attest keys need hardware attestation, and the longest attestation window | Keep it on hardware, offline if possible; rotating it means reconfiguring every client |
 | `attest` key | Can vouch for an attacker's device, whose responses clients then accept | Touch `always`; keep it on a YubiKey you hold or offline; remove it from the manifest to void every attestation it signed; hardware attestation in the manifest proves it was generated on a YubiKey with touch `always` |
 | Push provider | Timing of pending requests | The push carries no content |
 | Client host (root) | Can request operations as that client; reads any result returned to the consumer (for OpenBao, the unsealed root key) | Each request needs approval; per-client key approvals and rate limits. Only approve what you initiated |
@@ -420,6 +429,7 @@ Every failure surfaces to the consumer as an ordinary PKCS#11 error, so existing
 | Manifest signature invalid, rolled back or expired | Keeps a valid cached copy if it has one; otherwise lists no slots | Zero slots |
 | Manifest's hardware attestation missing (when required), invalid or outside policy | Keeps a valid cached copy if it has one; otherwise lists no slots | Zero slots |
 | Relay's own manifest copy invalid | The relay advertises no keys; the provider uses its valid cached manifest and key list if it has them | Zero slots, or last known slots |
+| Manifest signer revoked or expired (seen by the relay) | The relay advertises no keys, cancels pending requests and refuses new ones | Zero slots; `CKR_DEVICE_ERROR` for a request in flight |
 | Relay unreachable during discovery | Uses its cached key list until that expires | Last known slots |
 | Operation outside the key's role | Rejected locally, no request sent | `CKR_KEY_FUNCTION_NOT_PERMITTED` |
 | Mechanism not allowed for the key | Rejected locally, no request sent | `CKR_MECHANISM_INVALID` |
@@ -557,6 +567,7 @@ A command-line tool for macOS and Linux that covers everything in enrollment tha
 | `relayctl manifest add` / `remove` / `show` | Edits the manifest's key list |
 | `relayctl manifest sign` | Increases `version`, sets `valid_until`, writes the detached signature, using your OpenPGP card or `gpg` |
 | `relayctl manifest verify` | Checks a published manifest exactly as a client would |
+| `relayctl app-link` | Prompts for the relay, its CA, the signer and a device id, then prints a signed setup link and its QR code for the approver app |
 | `relayctl attest sign` | Signs a device's renewal request with an `attest` key held on an offline YubiKey |
 | `relayctl relay clients` / `devices` | Thin wrapper over the relay's admin commands |
 
@@ -621,7 +632,7 @@ The order puts a working end-to-end loop on Linux in CI before any app exists; m
 ### MVP scope
 
 - **In:** `encrypt`, `sign` and `auth` keys with the listed mechanisms, exercised through third-party PKCS#11 tools; one relay; one manifest signer; hex-and-hash content view with requester claims; device attestation and renewal; headless client pairing; audit log.
-- **Out, for later:** content decoders (X.509 CSR, git, SSH); Ed25519ph / Ed25519ctx; a pinned-SPKI relay trust option; `revoked_devices`; CryptoTokenKit token extensions for system-wide use on macOS and iPadOS; relay high availability; multiple or threshold manifest signers; platform attestation of device keys (App Attest, Android Key Attestation); a web admin UI.
+- **Out, for later:** content decoders (X.509 CSR, git, SSH); Ed25519ph / Ed25519ctx; a pinned-SPKI relay trust option for clients (the app pins the relay CA from its setup link); `revoked_devices`; CryptoTokenKit token extensions for system-wide use on macOS and iPadOS; relay high availability; multiple or threshold manifest signers; platform attestation of device keys (App Attest, Android Key Attestation); a web admin UI.
 
 ### Risks and open questions
 

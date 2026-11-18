@@ -213,6 +213,9 @@ On a YubiKey the attest key signs a digest: the approver computes `SHA-256(signe
 2. Look up `attest_key_fingerprint` in the manifest. It must exist with role `attest`; otherwise fail with "not signed by a manifest attest key".
 3. Verify `sig` over `signed_bytes` with that key's public key, taken from the manifest's `keys[].public_key`.
 4. Require `not_before − skew <= now <= not_after + skew`; otherwise fail as expired or not yet valid.
+5. Require `not_after − not_before <= manifest.max_attestation_window_secs`; otherwise fail with `AttestationWindowTooLong` (same Failure handling row as steps 2–4).
+
+`verify_attestation_signer(statement, manifest)` runs steps 1–3 and 5, not step 4. The relay uses it: an expired device keeps receiving requests so that it can renew during an approval, while a window that is too long only changes when the device renews.
 
 ### 5.2 Worked example (byte-exact)
 
@@ -402,6 +405,8 @@ The signature is checked **before** any JSON parsing. Rules for it:
   "version": 7,
   "issued_at": 1794700800,
   "valid_until": 1797292800,
+  "require_hardware_attestation": true,
+  "max_attestation_window_secs": 604800,
   "keys": [
     {
       "fingerprint": "sha256:4f1c…",
@@ -420,6 +425,8 @@ The signature is checked **before** any JSON parsing. Rules for it:
 |---|---|---|
 | `v` | integer | `1` |
 | `version` | integer | ≥ 1; monotonic |
+| `require_hardware_attestation` | bool | Required. When true, every `attest` key must carry a valid `hardware_attestation` (§9.4) |
+| `max_attestation_window_secs` | integer | Required. 60–31 536 000. The longest `not_after − not_before` accepted for an attestation (§5.1 step 5) |
 | `issued_at`, `valid_until` | integer | Unix seconds, `issued_at < valid_until`. The spec's table shows dates, which `relayctl manifest show` displays; on the wire they are integers, per the defaults table. |
 | `keys` | array | 0–64 entries; no two with the same `fingerprint` |
 | `keys[].fingerprint` | string | §1.1 |
@@ -469,11 +476,13 @@ Policy, applied in step 2a of §9.3:
 
 - any key's chain fails steps 1–4 → the manifest is invalid;
 - an `attest` key whose chain shows touch other than `always` (`02`), or PIN policy `never` (`01`) → invalid;
-- `require` is set (the default) and an `attest` key has no chain → invalid.
+- the manifest's `require_hardware_attestation` is true and an `attest` key has no chain → invalid.
 
-A failure in a cached copy's chain (for example after a configuration change) also makes that copy unusable.
+The policy's roots are Yubico's, replaced only by a test-only `roots_file`. A failure in a cached copy's chain also makes that copy unusable.
 
 ## 10. Relay API bodies
+
+While the relay's manifest signer is unusable (§11.4), every call below except `GET /v1/keys` (which returns an empty list) and `GET /v1/devices/{id}/pending` (which returns nothing) fails with 503 `ManifestSignerUnusable`, and pending requests are cancelled. `GET /v1/manifest`, `/v1/manifest.asc`, `/v1/manifest-signer.asc` and `/v1/relay-ca.pem` are unauthenticated and always served.
 
 These are not signed messages: the relay is untrusted and every field is a hint. Every call except `/healthz` and `/metrics` carries relay-auth headers (§8). Binary values in JSON are base64 (§1.1). Errors are `{"error": "<Kind>", "detail": "<text>"}` with the HTTP status shown.
 
@@ -486,7 +495,7 @@ These are not signed messages: the relay is untrusted and every field is a hint.
 | `POST /v1/clients/pending` | the new client's key, which is in the body (proof of possession) | `{"client_id", "public_key", "host"}` → `202 {"status": "pending", "code"}`, or `200 {"status": "approved"}` if already paired. Allowed networks only, at most 4 pending, dropped after 10 min. |
 | `GET /v1/clients/self` | a pending or paired client | → `{"status": "pending", "client_id", "code"}` or `{"status": "approved", "client_id", "approved_keys"}`. |
 | `POST /v1/clients/{id}/approval` | any registered device | `{"fingerprint", "keys": [fingerprint]}` → `204`. `fingerprint` must be that of the pending client key whose code the person compared; `keys` (1–64) are chosen from the manifest and need not be on this device. |
-| `POST /v1/devices` | the auth key in the body, or else the device key | `{"device_id", "device_key", "attestation", "keys": [{"public_key", "token"}], "push": {"kind": "none" \| "ntfy", "topic"}, "auth_key"?, "auth_key_sig"?}` → `204`; 400 `BadAuthKey` when the binding (§8.4) does not verify. A device id stays bound to its first key until `relay-server admin devices revoke`. The relay checks that the attestation decodes and names this device and key. When it has a valid manifest it also checks that one of the manifest's `attest` keys signed it (§5.1 steps 1–3, `verify_attestation_signer`; not the window, so an expired device can re-register after renewing), and rejects a failure with 400 `AttestationInvalid`. Clients check it again either way. |
+| `POST /v1/devices` | the auth key in the body, or else the device key | `{"device_id", "device_key", "attestation", "keys": [{"public_key", "token"}], "push": {"kind": "none" \| "ntfy", "topic"}, "auth_key"?, "auth_key_sig"?, "setup_link"?}` → `204`. `setup_link` is required for a device id the relay does not hold (also after revocation) and checked per §11.3, with 400 `SetupLinkInvalid` / `SetupLinkWrongSigner` / `SetupLinkSignatureInvalid` / `SetupLinkExpired` / `SetupLinkWrongDevice` / `SetupLinkUsed` / `SetupLinkRequired`; 400 `BadAuthKey` when the binding (§8.4) does not verify. A device id stays bound to its first key until `relay-server admin devices revoke`. The relay checks that the attestation decodes and names this device and key. When it has a valid manifest it also checks that one of the manifest's `attest` keys signed it (§5.1 steps 1–3, `verify_attestation_signer`; not the window, so an expired device can re-register after renewing), and rejects a failure with 400 `AttestationInvalid`. Clients check it again either way. |
 | `GET /v1/devices/{id}/pending?wait=N` | that device | → `{"requests": [envelope], "pairings": [{"client_id", "public_key", "fingerprint", "host", "code", "received_at"}]}`. |
 | `GET /v1/devices/{id}/ws` | that device (headers on the upgrade) | WebSocket. The relay sends `{"type": "pending"}` when there may be something to fetch. |
 
@@ -499,6 +508,48 @@ The pairing code is a diceware-style phrase derived from the client's identity k
 - Display: the four words in that order, lowercase, joined by `-`, such as `word-word-word-word`; golden vectors carry real examples.
 - Strength: 4 × log₂ 7776 ≈ 51.7 bits, above the 50-bit minimum. 2⁶⁴ is not a multiple of 7776⁴, which biases the first word by less than one part in 5 000, a negligible loss.
 - The approver compares the whole phrase. Any change that drops the derived strength below 50 bits needs a new decision.
+
+## 11. Setup link
+
+### 11.1 Form
+
+```
+poh://setup?v=1&relay=<url>&ca=<b64url>&signer=<FPR>&device=<id>&iat=<secs>&exp=<secs>&sig=<b64url>
+```
+
+| Param | Rules |
+|---|---|
+| `v` | `1` |
+| `relay` | `https://` with host and optional port only: no path, query, fragment or userinfo |
+| `ca` | optional: base64url (no padding, 43 characters) of SHA-256 of the relay CA's SubjectPublicKeyInfo; absent for a publicly trusted relay |
+| `signer` | OpenPGP fingerprint, uppercase hex: 40 characters (v4) or 64 (v6) |
+| `device` | device id (§1.1) |
+| `iat`, `exp` | Unix seconds, `iat < exp <= iat + 604800` |
+| `sig` | base64url (no padding) of one binary OpenPGP signature packet |
+
+The parameters appear in exactly this order, each once (`ca` may be left out), with no others. Values use only `A–Z a–z 0–9 - . _ ~ : /`; `%` anywhere rejects the link. At most 4 096 bytes.
+
+### 11.2 Signature (`verify_setup_link(link, signer, now, skew)`)
+
+- **Signed bytes:** the link's characters before `&sig=`, as UTF-8. They must start with `poh://setup?v=1&`, which works as the context string: no manifest (JSON) can be mistaken for them, nor they for a manifest.
+- **Signature rules:** those of §9.1: exactly one signature packet, type `0x00`, SHA-256 or stronger, by the signer's primary key or a signing subkey with a valid binding, creation time not after `now + skew`.
+- **Signer:** `fingerprint(signer) == signer` param.
+- **Time:** `iat − skew <= now <= exp + skew`, else `SetupLinkExpired`.
+- **Link id:** SHA-256 of the signed bytes, hex. It never covers `sig`: some signature schemes allow a second valid signature over the same bytes without the private key, and that must not make a used link new again.
+
+### 11.3 Relay checks at registration
+
+For a device id it does not hold, in order: §11.1 form (`SetupLinkInvalid`); `signer` equals its `manifest_signer` (`SetupLinkWrongSigner`); §11.2 signature (`SetupLinkSignatureInvalid`); signer status usable (§11.4, else 503 `ManifestSignerUnusable`); time (`SetupLinkExpired`); `device == device_id` (`SetupLinkWrongDevice`); link id not in `used_setup_links` (`SetupLinkUsed`); then the attestation checks. The link id is stored in `used_setup_links`, with the device and in the audit log, in the same transaction as the device. Entries may be pruned after `exp + skew`.
+
+### 11.4 Signer status (`signer_status(copies, now)`)
+
+Over every copy of the signer key seen (the relay's file, keys.openpgp.org):
+
+- **Revoked** if any copy has a key-revocation signature on the primary key that verifies under it, or if the primary key cannot sign and every signing subkey's binding is revoked by a verifying revocation.
+- **Expired** if, taking the newest verifying self-signature across all copies, the primary key's expiry is not after `now`, or if the primary key cannot sign and every signing subkey's newest binding has expired.
+- Otherwise **usable**.
+
+The relay recomputes it from its file at least every minute, fetches `https://keys.openpgp.org/vks/v1/by-fingerprint/<FPR>` every 900 seconds by default, keeps its last status when the keyserver is unreachable or does not have the key, and persists a revocation until `manifest_signer` changes to another fingerprint. The app applies the same function at setup and refuses a revoked or expired key.
 
 ## Departures from the spec
 
