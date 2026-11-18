@@ -41,7 +41,7 @@ the Mac (question 1).
   end with no PIN verified. PC/SC does this with `SCARD_RESET_CARD`; `TKSmartCard` has no
   reset call. The transport ends every session with `VERIFY` with P1 = `FF`, which
   NIST SP 800-73-4 defines as "reset the security status" and which costs no PIN attempt. This
-  must be confirmed on a real YubiKey before it is relied on (question 2). If the YubiKey
+  was confirmed on a real YubiKey 5 on 2026-11-18 (question 2; see Decisions). If the YubiKey
   doesn't support it, the fallback is to `SELECT` another application, if that clears the PIV
   state, or to use `relay-pcsc` on the Mac and leave the iPad on CTK.
 - **Touch:** with USB, keys whose touch policy requires it blink and wait for a touch. The
@@ -148,7 +148,7 @@ About 1 200 lines (Swift about 600, Rust about 600), in roughly this commit orde
 | Question | Decision |
 | --- | --- |
 | Mac transport | CryptoTokenKit everywhere: one Swift `TKSmartCard` transport for Mac, iPad and USB-C iPhone |
-| PIN reset check | Yes, on the YubiKey 5C Nano, each command shown for approval first; slot still to choose |
+| PIN reset check | Yes. Brian ran it himself on slot 9a (PIN `once`, touch `never`) on 2026-11-18: after `VERIFY` P1=`FF` the card refused to sign without the PIN, so the reset works |
 | reqwest `http2` | Yes |
 | Part B gate devices | The USB-C iPad is in the gate |
 | Attestation window picker | Add 15 and 30 minutes |
@@ -157,7 +157,6 @@ About 1 200 lines (Swift about 600, Rust about 600), in roughly this commit orde
 
 - **APNs key:** a `.p8` auth key with push enabled for the app id, plus its key id and team id.
   The relay sender is built and tested against a stub meanwhile.
-- **PIN reset slot** on the 5C Nano: a key with PIN policy `once` and no touch.
 
 ## Sources
 

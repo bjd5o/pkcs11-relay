@@ -116,7 +116,7 @@ Part B (design `docs/milestone-5b.md`, approved 2026-11-18):
 - [x] Mac: menu-bar extra with the count of what's waiting; keeps running with the window closed; Touch ID through the same biometric prompt
 - [x] Relay APNs notifier (`notify.kind = "apns"`): ES256 provider tokens, HTTP/2 (reqwest `http2`), content-free alert, dead tokens forgotten; tested against an HTTP/2 stub
 - [x] App: notification permission, APNs token sent with registrations (`Approver::set_push_token`), tap opens Requests; `aps-environment` entitlements
-- [ ] Hardware: `relayctl key check-security-reset` on the 5C Nano (slot to choose; Brian approves the command)
+- [x] Hardware: `relayctl key check-security-reset` on a real YubiKey 5, slot 9a, run by Brian (2026-11-18): after `VERIFY` P1=`FF` the card refused to sign without the PIN
 - [ ] APNs: Brian's `.p8` key, key id and team id; push enabled for the app id; then a push on the iPhone
 - [ ] Part B gate: the Mac and the USB-C iPad over USB (enrollment, a decrypt), push on the iPhone
 
