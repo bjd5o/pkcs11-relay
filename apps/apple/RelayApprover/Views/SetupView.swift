@@ -49,7 +49,8 @@ struct ConfirmSetupView: View {
 
     private var choices: [UInt64] {
         let max = preview.maxAttestationWindowSecs
-        let common: [UInt64] = [3_600, 86_400, 3 * 86_400, 7 * 86_400, 14 * 86_400, 30 * 86_400, 90 * 86_400]
+        // Short windows let a gate test renewal (due at 75%) without a long wait.
+        let common: [UInt64] = [15 * 60, 30 * 60, 3_600, 86_400, 3 * 86_400, 7 * 86_400, 14 * 86_400, 30 * 86_400, 90 * 86_400]
         return (common.filter { $0 < max } + [max])
     }
 
