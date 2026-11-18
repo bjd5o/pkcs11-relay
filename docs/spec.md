@@ -141,7 +141,7 @@ Enrollment has three independent parts: publishing keys in the manifest, enrolli
 3. In the app, open the pending clients, compare the code with the client's log (`docker logs`, or over SSH), then approve, choosing which keys the client may use and its grant window (up to the manifest's `max_client_grant_window_secs`). Approving needs the YubiKey: after the PIN, the `attest` key signs a **client grant** naming the client's identity key, its keys and its window (Keys and messages, below).
 4. The client fetches and verifies the manifest, then runs discovery.
 
-**Sharing clients with other approvers.** Every approver trusts a client only through a client grant that verifies against a manifest `attest` key, not through the relay. A device enrolled after a client was paired fetches the existing grants and answers that client at once, with no new pairing and no tap; it shows once which clients came with the setup. Changing a client's keys or window is a new grant with a higher sequence number, signed in one card session from the app's Clients screen, and every approver follows it.
+**Sharing clients with other approvers.** Every approver trusts a client only through a client grant that verifies against a manifest `attest` key, not through the relay. A device enrolled after a client was paired fetches the existing grants, so the client needs no new pairing. The person still accepts each client on each device: the client's first request there is shown with a notice naming the client, the device that paired it, the date and its keys, and approving that request also accepts the client. Denying it leaves the client unaccepted, and its next request carries the notice again. Changing a client's keys or window is a new grant with a higher sequence number, signed in one card session from the app's Clients screen, and every approver follows it.
 
 **Renewing and lapsing client grants.** Grants expire like attestations. When three quarters of a grant's window has passed, the next approval of that client's request renews it in the same card session. A client unused for a whole window lapses: its next request is still shown, with a notice that approving renews its access, and keys outside its last grant stay refused.
 
@@ -267,7 +267,7 @@ The approver app is the only place a request becomes an operation: it checks who
 - **Device key.** At enrollment, generate a non-exportable P-256 signing key in the Secure Enclave, Android Keystore (StrongBox where available) or a TPM. It signs every response, denial and error.
 - **Attestation.** Hold a current attestation statement signed by a manifest `attest` key and attach it to every response. Renew it early, during an approval that already has the YubiKey present.
 - **Advertise.** Register with the relay the hardware keys it can operate, its device key, its attestation and its push token; update the registration whenever any of them changes.
-- **Client grants.** Keep every client grant and revocation it has verified. Sign a grant with the `attest` key when the person approves a pairing or changes a client, and renew a client's grant during an approval once three quarters of its window has passed or once it has lapsed, with a notice on the approval screen. Never go back to a grant with a lower sequence number than one already seen.
+- **Client grants.** Keep every client grant and revocation it has verified. Sign a grant with the `attest` key when the person approves a pairing or changes a client, and renew a client's grant during an approval once three quarters of its window has passed or once it has lapsed, with a notice on the approval screen. Never go back to a grant with a lower sequence number than one already seen. Answer a client only once the person has accepted it on this device: by approving its pairing here, by changing or renewing it here, or by approving its first request here, which carries a notice saying so.
 - **Clients and Approvers screens.** List every paired client (keys, approver, grant window and expiry, status) with actions to change keys, renew and revoke, and every approver (keys, attestation status checked on this device, push kind and last seen as reported by the relay). These calls use the admin-auth key, unlocked by one biometric that lasts at most an hour and ends when the app goes to the background.
 - **Check every request** before showing it:
   - the request signature matches a client with a verified, unrevoked grant, and the client is not in the manifest's `revoked_clients`;
@@ -276,7 +276,7 @@ The approver app is the only place a request becomes an operation: it checks who
   - the operation and mechanism fit the key's role in the manifest, which the app fetches and verifies exactly as clients do;
   - the per-client rate limit is not exceeded.
 
-  Anything that fails is denied with a signed reason and logged, and the app shows the reason. A lapsed grant is not a failure: the request is shown with the renewal notice.
+  Anything that fails is denied with a signed reason and logged, and the app shows the reason. A lapsed grant is not a failure, nor is a client this device has not accepted yet: the request is shown with the renewal notice, the first-request notice, or both.
 - **Show an approval screen.** Client name, host, purpose text, key label and role, operation and time remaining. For `sign` keys, hash the message itself, decode it by type and show its fields; sign only the digest the app computed.
 - **Authenticate to the key.** Collect the PIN in the app and send `VERIFY` (or let CryptoTokenKit prompt). Touch happens here too if the key's policy requires it.
 - **Run the operation and fix up formats.** PIV keys do raw RSA, so the app adds or removes padding around the card operation:
@@ -299,7 +299,7 @@ The approver app is the only place a request becomes an operation: it checks who
 | Admin-auth key | generated at enrollment, non-exportable, biometric; bound to the device key by one signature; one unlock lasts at most 1 hour and ends when the app goes to the background | Listing clients and approvers; posting grants and revocations |
 | Attestation | current statement and its `not_after` | Proving to clients that the device is enrolled |
 | Attestation window | 7 days, chosen at setup up to the manifest's maximum | How long each statement lasts; renewal starts at 75% |
-| Client grants | verified grants by client key, plus verified revocations; each grant with its keys, sequence number and window | Deciding which requests can even be shown |
+| Client grants | verified grants by client key, plus verified revocations; each grant with its keys, sequence number and window, and whether the person has accepted the client on this device | Deciding which requests can even be shown, and which carry the first-request notice |
 | Key map | key fingerprint → YubiKey serial or CryptoTokenKit token id, slot | Finding the right key for each request |
 | Push and platform | APNs or FCM registration; NFC entitlement on iOS | Being woken; talking to the key |
 | Local policy | biometric before PIN, no PIN caching, replay cache kept 24 h | Hardening the approval step |

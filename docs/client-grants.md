@@ -27,8 +27,9 @@ When a person approves a pairing, the approver's **`attest` key** (on the YubiKe
 grants the way they trust attestations, through the manifest's `attest` keys. The relay stores
 and serves grants but can't create or alter them.
 
-- **Pairing:** one card session per client, at pairing. A new device needs no card and no tap
-  for existing clients; it fetches the grants and verifies them.
+- **Pairing:** one card session per client, at pairing. A new device needs no re-pairing and
+  no extra card session for existing clients: it fetches and verifies their grants, and the person
+  accepts each client on that device with its first approval there.
 - **Changing keys:** a new grant with a higher sequence number, signed during one approval.
 - **Revoking:** a revocation signed by an `attest` key.
 
@@ -141,15 +142,40 @@ Pairing now needs the YubiKey present, where today it needs only a biometric (ac
 ### A new device
 
 After enrollment, the device calls `GET /v1/clients`, verifies every grant and revocation, and
-keeps those that verify. It then shows a one-time summary: "These clients come with this setup:
-linux-client (approved on minimerlin, 18 Nov): `hw-unseal`, `hw-sign`." It needs no tap and no
-action. The summary exists so nothing arrives silently.
+keeps those that verify. It also verifies the grant that comes with each request. A verified
+grant isn't enough on its own, though: the person **accepts** each client on each device
+(Brian, 2026-11-18), so no client starts being answered on a device without a person there
+saying yes to it.
+
+- **First request on this device.** A request from a client whose grant verifies but that this
+  device hasn't accepted is shown with a notice on the approval screen: "First request from
+  linux-client on this device. Paired on minimerlin on 18 Nov, keys: `hw-unseal`, `hw-sign`.
+  Approving also accepts this client." The notice names the client id, host, approving device,
+  date and keys, all from the verified grant (`approved_by` and the host are labelled as
+  reported). Approving runs the request and marks the client accepted, with the same biometric
+  and PIN; there is no separate prompt. Denying signs a denial and leaves the client unaccepted,
+  so its next request carries the notice again.
+- **What counts as accepted.** Acceptance is per client key and stays on the device; it is never
+  sent to the relay. A client is accepted on a device when the person approves a request with
+  the notice there, approves the client's pairing there, or changes or renews its grant from
+  that device's Clients screen. Local pairing records from before grants count as accepted
+  (see "Migration").
+- **Later grants.** Once a client is accepted, grants with a higher `seq` for the same client key
+  are followed without a new notice: they were signed by an `attest` key after a person
+  approved them with the card. A revocation, in the manifest or signed, clears acceptance along
+  with the grant; a client paired again after that needs accepting again.
+- **With a lapse.** A lapsed, unaccepted client's request shows both notices in one: approving
+  accepts the client and renews its grant in the same card session.
+- **Clients screen.** Clients not yet accepted on this device are listed as "not accepted here:
+  accepted with its first approval on this device".
 
 ### Every request
 
-The device looks the client up among its verified grants. A missing or revoked grant fails the
-request's checks, and the device signs a denial naming the reason (see "Rejection reasons"). A
-lapsed grant doesn't fail them: the request is shown with the renewal notice.
+The device looks the client up among its verified grants, including the one sent with the
+request. A missing or revoked grant fails the request's checks, and the device signs a denial
+naming the reason (see "Rejection reasons"). A lapsed grant doesn't fail them, and neither does
+a client not yet accepted on this device: the request is shown with the renewal notice, the
+first-request notice, or both.
 
 ### Changing a client's keys
 
@@ -299,7 +325,7 @@ the size limit. A malformed list makes the manifest invalid, like any other sche
 ## Migration
 
 Today's pairings have no grant. Devices keep honouring their local pairing records until a grant
-replaces them, and the Clients screen marks those clients "no grant: renew to share with other
+replaces them, and count those clients as accepted, and the Clients screen marks those clients "no grant: renew to share with other
 approvers". Renewing signs a grant with `seq` 1. Once every client has a grant, the local
 pairing records are deleted (Brian, 2026-11-18); the device keeps only its cache of verified
 grants and revocations.
@@ -309,8 +335,10 @@ grants and revocations.
 - `relay-core`: grant and revocation vectors, byte-exact as in wire-format §5.2; every
   verification failure; sequence and revocation ordering.
 - The engine: renewal during an approval at 75% of the grant window; a lapsed client's request
-  shown with the notice, and renewed by the approval; a new device accepts
-  existing clients from grants alone; a replayed older grant is refused after a newer one was
+  shown with the notice, and renewed by the approval; a new device shows an existing client's
+  first request with the first-request notice, accepts the client only when that request is
+  approved, and shows the notice again after a denial; a later grant for an accepted client
+  needs no notice; a replayed older grant is refused after a newer one was
   seen; a revoked client is denied with its reason.
 - The relay: endpoint access (enrolled, revoked, unattested and client callers), and grant and
   revocation storage.
@@ -320,7 +348,8 @@ grants and revocations.
   `verify_response` rejects a response from a listed device key; a listed device that renews
   its attestation is still refused.
 - One test per new Failure handling row.
-- The gate: pair from the phone, add a new device, which answers without re-pairing; change keys
+- The gate: pair from the phone, add a new device, which answers without re-pairing after
+  accepting the client with its first approval; change keys
   on the iPad, and the phone follows; revoke on the Mac, and every device denies.
 
 ## Decisions (Brian, 2026-11-18)
@@ -332,6 +361,7 @@ grants and revocations.
 | Grant window | Its own manifest maximum, `max_client_grant_window_secs`, with each client's window chosen at pairing |
 | Lapsed clients | An unused client lapses; its next request renews the last known grant during that approval, with a notice on the approval screen |
 | Local pairing list | Deleted after migration |
+| Clients on a new device | Accepted per device: the first request from a client on a device carries a notice, and approving it accepts the client; denying leaves it unaccepted. Replaces the one-time summary |
 | Revocation delivery | No acknowledgement: the relay sends every live revocation; a compromised relay is bounded by grant expiry and the person approving |
 | Manifest-level revocation | Yes: optional `revoked_clients` list in the manifest |
 | Revoked approvers | Yes: optional `revoked_devices` list of device-key fingerprints; the relay refuses the device's calls and responses, and providers reject its responses (extends check 1 of wire-format §6.2, pending spec approval) |

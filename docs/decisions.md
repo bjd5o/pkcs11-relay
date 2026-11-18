@@ -258,3 +258,8 @@ Decision (Brian):
 - **Screens and endpoints:** Clients and Approvers screens backed by `GET /v1/clients` and `GET /v1/devices`, and grant and revocation posts. They are signed by a new biometric-gated admin-auth key, bound by the device key, with one cached `LAContext` per screen session that ends after 1 hour or when the app goes to the background. Polling stays on the relay-auth key; each request carries its client's grant and all live revocations.
 - **Rejections:** the inbox shows why each request failed its checks.
 - **Migration:** local pairing records stay until each client has a grant, then are deleted.
+
+## 2026-11-18: Accepting existing clients on a new device
+
+Context: with client grants (`docs/client-grants.md`), a device enrolled after a client was paired verifies that client's grant without re-pairing. The draft had the device show a one-time, information-only summary of the clients that came with the setup.
+Decision (Brian): the person accepts each client on each device. The client's first request on a device carries a notice naming the client, the device that paired it, the date and its keys; approving the request also accepts the client, with no separate prompt. Denying leaves the client unaccepted, and the notice returns with its next request. Acceptance is per client key and stays local. Pairing, changing or renewing a client on the device also accepts it, and so do pre-grant local pairing records. Later grants for an accepted client are followed without a new notice; a revocation clears acceptance.
