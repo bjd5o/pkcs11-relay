@@ -454,6 +454,8 @@ pub struct Approver {
     manifest_sig: Mutex<Vec<u8>>,
     auth_binding: Mutex<Option<Vec<u8>>>,
     inflight: Mutex<Inflight>,
+    /// The APNs device token (hex), sent with every registration once known.
+    push_token: Mutex<Option<String>>,
 }
 
 #[uniffi::export]
@@ -534,6 +536,7 @@ impl Approver {
             manifest_sig: Mutex::new(sig),
             auth_binding: Mutex::new(saved.auth_binding),
             inflight: Mutex::new(Inflight::default()),
+            push_token: Mutex::new(None),
         }))
     }
 
@@ -661,12 +664,32 @@ impl Approver {
                 signature: b.clone().expect("set above"),
             }
         };
-        let body = self.engine.registration(
-            serde_json::Value::Null,
-            Some(&binding),
-            self.cfg.setup_link.as_deref(),
-        )?;
+        let push = match self.push_token.lock().expect("lock").as_deref() {
+            Some(t) => serde_json::json!({"kind": "apns", "token": t}),
+            None => serde_json::Value::Null,
+        };
+        let body =
+            self.engine
+                .registration(push, Some(&binding), self.cfg.setup_link.as_deref())?;
         Ok(self.relay.register(&body)?)
+    }
+
+    /// The APNs device token from the system (hex). Re-registers if the device is enrolled and
+    /// the token changed; otherwise the next registration carries it. Blocks on the network.
+    pub fn set_push_token(&self, token: String) -> Result<(), RelayError> {
+        if token.is_empty() || token.len() > 200 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid("not an APNs device token"));
+        }
+        let changed = {
+            let mut t = self.push_token.lock().expect("lock");
+            let changed = t.as_deref() != Some(token.as_str());
+            *t = Some(token);
+            changed
+        };
+        if changed && self.engine.attestation().is_some() {
+            self.register()?;
+        }
+        Ok(())
     }
 
     /// Fetch pending requests and pairings (waiting up to `wait_secs`) and check each request.

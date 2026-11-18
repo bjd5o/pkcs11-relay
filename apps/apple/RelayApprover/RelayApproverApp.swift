@@ -3,11 +3,23 @@ import SwiftUI
 @main
 struct RelayApproverApp: App {
     @StateObject private var model = AppModel()
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    #elseif os(macOS)
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    #endif
 
     var body: some Scene {
         WindowGroup(id: "main") {
             ContentView()
                 .environmentObject(model)
+                .onReceive(NotificationCenter.default.publisher(for: Push.token)) { n in
+                    if let hex = n.object as? String { model.setPushToken(hex) }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: Push.opened)) { _ in
+                    model.tab = .requests
+                    model.refresh()
+                }
         }
         #if os(macOS)
         // The Mac app lives in the menu bar too (spec: approver apps): the count of what is
@@ -72,9 +84,9 @@ struct ContentView: View {
                 }
                 .padding()
             } else {
-                TabView {
-                    InboxView().tabItem { Label("Requests", systemImage: "tray") }
-                    StatusView().tabItem { Label("Status", systemImage: "checkmark.shield") }
+                TabView(selection: $model.tab) {
+                    InboxView().tabItem { Label("Requests", systemImage: "tray") }.tag(AppModel.Tab.requests)
+                    StatusView().tabItem { Label("Status", systemImage: "checkmark.shield") }.tag(AppModel.Tab.status)
                 }
             }
         }

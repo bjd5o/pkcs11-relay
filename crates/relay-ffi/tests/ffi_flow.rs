@@ -205,6 +205,22 @@ fn the_app_surface_end_to_end() {
     assert_eq!(a.not_after - a.not_before, 86_400);
     assert!(app.status().keys.iter().any(|k| k.label == "sign-ec"));
 
+    // Push: the APNs token from the system re-registers the enrolled device with it.
+    assert!(app.set_push_token("not hex".into()).is_err());
+    app.set_push_token("ab".repeat(32)).unwrap();
+    let db = rt
+        .block_on(relay_server::db::open(&dir.join("relay")))
+        .unwrap();
+    let rec = rt
+        .block_on(relay_server::db::device_by_id(&db, "brian-iphone"))
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(rec.push, relay_server::db::PushTarget::Apns { ref token } if *token == "ab".repeat(32)),
+        "{:?}",
+        rec.push
+    );
+
     // Pairing.
     let client_key =
         SoftwareKey::from_pkcs8_pem(&std::fs::read_to_string(dir.join("client.pem")).unwrap())

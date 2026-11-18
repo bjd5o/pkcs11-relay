@@ -8,6 +8,11 @@ import SwiftUI
 @MainActor
 final class AppModel: ObservableObject {
     @Published var setup: SetupFile?
+    enum Tab: Hashable { case requests, status }
+    @Published var tab: Tab = .requests
+    /// The APNs device token, kept until the approver exists to send it.
+    private var pushToken: String?
+
     /// A scanned setup link, checked and waiting for the person to confirm it.
     @Published private(set) var preview: SetupPreview?
     @Published private(set) var approver: Approver?
@@ -106,6 +111,22 @@ final class AppModel: ObservableObject {
             self.approver = a
             self.refresh()
             self.startPolling()
+            if let t = self.pushToken { self.setPushToken(t) }
+        }
+    }
+
+    // MARK: push
+
+    /// The system's APNs token: registered with the relay so it can ring this device.
+    func setPushToken(_ hex: String) {
+        pushToken = hex
+        guard let a = approver else { return }
+        Task {
+            do {
+                try await Self.background { try a.setPushToken(token: hex) }
+            } catch {
+                NSLog("relay-push: could not register the token: %@", error.localizedDescription)
+            }
         }
     }
 
