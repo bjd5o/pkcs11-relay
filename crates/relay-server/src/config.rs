@@ -36,6 +36,27 @@ pub struct Config {
     /// at `/v1/manifest.asc`, from `manifest_signature_file` or else `<manifest_file>.asc`.
     pub manifest_file: Option<PathBuf>,
     pub manifest_signature_file: Option<PathBuf>,
+    /// The manifest signer's OpenPGP public key, the same one clients use. Required with
+    /// `manifest_file`: the relay verifies the manifest it serves and filters its key
+    /// advertisement through it.
+    pub manifest_signer: Option<PathBuf>,
+    /// Hardware attestation policy for that check, as in the provider.
+    pub hardware_attestation: relay_core::hw_attestation::PolicyConfig,
+}
+
+impl Config {
+    /// `manifest_signature_file`, or else `<manifest_file>.asc`.
+    pub fn manifest_signature_path(&self) -> PathBuf {
+        self.manifest_signature_file.clone().unwrap_or_else(|| {
+            let mut s = self
+                .manifest_file
+                .clone()
+                .unwrap_or_default()
+                .into_os_string();
+            s.push(".asc");
+            PathBuf::from(s)
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -78,6 +99,8 @@ impl Default for Config {
             notify: NotifyConfig::Log,
             manifest_file: None,
             manifest_signature_file: None,
+            manifest_signer: None,
+            hardware_attestation: Default::default(),
         }
     }
 }

@@ -142,16 +142,7 @@ const SPECS: &[Spec] = &[
 pub const ATTEST_SERIAL: u32 = 20_261_117;
 
 fn pem_certs(ders: &[Vec<u8>]) -> Result<String, String> {
-    use x509_cert::der::{Decode, EncodePem};
-    let mut out = String::new();
-    for d in ders {
-        out.push_str(
-            &x509_cert::Certificate::from_der(d)
-                .and_then(|c| c.to_pem(x509_cert::der::pem::LineEnding::LF))
-                .map_err(|e| e.to_string())?,
-        );
-    }
-    Ok(out)
+    Ok(relay_core::hw_attestation::testing::to_pem(ders))
 }
 
 fn w(path: &Path, data: impl AsRef<[u8]>) -> Result<(), String> {
@@ -289,7 +280,7 @@ pub fn generate(
         .map(|c| format!("{c:?}"))
         .collect::<Vec<_>>()
         .join(", ");
-    w(&out.join("relay.toml"), format!("listen = \"0.0.0.0:8443\"\ntls_cert = \"{root}/relay-cert.pem\"\ntls_key = \"{root}/relay-key.pem\"\ndata_dir = \"/data\"\n# Two gates in one minute: above the default of 30 requests per minute.\nclient_requests_per_minute = 120\npairing_allowed_cidrs = [{cidrs}]\nmanifest_file = \"{root}/manifest.json\"\n\n[notify]\nkind = \"log\"\n"))?;
+    w(&out.join("relay.toml"), format!("listen = \"0.0.0.0:8443\"\ntls_cert = \"{root}/relay-cert.pem\"\ntls_key = \"{root}/relay-key.pem\"\ndata_dir = \"/data\"\n# Two gates in one minute: above the default of 30 requests per minute.\nclient_requests_per_minute = 120\npairing_allowed_cidrs = [{cidrs}]\nmanifest_file = \"{root}/manifest.json\"\nmanifest_signer = \"{root}/signer.asc\"\n\n[notify]\nkind = \"log\"\n{hw}"))?;
     for (card, approve) in [("a", true), ("b", false), ("c", false)] {
         let cfg = format!(
             "relay_url = {relay_url:?}\nrelay_ca_file = \"{root}/relay-ca.pem\"\ndevice_id = \"approver-{card}\"\ndata_dir = \"{root}/state/approver-{card}\"\n\

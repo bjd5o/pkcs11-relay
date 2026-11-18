@@ -156,6 +156,7 @@ pub struct AppState {
     pub inner: Mutex<Inner>,
     pub notifier: Arc<dyn Notifier>,
     pub metrics: Metrics,
+    pub manifest_check: crate::trust::ManifestCheck,
 }
 
 impl AppState {

@@ -82,13 +82,11 @@ async fn manifest(State(st): S) -> Result<Response, ApiError> {
 }
 
 async fn manifest_signature(State(st): S) -> Result<Response, ApiError> {
-    let sig = st.cfg.manifest_signature_file.clone().or_else(|| {
-        st.cfg.manifest_file.as_ref().map(|m| {
-            let mut s = m.clone().into_os_string();
-            s.push(".asc");
-            std::path::PathBuf::from(s)
-        })
-    });
+    let sig = st
+        .cfg
+        .manifest_file
+        .as_ref()
+        .map(|_| st.cfg.manifest_signature_path());
     serve_file(sig.as_deref(), "application/pgp-signature")
 }
 
@@ -385,9 +383,11 @@ async fn list_keys(
 ) -> ApiResult<Json<serde_json::Value>> {
     let c = authenticate_client(&st, &h, &m, &uri, b"").await?;
     let devices = db::list_devices(&st.db).await.map_err(internal)?;
+    let t = now();
+    let view = st.manifest_check.view(&st.cfg, t);
     let mut keys: Vec<serde_json::Value> = Vec::new();
     for fp in &c.approved_keys {
-        let holders: Vec<&DeviceRecord> = devices.iter().filter(|d| d.advertises(fp)).collect();
+        let holders: Vec<&DeviceRecord> = devices.iter().filter(|d| view.counts(d, fp)).collect();
         let Some(first) = holders.first() else {
             continue;
         };
@@ -468,11 +468,12 @@ async fn submit_request(
         ));
     }
     let fp = f.key_fingerprint.to_string();
+    let view = st.manifest_check.view(&st.cfg, t);
     let devices: Vec<DeviceRecord> = db::list_devices(&st.db)
         .await
         .map_err(internal)?
         .into_iter()
-        .filter(|d| d.advertises(&fp))
+        .filter(|d| view.counts(d, &fp))
         .collect();
     if devices.is_empty() {
         return Err(err(
@@ -1007,6 +1008,17 @@ async fn register_device(
             "AttestationMismatch",
             "attestation names a different device or key",
         ));
+    }
+    // With a valid manifest, the attestation must be signed by one of its attest keys. Its
+    // window is the clients' check: an expired device re-registers when it renews.
+    if let crate::trust::View::Valid(mf) = st.manifest_check.view(&st.cfg, now()) {
+        if let Err(e) = relay_core::attestation::verify_attestation_signer(&attestation, &mf) {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "AttestationInvalid",
+                e.to_string(),
+            ));
+        }
     }
     if b.keys.len() > 64 {
         return Err(err(

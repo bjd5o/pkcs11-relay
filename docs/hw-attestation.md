@@ -70,7 +70,9 @@ The relay verifies the manifest it serves with the same `relay-core` function an
 filters `GET /v1/keys` through it:
 
 - **Valid manifest:** advertise only keys that the manifest lists with a non-`attest` role and
-  that a device whose attestation verifies against a manifest attest key has registered.
+  that a device whose attestation a manifest attest key signed has registered. The window is
+  not checked: an expired device must keep receiving requests to renew during an approval, and
+  clients reject its responses until it does.
 - **Invalid manifest** (signature, freshness or hardware attestation): advertise **no keys**, and
   log the reason at error level each time the manifest is re-read. The relay keeps serving the
   manifest bytes unchanged, so providers report "manifest invalid" rather than "unreachable" and

@@ -11,6 +11,7 @@ pub mod db;
 pub mod metrics;
 pub mod notify;
 pub mod state;
+pub mod trust;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -22,6 +23,7 @@ use state::{now, AppState};
 /// Build the shared state: open the database and the notifier.
 pub async fn build_state(cfg: Config) -> Result<Arc<AppState>, String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
+    let manifest_check = trust::ManifestCheck::new(&cfg)?;
     let db = db::open(&cfg.data_dir).await?;
     let notifier: Arc<dyn notify::Notifier> = match &cfg.notify {
         NotifyConfig::Log => Arc::new(notify::LogNotifier),
@@ -44,6 +46,7 @@ pub async fn build_state(cfg: Config) -> Result<Arc<AppState>, String> {
         inner: Mutex::new(Default::default()),
         notifier,
         metrics: Default::default(),
+        manifest_check,
     }))
 }
 

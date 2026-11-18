@@ -173,6 +173,20 @@ pub fn verify_attestation(
     })
 }
 
+/// Steps 1–3 of §5.1 only: who signed the attestation, not whether it is current. For the
+/// relay, which keeps routing to a device whose attestation expired so that the device can
+/// renew it during its next approval; clients always run [`verify_attestation`].
+pub fn verify_attestation_signer(bytes: &[u8], manifest: &Manifest) -> Result<VerifiedAttestation> {
+    let f = verify_signature(bytes, manifest)?.fields;
+    Ok(VerifiedAttestation {
+        device_id: f.device_id,
+        device_key: f.device_key,
+        not_before: f.not_before,
+        not_after: f.not_after,
+        attest_key_fingerprint: f.attest_key_fingerprint,
+    })
+}
+
 /// Client and device ids: 1–64 characters of `[a-z0-9-]`, not starting or ending with `-`.
 pub fn check_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()

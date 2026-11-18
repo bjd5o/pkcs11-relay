@@ -220,3 +220,4 @@ Decision (Brian approved the design):
 Consequences:
 - The serial is inside the leaf certificate, so the published manifest names the card serials. Real chains are never committed; tests use a synthetic hierarchy in relay-softcard.
 - Existing fixtures and gate manifests need chains, or `require = false`.
+- The relay checks only who signed a device's attestation, not its window (`relay_core::attestation::verify_attestation_signer`). Renewal happens during an approval, so a relay that dropped expired devices would never let them renew. Clients still reject expired attestations (Failure handling row unchanged).

@@ -89,6 +89,11 @@ fn the_app_surface_end_to_end() {
     let cfg = relay_server::config::Config {
         data_dir: dir.join("relay"),
         manifest_file: Some(dir.join("manifest.json")),
+        manifest_signer: Some(dir.join("signer.asc")),
+        hardware_attestation: relay_core::hw_attestation::PolicyConfig {
+            require: true,
+            roots_file: Some(dir.join("attestation-root.pem")),
+        },
         ..Default::default()
     };
     let st = rt.block_on(relay_server::build_state(cfg)).unwrap();

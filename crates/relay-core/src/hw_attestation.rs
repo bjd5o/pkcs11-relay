@@ -535,6 +535,19 @@ pub mod testing {
         }
     }
 
+    /// Certificates as a PEM bundle (for roots files in test configs).
+    pub fn to_pem(ders: &[Vec<u8>]) -> String {
+        use x509_cert::der::EncodePem;
+        ders.iter()
+            .map(|d| {
+                x509_cert::Certificate::from_der(d)
+                    .expect("certificate")
+                    .to_pem(x509_cert::der::pem::LineEnding::LF)
+                    .expect("PEM")
+            })
+            .collect()
+    }
+
     pub fn der_integer(n: u32) -> Vec<u8> {
         let mut body: Vec<u8> = n
             .to_be_bytes()
