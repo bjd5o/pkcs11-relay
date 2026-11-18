@@ -4,23 +4,39 @@
 
 import Foundation
 
-/// The file `relayctl app-config` writes.
+/// The setup the person confirmed, built from a checked setup link (relay-ffi
+/// `setupFromLink`). Everything here is public: pins, the signer's public key, the link.
 struct SetupFile: Codable, Equatable {
     var relay_url: String
     var relay_ca_pem: String?
     var manifest_url: String
     var manifest_signer: String
+    var signer_fingerprint: String?
     var device_id: String
     var attestation_window_secs: UInt64
+    /// Sent with the first registration; the relay admits a new device only with it.
+    var setup_link: String?
     /// Testing only: roots that replace Yubico's attestation root.
     var attestation_roots_pem: String?
+
+    init(preview p: SetupPreview, windowSecs: UInt64, rootsPem: String?) {
+        relay_url = p.relayUrl
+        relay_ca_pem = p.relayCaPem
+        manifest_url = p.manifestUrl
+        manifest_signer = p.manifestSigner
+        signer_fingerprint = p.signerFingerprint
+        device_id = p.deviceId
+        attestation_window_secs = windowSecs
+        setup_link = p.link
+        attestation_roots_pem = rootsPem
+    }
 
     var config: ApproverConfig {
         ApproverConfig(
             relayUrl: relay_url, relayCaPem: relay_ca_pem, manifestUrl: manifest_url,
             manifestSigner: manifest_signer, deviceId: device_id,
             attestationWindowSecs: attestation_window_secs, skewSecs: 60,
-            attestationRootsPem: attestation_roots_pem, setupLink: nil)
+            attestationRootsPem: attestation_roots_pem, setupLink: setup_link)
     }
 }
 

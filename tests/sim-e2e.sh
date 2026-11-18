@@ -72,9 +72,11 @@ until curl -fs --cacert "$W/relay-ca.pem" "https://localhost:$PORT/healthz" >/de
   sleep 0.2
 done
 
-target/debug/relayctl app-config --relay-url "https://localhost:$PORT" --relay-ca "$W/relay-ca.pem" \
-  --signer "$W/signer.asc" --device-id sim-iphone --attestation-days 1 \
-  --attestation-roots "$W/attestation-root.pem" --out "$W/setup.json" >/dev/null
+# The setup link, exactly as a person would make it (checks the live relay first).
+target/debug/relayctl app-link --no-input --relay-url "https://localhost:$PORT" \
+  --relay-ca "$W/relay-ca.pem" --pgp-secret "$W/signer-secret.asc" --device-id sim-iphone \
+  --valid-for 1h >"$W/link.txt"
+LINK=$(head -1 "$W/link.txt")
 python3 -I - "$W/softcard-a" "$(cat "$W/pin")" >"$W/card.json" <<'PY'
 import json, os, sys
 d, pin = sys.argv[1], sys.argv[2].strip()
@@ -92,7 +94,9 @@ target/debug/relay-test-approver sim-client --config "$W/gate.toml" --timeout-se
 CLIENT_PID=$!
 
 echo "== UI test on '$SIM'"
-TEST_RUNNER_RELAY_TEST_SETUP="$(cat "$W/setup.json")" \
+TEST_RUNNER_RELAY_TEST_LINK="$LINK" \
+TEST_RUNNER_RELAY_TEST_ROOTS="$(cat "$W/attestation-root.pem")" \
+TEST_RUNNER_RELAY_TEST_KEYSERVER="http://127.0.0.1:9" \
 TEST_RUNNER_RELAY_TEST_CARD="$(cat "$W/card.json")" \
 TEST_RUNNER_RELAY_TEST_PIN="$(tr -d '\n' <"$W/pin")" \
 xcodebuild -project apps/apple/RelayApprover.xcodeproj -scheme RelayApprover \

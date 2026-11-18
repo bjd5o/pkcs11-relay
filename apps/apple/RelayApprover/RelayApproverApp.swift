@@ -37,8 +37,12 @@ struct ContentView: View {
                 }
             }
         }
+        .onOpenURL { url in
+            // poh://setup?… from the Camera app (relayctl app-link's QR code).
+            Task { await model.open(link: url.absoluteString) }
+        }
         .overlay(alignment: .bottom) {
-            if let busy = model.busy, model.approver != nil {
+            if let busy = model.busy, model.approver != nil || model.setup == nil {
                 Text(busy).padding(8).background(.thinMaterial, in: Capsule()).padding()
             }
         }

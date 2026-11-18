@@ -29,10 +29,17 @@
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<false/>
 	</dict>
-	<key>UIFileSharingEnabled</key>
-	<true/>
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>setup link</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>poh</string>
+			</array>
+		</dict>
+	</array>
 	<key>NFCReaderUsageDescription</key>
 	<string>Talks to your YubiKey to run approved operations.</string>
 	<key>NSFaceIDUsageDescription</key>

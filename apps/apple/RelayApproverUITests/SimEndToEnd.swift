@@ -7,15 +7,31 @@ import XCTest
 final class SimEndToEnd: XCTestCase {
     func testEnrollPairAndApproveADecrypt() throws {
         let env = ProcessInfo.processInfo.environment
-        guard let setup = env["RELAY_TEST_SETUP"], let card = env["RELAY_TEST_CARD"] else {
+        guard env["RELAY_TEST_LINK"] != nil, env["RELAY_TEST_CARD"] != nil else {
             throw XCTSkip("run by tests/sim-e2e.sh")
         }
         let pin = env["RELAY_TEST_PIN"] ?? "123456"
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchEnvironment["RELAY_TEST_SETUP"] = setup
-        app.launchEnvironment["RELAY_TEST_CARD"] = card
+        // The setup link arrives as if scanned; test roots and a keyserver stand-in come along.
+        for k in ["RELAY_TEST_LINK", "RELAY_TEST_CARD", "RELAY_TEST_ROOTS", "RELAY_TEST_KEYSERVER"] {
+            app.launchEnvironment[k] = env[k]
+        }
         app.launch()
+
+        // Setup: the checked link is shown; the person reads it, scrolls down and confirms.
+        let device = element(app, "setup-device")
+        if !device.waitForExistence(timeout: 60) {
+            // Show what the app shows instead (an error alert, usually).
+            XCTFail("the setup link was not accepted:\n\(app.debugDescription)")
+            return
+        }
+        let confirm = app.buttons["confirm-setup"]
+        for _ in 0..<6 where !confirm.exists || !confirm.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        confirm.tap()
 
         // Enroll: PIN, then the (software) tap.
         let status = app.tabBars.buttons["Status"]

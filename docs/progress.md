@@ -89,3 +89,15 @@ Hardware attestation of attest keys (design `docs/hw-attestation.md`, approved 2
 - [x] Relay: verifies the manifest it serves, advertises and routes only manifest keys from devices whose attestation a manifest attest key signed (window not checked, so expired devices can renew), rejects registrations otherwise, and advertises nothing while the manifest is invalid (`relay-server` `trust` tests)
 - [x] Fixtures: the attest key carries a synthetic chain; the m3 gate checks that a manifest whose attest key shows touch `never` gives zero slots
 - [ ] Real cards: Brian imports the operation keys onto both YubiKeys, generates an attest key on each, then `relayctl manifest add --role attest` per card (per-command approval)
+
+Signed setup links (design `docs/setup-link.md`, approved 2026-11-17):
+- [x] Spec, wire-format (§5.1 step 5, §9.2, §10, new §11) and decisions updated
+- [x] Manifest device policy: `require_hardware_attestation` and `max_attestation_window_secs` (default 7 days) in the signed manifest; `AttestationWindowTooLong` on the attestation row; the engine refuses longer windows and renews early when the maximum drops; `relayctl manifest set`; config `require` removed
+- [x] relay-core: setup links (`poh://setup?…`, fixed form, signature over the bytes before `&sig=`, id = SHA-256 of those bytes), `signer_status` (revocation and expiry across copies, only verifying signatures count), relay CA pin check; tests and golden vectors, gpg-made signer vectors (`tests/vectors/signer`)
+- [x] Relay: `/v1/relay-ca.pem`, `/v1/manifest-signer.asc`; new device ids (also after revocation) admitted only by a setup link signed by its own manifest signer, in time, naming the device and unused (`used_setup_links` stores the signed-bytes hash); signer watch (file every minute, keys.openpgp.org every 15 minutes, fail open, revocation persisted); while unusable it lists no keys, cancels pending requests and refuses client and device calls with 503 `ManifestSignerUnusable` (`relay-test-approver` `tests/setup_and_signer.rs`)
+- [x] `relayctl app-link`: prompts or flags, checks the live relay and the signer's status, signs through gpg or a software key, prints the URL and QR code (`qrcode =0.14.1`), `--svg`, `--replace`; `relayctl app-config` removed
+- [x] `relay-ffi::setup_from_link` (with `relay-approver::setup`): time window, pinned CA, signer fingerprint, link signature, keyserver identity and status, manifest; the FFI flow test sets up this way
+- [x] App: `poh://` URL scheme, confirm screen (fingerprint, identity or warning, link times, device, window picker), file import removed
+- [x] Docker gate: a revoked signer makes the relay list no keys (checked last)
+- [ ] Spec wording: the new Failure handling row says "Zero slots"; the provider actually keeps the manifest's slots and lists no keys in them (question for Brian)
+

@@ -8,6 +8,8 @@ import SwiftUI
 @MainActor
 final class AppModel: ObservableObject {
     @Published var setup: SetupFile?
+    /// A scanned setup link, checked and waiting for the person to confirm it.
+    @Published private(set) var preview: SetupPreview?
     @Published private(set) var approver: Approver?
     @Published private(set) var status: Status?
     @Published private(set) var inbox = Inbox(requests: [], pairings: [], rejected: 0)
@@ -24,15 +26,13 @@ final class AppModel: ObservableObject {
     init() {
         setup = Storage.loadSetup()
         #if RELAY_TEST_CARD
-        // Simulator end-to-end test only (tests/sim-e2e.sh): the setup arrives in the
-        // environment instead of through the file picker.
-        // Each test run starts from scratch: no stored state or keys from an earlier run.
-        if let json = ProcessInfo.processInfo.environment["RELAY_TEST_SETUP"],
-           let s = try? JSONDecoder().decode(SetupFile.self, from: Data(json.utf8)) {
+        // Simulator end-to-end test only (tests/sim-e2e.sh): each run starts from scratch, and
+        // the setup link arrives in the environment as if scanned.
+        if let link = ProcessInfo.processInfo.environment["RELAY_TEST_LINK"] {
             Storage.reset()
             EnclaveKey.reset()
-            try? Storage.saveSetup(s)
-            setup = s
+            setup = nil
+            Task { await self.open(link: link) }
         }
         #endif
         if setup != nil { Task { await connect() } }
@@ -40,15 +40,41 @@ final class AppModel: ObservableObject {
 
     // MARK: setup
 
-    /// Read a setup file and return it with the signer fingerprint for the person to confirm.
-    func readSetup(_ data: Data) throws -> (SetupFile, String) {
-        let s = try JSONDecoder().decode(SetupFile.self, from: data)
-        return (s, try manifestSignerFingerprint(armored: s.manifest_signer))
+    /// Testing overrides from the simulator test's environment; none in a release build.
+    private var setupOverrides: SetupOverrides {
+        #if RELAY_TEST_CARD
+        let env = ProcessInfo.processInfo.environment
+        return SetupOverrides(
+            keyserverUrl: env["RELAY_TEST_KEYSERVER"], attestationRootsPem: env["RELAY_TEST_ROOTS"])
+        #else
+        return SetupOverrides(keyserverUrl: nil, attestationRootsPem: nil)
+        #endif
     }
 
-    func confirmSetup(_ s: SetupFile) async {
+    /// A `poh://setup?…` link was scanned or pasted: check it and everything it points at.
+    func open(link: String) async {
+        guard setup == nil else {
+            error = "This app is already set up. Use Start over on the Status tab to set it up again."
+            return
+        }
+        let overrides = setupOverrides
+        await run("Checking the setup link") {
+            let p = try await Self.background { try setupFromLink(link: link, overrides: overrides) }
+            self.preview = p
+        }
+    }
+
+    func cancelSetup() {
+        preview = nil
+    }
+
+    /// The person compared the fingerprint and chose a window: save and connect.
+    func confirmSetup(windowSecs: UInt64) async {
+        guard let p = preview else { return }
         do {
+            let s = SetupFile(preview: p, windowSecs: windowSecs, rootsPem: setupOverrides.attestationRootsPem)
             try Storage.saveSetup(s)
+            preview = nil
             setup = s
             await connect()
         } catch { show(error) }
@@ -59,6 +85,7 @@ final class AppModel: ObservableObject {
         approver = nil
         status = nil
         setup = nil
+        preview = nil
         Storage.reset()
         EnclaveKey.reset()
     }
