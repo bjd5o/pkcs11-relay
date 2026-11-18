@@ -148,6 +148,62 @@ impl HardwarePolicy {
     }
 }
 
+/// The `[hardware_attestation]` section shared by the provider, relay and approver configs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyConfig {
+    /// Every attest key must carry a valid YubiKey attestation chain. Default true.
+    #[serde(default = "default_require")]
+    pub require: bool,
+    /// Testing only: a PEM file of roots that replace Yubico's attestation root.
+    pub roots_file: Option<std::path::PathBuf>,
+}
+
+fn default_require() -> bool {
+    true
+}
+
+impl Default for PolicyConfig {
+    fn default() -> Self {
+        PolicyConfig {
+            require: true,
+            roots_file: None,
+        }
+    }
+}
+
+impl PolicyConfig {
+    /// Build the policy, reading `roots_file` if set. Callers log a warning when
+    /// [`PolicyConfig::warning`] returns one.
+    pub fn policy(&self) -> std::result::Result<HardwarePolicy, String> {
+        match &self.roots_file {
+            None => Ok(HardwarePolicy::yubico(self.require)),
+            Some(p) => {
+                let pem = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+                let roots =
+                    certificates_from_pem(&pem).map_err(|e| format!("{}: {e}", p.display()))?;
+                HardwarePolicy::with_roots(self.require, roots)
+                    .map_err(|e| format!("{}: {e}", p.display()))
+            }
+        }
+    }
+
+    /// What an operator should be told about this configuration, if anything.
+    pub fn warning(&self) -> Option<String> {
+        match (&self.roots_file, self.require) {
+            (Some(p), _) => Some(format!(
+                "hardware_attestation.roots_file {} replaces Yubico's root: testing only",
+                p.display()
+            )),
+            (None, false) => Some(
+                "hardware_attestation.require = false: attest keys without a YubiKey attestation are accepted"
+                    .into(),
+            ),
+            (None, true) => None,
+        }
+    }
+}
+
 /// Split a PEM bundle into DER certificates (for configured test roots and chain files).
 pub fn certificates_from_pem(pem: &[u8]) -> Result<Vec<Vec<u8>>> {
     use x509_cert::der::DecodePem;

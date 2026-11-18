@@ -206,22 +206,15 @@ impl RelayClient {
         &self,
         url: &str,
         signer: &ManifestSigner,
+        policy: &relay_core::HardwarePolicy,
         cached: Option<&Manifest>,
         now: u64,
         skew: u64,
     ) -> Result<(Manifest, Vec<u8>)> {
         let bytes = self.fetch(url)?;
         let sig = self.fetch(&format!("{url}.asc"))?;
-        let m = verify_manifest(
-            &bytes,
-            &sig,
-            signer,
-            &relay_core::HardwarePolicy::yubico(false),
-            cached,
-            now,
-            skew,
-        )
-        .map_err(crate::invalid)?;
+        let m = verify_manifest(&bytes, &sig, signer, policy, cached, now, skew)
+            .map_err(crate::invalid)?;
         Ok((m, sig))
     }
 

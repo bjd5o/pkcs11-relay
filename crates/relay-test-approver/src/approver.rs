@@ -45,6 +45,8 @@ pub struct Config {
     pub trusted_clients: Vec<TrustedClient>,
     #[serde(default)]
     pub push: serde_json::Value,
+    #[serde(default)]
+    pub hardware_attestation: relay_core::hw_attestation::PolicyConfig,
 }
 
 fn default_window() -> u64 {
@@ -160,6 +162,7 @@ impl Approver {
         let manifest = load_manifest(
             &cfg.manifest_url,
             &signer,
+            &cfg.hardware_attestation.policy()?,
             cfg.skew_secs,
             (&cfg.relay_url, ca.as_deref()),
         )

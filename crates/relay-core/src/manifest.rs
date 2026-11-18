@@ -213,6 +213,14 @@ impl Manifest {
     pub fn from_json_unverified(bytes: &[u8]) -> Result<Self> {
         parse(bytes)
     }
+
+    /// Apply the hardware attestation policy to an unverified manifest, filling `attested`.
+    /// Tests only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn check_hardware_unverified(mut self, policy: &HardwarePolicy, now: u64) -> Result<Self> {
+        check_hardware(&mut self, policy, now)?;
+        Ok(self)
+    }
 }
 
 fn parse_hardware_attestation(

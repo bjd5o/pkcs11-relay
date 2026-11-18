@@ -68,21 +68,15 @@ impl Discovery {
             std::fs::read(&cfg.manifest_cache),
             std::fs::read(sig_path(&cfg.manifest_cache)),
         ) {
-            (Ok(b), Ok(s)) => match verify_manifest(
-                &b,
-                &s,
-                signer,
-                &relay_core::HardwarePolicy::yubico(false),
-                None,
-                t,
-                cfg.skew_secs,
-            ) {
-                Ok(m) => Some(m),
-                Err(e) => {
-                    log::warn(&format!("cached manifest rejected: {e}"));
-                    None
+            (Ok(b), Ok(s)) => {
+                match verify_manifest(&b, &s, signer, &cfg.policy, None, t, cfg.skew_secs) {
+                    Ok(m) => Some(m),
+                    Err(e) => {
+                        log::warn(&format!("cached manifest rejected: {e}"));
+                        None
+                    }
                 }
-            },
+            }
             _ => None,
         };
         let keys = std::fs::read(keys_cache_path(cfg))
@@ -144,7 +138,7 @@ impl Discovery {
                 &bytes,
                 &sig,
                 signer,
-                &relay_core::HardwarePolicy::yubico(false),
+                &cfg.policy,
                 self.manifest.as_ref(),
                 t,
                 cfg.skew_secs,

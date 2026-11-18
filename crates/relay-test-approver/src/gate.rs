@@ -29,6 +29,8 @@ pub struct Config {
     pub manifest_signer: PathBuf,
     pub client_key: PathBuf,
     pub client_id: String,
+    #[serde(default)]
+    pub hardware_attestation: relay_core::hw_attestation::PolicyConfig,
 }
 
 struct Gate {
@@ -167,6 +169,7 @@ pub async fn run(cfg: Config) -> Result<(), String> {
     let manifest = load_manifest(
         &cfg.manifest_url,
         &signer,
+        &cfg.hardware_attestation.policy()?,
         60,
         (&cfg.relay_url, ca_for_manifest.as_deref()),
     )

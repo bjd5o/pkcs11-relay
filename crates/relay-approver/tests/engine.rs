@@ -388,3 +388,53 @@ fn a_bad_device_signature_is_caught() {
         Err(ApproverError::Signer(_))
     ));
 }
+
+#[test]
+fn discovery_reports_an_attest_key_attested_on_another_card() {
+    use relay_core::hw_attestation::testing::{LeafOptions, TestHierarchy};
+    use relay_core::hw_attestation::HardwareAttestation;
+    let h = TestHierarchy::new();
+    let mut card = SoftCard::new(PIN).with_attestation(h.device(111, (5, 7, 4)));
+    let attest = card.generate(slot(0x95), Algorithm::P256);
+    let elsewhere = h.device(222, (5, 7, 4));
+    let chain = elsewhere.chain(
+        0x95,
+        attest.spki(),
+        &LeafOptions::for_device(&elsewhere, 2, 2),
+    );
+    let draft = ManifestDraft {
+        version: 2,
+        issued_at: NOW - 100,
+        valid_until: NOW + 86_400,
+        keys: vec![DraftKey {
+            role: Role::Attest,
+            label: "attest".into(),
+            id: vec![0x10],
+            token: "yk".into(),
+            public_key: attest,
+            hardware_attestation: Some(HardwareAttestation { chain }),
+        }],
+    };
+    let policy = relay_core::HardwarePolicy::with_roots(true, vec![h.root_der()]).unwrap();
+    let manifest = Manifest::from_json_unverified(&draft.to_json().unwrap())
+        .unwrap()
+        .check_hardware_unverified(&policy, NOW)
+        .unwrap();
+    let engine = Engine::new(
+        EngineConfig {
+            device_id: "phone".into(),
+            attestation_window_secs: 86_400,
+            skew_secs: 60,
+            renew_attestation: true,
+        },
+        manifest,
+        Arc::new(SoftwareKey::generate_p256()),
+        Vec::new(),
+    );
+    assert_eq!(engine.discover(&mut card).unwrap().len(), 1);
+    let report = engine.last_discovery();
+    assert!(
+        report.contains("attest's hardware attestation names YubiKey 222, but this card is 111"),
+        "{report}"
+    );
+}

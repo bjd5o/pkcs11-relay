@@ -12,12 +12,20 @@ struct SetupFile: Codable, Equatable {
     var manifest_signer: String
     var device_id: String
     var attestation_window_secs: UInt64
+    /// Absent in older setup files: then required, like everywhere else.
+    var require_hardware_attestation: Bool?
+    /// Testing only: roots that replace Yubico's attestation root.
+    var attestation_roots_pem: String?
+
+    var requiresHardwareAttestation: Bool { require_hardware_attestation ?? true }
 
     var config: ApproverConfig {
         ApproverConfig(
             relayUrl: relay_url, relayCaPem: relay_ca_pem, manifestUrl: manifest_url,
             manifestSigner: manifest_signer, deviceId: device_id,
-            attestationWindowSecs: attestation_window_secs, skewSecs: 60)
+            attestationWindowSecs: attestation_window_secs, skewSecs: 60,
+            requireHardwareAttestation: requiresHardwareAttestation,
+            attestationRootsPem: attestation_roots_pem)
     }
 }
 

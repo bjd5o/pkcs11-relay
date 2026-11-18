@@ -30,8 +30,9 @@ pub fn run(cfg: &Config, timeout: Duration) -> Result<(), String> {
         RelayClient::new(&cfg.relay_url, ca.as_deref(), key.clone()).map_err(|e| e.to_string())?;
     let signer =
         ManifestSigner::from_bytes(&read(&cfg.manifest_signer)?).map_err(|e| e.to_string())?;
+    let policy = cfg.hardware_attestation.policy()?;
     let (manifest, _) = relay
-        .fetch_manifest(&cfg.manifest_url, &signer, None, now(), 60)
+        .fetch_manifest(&cfg.manifest_url, &signer, &policy, None, now(), 60)
         .map_err(|e| e.to_string())?;
     let unseal = manifest
         .keys

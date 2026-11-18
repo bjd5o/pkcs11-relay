@@ -45,6 +45,12 @@ pub struct Config {
     pub log_level: Option<String>,
     /// Log file; stderr when unset.
     pub log_path: Option<PathBuf>,
+    /// Hardware attestation of the manifest's attest keys (wire-format §9.4).
+    #[serde(default)]
+    pub hardware_attestation: relay_core::hw_attestation::PolicyConfig,
+    /// The policy built from `hardware_attestation` by [`Config::load`].
+    #[serde(skip)]
+    pub policy: relay_core::HardwarePolicy,
 }
 
 fn default_timeout() -> u64 {
@@ -64,8 +70,15 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("reading {}: {e}", path.display()))?;
-        let cfg: Config =
+        let mut cfg: Config =
             toml::from_str(&text).map_err(|e| format!("parsing {}: {e}", path.display()))?;
+        cfg.policy = cfg
+            .hardware_attestation
+            .policy()
+            .map_err(|e| format!("hardware_attestation: {e}"))?;
+        if let Some(w) = cfg.hardware_attestation.warning() {
+            crate::log::warn(&w);
+        }
         relay_core::check_id(&cfg.client_id).map_err(|e| format!("client_id: {e}"))?;
         if cfg.timeout_secs == 0 || cfg.timeout_secs > relay_core::request::MAX_TTL {
             return Err(format!(

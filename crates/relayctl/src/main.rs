@@ -58,6 +58,12 @@ enum Cmd {
         /// A window in minutes instead of days (to test renewal, which starts at 75%).
         #[arg(long, conflicts_with = "attestation_days")]
         attestation_minutes: Option<u64>,
+        /// Let the app accept attest keys without a YubiKey attestation (`require = false`).
+        #[arg(long)]
+        no_hardware_attestation: bool,
+        /// Testing only: PEM roots that replace Yubico's attestation root in the app.
+        #[arg(long, hide = true)]
+        attestation_roots: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -600,6 +606,8 @@ fn run(cli: Cli) -> Result<(), String> {
             device_id,
             attestation_days,
             attestation_minutes,
+            no_hardware_attestation,
+            attestation_roots,
             out,
         } => {
             let signer_pem = std::fs::read_to_string(&signer)
@@ -622,6 +630,10 @@ fn run(cli: Cli) -> Result<(), String> {
                 "manifest_signer": signer_pem,
                 "device_id": device_id,
                 "attestation_window_secs": attestation_minutes.map_or(attestation_days * 86_400, |m| m * 60),
+                "require_hardware_attestation": !no_hardware_attestation,
+                "attestation_roots_pem": attestation_roots
+                    .map(|p| std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display())))
+                    .transpose()?,
             });
             util::write(&out, serde_json::to_vec_pretty(&v).expect("json"))?;
             println!(

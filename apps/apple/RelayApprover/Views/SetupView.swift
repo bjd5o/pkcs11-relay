@@ -24,6 +24,12 @@ struct SetupView: View {
                         LabeledContent("Attestation", value: c.attestation_window_secs >= 86_400
                             ? "\(c.attestation_window_secs / 86_400) days"
                             : "\(c.attestation_window_secs / 60) minutes")
+                        LabeledContent("YubiKey attestation", value: c.requiresHardwareAttestation
+                            ? "required" : "not required")
+                        if c.attestation_roots_pem != nil {
+                            Text("This setup file trusts test attestation roots instead of Yubico's. Use it only for testing.")
+                                .font(.footnote).foregroundStyle(.red)
+                        }
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Manifest signer fingerprint").font(.caption).foregroundStyle(.secondary)
                             Text(grouped(fingerprint)).font(.system(.body, design: .monospaced))

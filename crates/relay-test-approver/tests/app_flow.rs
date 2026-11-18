@@ -63,11 +63,24 @@ fn app_path_with_a_separate_auth_key() {
     let device: Arc<dyn DeviceSigner> = Arc::new(SoftwareKey::generate_p256()); // the Secure Enclave key
     let auth: Arc<dyn DeviceSigner> = Arc::new(SoftwareKey::generate_p256()); // the relay-auth key
     let rc = RelayClient::new(&url, Some(&ca), auth.clone()).unwrap();
+    let policy = relay_core::hw_attestation::PolicyConfig {
+        require: true,
+        roots_file: Some(dir.join("attestation-root.pem")),
+    }
+    .policy()
+    .unwrap();
 
     // The manifest, from the relay, verified as clients verify it.
     let start = Instant::now();
     let manifest = loop {
-        match rc.fetch_manifest(&format!("{url}/v1/manifest"), &signer, None, now(), 60) {
+        match rc.fetch_manifest(
+            &format!("{url}/v1/manifest"),
+            &signer,
+            &policy,
+            None,
+            now(),
+            60,
+        ) {
             Ok((m, _sig)) => break m,
             Err(e) if start.elapsed() < Duration::from_secs(10) => {
                 let _ = e;

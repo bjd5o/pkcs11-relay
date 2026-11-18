@@ -2,11 +2,16 @@
 //! devices, a signed manifest, and the configs compose and the in-process tests use.
 //!
 //! Device A approves (and pairs the test client); device B denies after a delay; device C
-//! answers with an expired attestation. All three hold the same attest key.
+//! answers with an expired attestation. All three hold the same attest key, whose YubiKey
+//! attestation chain comes from a synthetic hierarchy: `attestation-root.pem` is its root, for
+//! the configs' `[hardware_attestation] roots_file`, and `attestation-anchors.pem` is the root
+//! followed by its intermediates, for `relayctl --attestation-roots`.
 
 use std::path::Path;
 
 use base64::Engine as _;
+use relay_core::hw_attestation::testing::{LeafOptions, TestHierarchy};
+use relay_core::hw_attestation::HardwareAttestation;
 use relay_core::manifest::{DraftKey, ManifestDraft};
 use relay_core::piv::Slot;
 use relay_core::signing::SoftwareKey;
@@ -133,6 +138,22 @@ const SPECS: &[Spec] = &[
     },
 ];
 
+/// Serial of the synthetic card that "generated" the fixture attest key.
+pub const ATTEST_SERIAL: u32 = 20_261_117;
+
+fn pem_certs(ders: &[Vec<u8>]) -> Result<String, String> {
+    use x509_cert::der::{Decode, EncodePem};
+    let mut out = String::new();
+    for d in ders {
+        out.push_str(
+            &x509_cert::Certificate::from_der(d)
+                .and_then(|c| c.to_pem(x509_cert::der::pem::LineEnding::LF))
+                .map_err(|e| e.to_string())?,
+        );
+    }
+    Ok(out)
+}
+
 fn w(path: &Path, data: impl AsRef<[u8]>) -> Result<(), String> {
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
@@ -182,13 +203,27 @@ pub fn generate(
         )
         .map_err(|e| e.to_string())?;
     }
+    let hierarchy = TestHierarchy::new();
+    let device = hierarchy.device(ATTEST_SERIAL, (5, 7, 4));
+    let chain = device.chain(
+        attest_slot.id(),
+        attest_pk.spki(),
+        &LeafOptions::for_device(&device, 0x02, 0x02),
+    );
+    w(
+        &out.join("attestation-root.pem"),
+        pem_certs(&[hierarchy.root_der()])?,
+    )?;
+    let mut anchors = vec![hierarchy.root_der()];
+    anchors.extend(hierarchy.intermediates());
+    w(&out.join("attestation-anchors.pem"), pem_certs(&anchors)?)?;
     keys.push(DraftKey {
         role: Role::Attest,
         label: "attest".into(),
         id: vec![0x99],
         token: "softcard-a".into(),
         public_key: attest_pk,
-        hardware_attestation: None,
+        hardware_attestation: Some(HardwareAttestation { chain }),
     });
 
     let draft = ManifestDraft {
@@ -248,6 +283,7 @@ pub fn generate(
     .map(|l| fp(l))
     .collect();
 
+    let hw = format!("\n[hardware_attestation]\nroots_file = \"{root}/attestation-root.pem\"\n");
     let cidrs = pairing_cidrs
         .iter()
         .map(|c| format!("{c:?}"))
@@ -259,7 +295,7 @@ pub fn generate(
             "relay_url = {relay_url:?}\nrelay_ca_file = \"{root}/relay-ca.pem\"\ndevice_id = \"approver-{card}\"\ndata_dir = \"{root}/state/approver-{card}\"\n\
              manifest_url = \"file://{root}/manifest.json\"\nmanifest_signer = \"{root}/signer.asc\"\n\
              softcard_dir = \"{root}/softcard-{card}\"\npin_file = \"{root}/pin\"\nattest_slot = \"95\"\n\n\
-             [[trusted_clients]]\nclient_id = \"{CLIENT_ID}\"\npublic_key = \"{client_pub}\"\nkeys = {approved:?}\napprove_pairing = {approve}\n"
+             [[trusted_clients]]\nclient_id = \"{CLIENT_ID}\"\npublic_key = \"{client_pub}\"\nkeys = {approved:?}\napprove_pairing = {approve}\n{hw}"
         );
         w(&out.join(format!("approver-{card}.toml")), cfg)?;
     }
@@ -267,7 +303,7 @@ pub fn generate(
         &out.join("gate.toml"),
         format!(
             "relay_url = {relay_url:?}\nrelay_ca_file = \"{root}/relay-ca.pem\"\nmanifest_url = \"file://{root}/manifest.json\"\nmanifest_signer = \"{root}/signer.asc\"\n\
-             client_key = \"{root}/client.pem\"\nclient_id = \"{CLIENT_ID}\"\n"
+             client_key = \"{root}/client.pem\"\nclient_id = \"{CLIENT_ID}\"\n{hw}"
         ),
     )?;
     // authorized_keys for the test sshd: the auth-ec key in OpenSSH wire format.
@@ -282,7 +318,7 @@ pub fn generate(
         format!(
             "relay_url = {relay_url:?}\nrelay_ca_file = \"{root}/relay-ca.pem\"\nmanifest_url = \"{relay_url}/v1/manifest\"\n\
              manifest_signer = \"{root}/signer.asc\"\nmanifest_cache = \"{root}/state/client/manifest.json\"\n\
-             client_id = \"{CLIENT_ID}\"\nclient_key = \"{root}/client.pem\"\npurpose = \"milestone 3 gate\"\ntimeout_secs = 30\nlog_level = \"info\"\n"
+             client_id = \"{CLIENT_ID}\"\nclient_key = \"{root}/client.pem\"\npurpose = \"milestone 3 gate\"\ntimeout_secs = 30\nlog_level = \"info\"\n{hw}"
         ),
     )?;
     #[cfg(unix)]

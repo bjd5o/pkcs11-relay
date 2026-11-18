@@ -295,8 +295,10 @@ impl Engine {
     pub fn discover(&self, card: &mut dyn CardTransport) -> Result<Vec<(Slot, ManifestKey)>> {
         let manifest = self.manifest();
         let mut report = Vec::new();
+        let mut serial = None;
         let found = piv::in_session(card, |c| {
             piv::select(c)?;
+            serial = piv::get_serial(c).ok();
             Ok(key_slots()
                 .filter_map(|s| match piv::read_public_key(c, s) {
                     Ok(pk) => {
@@ -317,6 +319,20 @@ impl Engine {
                 })
                 .collect::<Vec<_>>())
         })?;
+        // A sanity check, not a boundary: clients enforce the manifest's attestation. An attest
+        // key whose chain names another card was not generated on this one.
+        for (s, k) in &found {
+            if let (Some(a), Some(serial)) = (k.attested, serial) {
+                if a.serial != serial {
+                    report.push(format!(
+                        "{:02x}: {}'s hardware attestation names YubiKey {}, but this card is {serial}",
+                        s.id(),
+                        k.label,
+                        a.serial
+                    ));
+                }
+            }
+        }
         *self.last_discovery.lock().expect("lock") = if report.is_empty() {
             "no certificates read in any slot".into()
         } else {

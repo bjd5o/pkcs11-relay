@@ -103,6 +103,10 @@ fn the_app_surface_end_to_end() {
         device_id: "brian-iphone".into(),
         attestation_window_secs: 86_400,
         skew_secs: 60,
+        require_hardware_attestation: true,
+        attestation_roots_pem: Some(
+            std::fs::read_to_string(dir.join("attestation-root.pem")).unwrap(),
+        ),
     };
     let device: Arc<dyn DeviceKey> = Arc::new(EnclaveKey(SoftwareKey::generate_p256()));
     let auth: Arc<dyn DeviceKey> = Arc::new(EnclaveKey(SoftwareKey::generate_p256()));
@@ -178,7 +182,12 @@ fn the_app_surface_end_to_end() {
         &std::fs::read(dir.join("manifest.json")).unwrap(),
         &std::fs::read(dir.join("manifest.json.asc")).unwrap(),
         &signer,
-        &relay_core::HardwarePolicy::yubico(false),
+        &relay_core::hw_attestation::PolicyConfig {
+            require: true,
+            roots_file: Some(dir.join("attestation-root.pem")),
+        }
+        .policy()
+        .unwrap(),
         None,
         now(),
         60,

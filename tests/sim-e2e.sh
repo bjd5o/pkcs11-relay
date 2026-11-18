@@ -39,7 +39,8 @@ until curl -fs --cacert "$W/relay-ca.pem" "https://localhost:$PORT/healthz" >/de
 done
 
 target/debug/relayctl app-config --relay-url "https://localhost:$PORT" --relay-ca "$W/relay-ca.pem" \
-  --signer "$W/signer.asc" --device-id sim-iphone --attestation-days 1 --out "$W/setup.json" >/dev/null
+  --signer "$W/signer.asc" --device-id sim-iphone --attestation-days 1 \
+  --attestation-roots "$W/attestation-root.pem" --out "$W/setup.json" >/dev/null
 python3 -I - "$W/softcard-a" "$(cat "$W/pin")" >"$W/card.json" <<'PY'
 import json, os, sys
 d, pin = sys.argv[1], sys.argv[2].strip()

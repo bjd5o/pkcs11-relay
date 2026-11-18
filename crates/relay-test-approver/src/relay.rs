@@ -208,6 +208,7 @@ pub async fn fetch(url: &str, ca_pem: Option<&[u8]>) -> Result<Vec<u8>, String> 
 pub async fn load_manifest(
     url: &str,
     signer: &relay_core::ManifestSigner,
+    policy: &relay_core::HardwarePolicy,
     skew: u64,
     relay: (&str, Option<&[u8]>),
 ) -> Result<relay_core::Manifest, String> {
@@ -218,14 +219,6 @@ pub async fn load_manifest(
     };
     let bytes = fetch(url, ca).await?;
     let sig = fetch(&format!("{url}.asc"), ca).await?;
-    relay_core::verify_manifest(
-        &bytes,
-        &sig,
-        signer,
-        &relay_core::HardwarePolicy::yubico(false),
-        None,
-        now(),
-        skew,
-    )
-    .map_err(|e| e.to_string())
+    relay_core::verify_manifest(&bytes, &sig, signer, policy, None, now(), skew)
+        .map_err(|e| e.to_string())
 }

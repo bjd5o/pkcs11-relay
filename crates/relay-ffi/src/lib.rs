@@ -24,7 +24,9 @@ use relay_approver::{
 };
 use relay_core::piv::{self, PivError};
 use relay_core::signing::DeviceSigner;
-use relay_core::{verify_manifest, Algorithm, Fingerprint, Manifest, ManifestSigner, PublicKey};
+use relay_core::{
+    verify_manifest, Algorithm, Fingerprint, HardwarePolicy, Manifest, ManifestSigner, PublicKey,
+};
 use zeroize::Zeroizing;
 
 uniffi::setup_scaffolding!();
@@ -177,6 +179,10 @@ pub struct ApproverConfig {
     pub device_id: String,
     pub attestation_window_secs: u64,
     pub skew_secs: u64,
+    /// Every manifest attest key must carry a valid YubiKey attestation (default true).
+    pub require_hardware_attestation: bool,
+    /// Testing only: PEM roots that replace Yubico's attestation root.
+    pub attestation_roots_pem: Option<String>,
 }
 
 /// Everything the app persists between launches (Application Support, file protection
@@ -343,6 +349,7 @@ pub struct Approver {
     engine: Engine,
     relay: RelayClient,
     signer: ManifestSigner,
+    policy: HardwarePolicy,
     auth_key: PublicKey,
     manifest_sig: Mutex<Vec<u8>>,
     auth_binding: Mutex<Option<Vec<u8>>>,
@@ -365,6 +372,7 @@ impl Approver {
         let auth_pub = auth.public_key.clone();
         let signer =
             ManifestSigner::from_bytes(config.manifest_signer.as_bytes()).map_err(invalid)?;
+        let policy = hardware_policy(&config)?;
         let relay = RelayClient::new(
             &config.relay_url,
             config.relay_ca_pem.as_deref().map(str::as_bytes),
@@ -373,19 +381,13 @@ impl Approver {
         let t = now();
         // The saved copy is a rollback floor while it is still valid.
         let cached = match (&saved.manifest, &saved.manifest_signature) {
-            (Some(m), Some(s)) => verify_manifest(
-                m,
-                s,
-                &signer,
-                &relay_core::HardwarePolicy::yubico(false),
-                None,
-                t,
-                config.skew_secs,
-            )
-            .ok(),
+            (Some(m), Some(s)) => {
+                verify_manifest(m, s, &signer, &policy, None, t, config.skew_secs).ok()
+            }
             _ => None,
         };
-        let (manifest, sig) = fetch_manifest(&relay, &config, &signer, cached.as_ref(), t)?;
+        let (manifest, sig) =
+            fetch_manifest(&relay, &config, &signer, &policy, cached.as_ref(), t)?;
         let mut clients = Vec::new();
         for c in &saved.clients {
             clients.push(PairedClient {
@@ -427,6 +429,7 @@ impl Approver {
             engine,
             relay,
             signer,
+            policy,
             auth_key: auth_pub,
             manifest_sig: Mutex::new(sig),
             auth_binding: Mutex::new(saved.auth_binding),
@@ -488,7 +491,14 @@ impl Approver {
     /// Fetch the manifest again (verified against the current one).
     pub fn refresh_manifest(&self) -> Result<u64, RelayError> {
         let current = self.engine.manifest();
-        let (m, sig) = fetch_manifest(&self.relay, &self.cfg, &self.signer, Some(&current), now())?;
+        let (m, sig) = fetch_manifest(
+            &self.relay,
+            &self.cfg,
+            &self.signer,
+            &self.policy,
+            Some(&current),
+            now(),
+        )?;
         let v = m.version;
         self.engine.set_manifest(m);
         *self.manifest_sig.lock().expect("lock") = sig;
@@ -730,10 +740,24 @@ fn fetch_manifest(
     relay: &RelayClient,
     cfg: &ApproverConfig,
     signer: &ManifestSigner,
+    policy: &HardwarePolicy,
     cached: Option<&Manifest>,
     t: u64,
 ) -> Result<(Manifest, Vec<u8>), RelayError> {
-    Ok(relay.fetch_manifest(&cfg.manifest_url, signer, cached, t, cfg.skew_secs)?)
+    Ok(relay.fetch_manifest(&cfg.manifest_url, signer, policy, cached, t, cfg.skew_secs)?)
+}
+
+/// The hardware attestation policy from the setup file: Yubico's root unless test roots are
+/// given.
+fn hardware_policy(cfg: &ApproverConfig) -> Result<HardwarePolicy, RelayError> {
+    match &cfg.attestation_roots_pem {
+        None => Ok(HardwarePolicy::yubico(cfg.require_hardware_attestation)),
+        Some(pem) => {
+            let roots = relay_core::hw_attestation::certificates_from_pem(pem.as_bytes())
+                .map_err(invalid)?;
+            HardwarePolicy::with_roots(cfg.require_hardware_attestation, roots).map_err(invalid)
+        }
+    }
 }
 
 // ---------- test card (simulator end-to-end only) ----------
