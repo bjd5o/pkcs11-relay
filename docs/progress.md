@@ -122,5 +122,13 @@ Part B (design `docs/milestone-5b.md`, approved 2026-11-18):
 - [ ] iPhone gate renewal step: re-enrolled with a 1-hour window; approve a request after 75%
 - [x] Part B gate, Mac over USB (2026-11-18): the macOS app built and signed from Xcode with the smart-card and push entitlements; set up from a `relayctl app-link` link at `https://localhost:8443`; enrolled over USB (`hw-auth`, `hw-sign`); `linux-client` re-paired from the Mac (`hw-unseal`, `hw-sign`); an ECDSA-SHA256 `pkcs11-tool --sign` with `hw-sign` approved with Touch ID and PIN on the Mac, and the signature verified with OpenSSL against the manifest's key
   - Found: the relay can't add a key to a paired client; the client has to be revoked (`relay-server admin clients revoke`) and paired again
-- [ ] Part B gate: the USB-C iPad over USB (enrollment, an approval)
+- [x] Part B gate, USB-C iPad over USB (2026-11-18): set up from a `relayctl app-link` QR code at the Mac's LAN address; enrolled over USB (`hw-unseal`) once Face ID was set up; `linux-client` re-paired from the iPad; an RSA-OAEP `pkcs11-tool --decrypt` with `hw-unseal` approved on the iPad, and the plaintext matched
 
+
+## Post-MVP follow-ups
+
+Found during the gates; out of scope for the MVP.
+
+- **App without biometrics set up** (iPad, 2026-11-18): enrollment failed with the system's "authentication failure" because Face ID wasn't set up, and the device key needs a fresh biometric. Check `LAContext.canEvaluatePolicy` before setup and enrollment, and say plainly that Face ID or Touch ID has to be set up first.
+- **Changing a paired client's keys** (Mac, 2026-11-18): the relay can't add a key to a client that is already paired; it has to be revoked and paired again. Add a re-pairing flow or an approver-side "change keys" action.
+- **Adding a device after clients are paired** (iPad, 2026-11-18): each approver only answers clients it approved itself (the relay isn't trusted to say which clients exist), so a new device rejects every request from existing clients as "unpaired client" until the client is revoked and paired again with the new device approving. Needs a way to bring a paired client to a new device without trusting the relay, for example a pairing approval signed by an existing device, or re-pairing that doesn't need a revoke; the app should also say why a request failed its checks.
