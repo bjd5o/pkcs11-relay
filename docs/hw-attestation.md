@@ -1,9 +1,9 @@
-# Hardware attestation of attest keys: design (proposal)
+# Hardware attestation of attest keys: design
 
-Status: **draft for review, revision 2.** It records Brian's answers of 2026-11-17. Nothing here
-changes `docs/spec.md` or the wire format until Brian approves it. When it is approved, the
-"Proposed spec changes" section is applied to `docs/spec.md` and `docs/wire-format.md`, and an
-entry goes into `docs/decisions.md`.
+Status: **approved by Brian on 2026-11-17 and implemented.** The spec and wire format carry the
+normative text: `docs/spec.md`, and `docs/wire-format.md` §9.2 and §9.4. One change from this
+design: the relay checks only who signed a device's attestation, not its window, so expired
+devices can still renew (`docs/decisions.md`).
 
 ## Goal
 

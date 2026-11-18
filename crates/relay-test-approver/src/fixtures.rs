@@ -235,6 +235,24 @@ pub fn generate(
         &out.join("signer.asc"),
         pgp.public_armored().map_err(|e| e.to_string())?,
     )?;
+    // The same manifest, except that the attest key's attestation shows touch `never`: the
+    // provider must refuse it (Failure handling: hardware attestation outside policy).
+    let mut weak = draft.clone();
+    for k in weak.keys.iter_mut().filter(|k| k.role == Role::Attest) {
+        k.hardware_attestation = Some(HardwareAttestation {
+            chain: device.chain(
+                attest_slot.id(),
+                k.public_key.spki(),
+                &LeafOptions::for_device(&device, 0x02, 0x01),
+            ),
+        });
+    }
+    let weak = weak.to_json().map_err(|e| e.to_string())?;
+    w(&out.join("manifest-touch-never.json"), &weak)?;
+    w(
+        &out.join("manifest-touch-never.json.asc"),
+        pgp.sign_detached(&weak).map_err(|e| e.to_string())?,
+    )?;
     w(
         &out.join("signer-secret.asc"),
         pgp.to_armored().map_err(|e| e.to_string())?.as_bytes(),

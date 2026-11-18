@@ -78,3 +78,14 @@ Part A:
 - [x] 5.4 NFC `CardChannel` (CoreNFC, ISO 7816). Builds; not yet run on a device.
 - [x] 5.5 Simulator end-to-end test (`tests/sim-e2e.sh`), passing locally (2026-11-17). A relay runs on the Mac; the app in the iOS simulator uses relay-ffi's software test card; an XCUITest enrolls, approves the pairing and approves an RSA-OAEP decrypt with the PIN; `relay-test-approver sim-client` verifies the plaintext as the provider would. CI job `apple` (macos-15) passes too (first run 2026-11-17).
 - [ ] Gate on Brian's iPhone over NFC with YubiKey <serial>
+
+Hardware attestation of attest keys (design `docs/hw-attestation.md`, approved 2026-11-17):
+- [x] Spec, wire-format §9.2/§9.4 and decisions updated
+- [x] relay-core: `verify_piv_attestation` (rustls-webpki path validation under `Yubico Attestation Root 1`, the PIV branch, key binding, Yubico extensions, firmware 5.7.4+), unit tests and golden vectors (`tests/vectors/hw-attestation`)
+- [x] Manifest field `hardware_attestation` and `HardwarePolicy` in `verify_manifest`: required on attest keys by default, touch `always`, PIN policy not `never`, the whole manifest invalid on bad evidence (`tests/manifest_hw.rs`)
+- [x] relay-core PIV `GET ATTESTATION` and the `F9` certificate; the softcard attests generated keys from a synthetic hierarchy and refuses imported ones
+- [x] `relayctl manifest add --serial S --slot XX --role attest` reads and verifies the chain (read-only), `--attestation-chain` for chains gathered elsewhere, `show`/`verify` print serial, firmware and policies; `app-config --no-hardware-attestation`
+- [x] `[hardware_attestation]` (`require`, test-only `roots_file`) in the provider, the test approver and the relay; the app's setup file carries the same; the engine reports an attest key attested on another card
+- [x] Relay: verifies the manifest it serves, advertises and routes only manifest keys from devices whose attestation a manifest attest key signed (window not checked, so expired devices can renew), rejects registrations otherwise, and advertises nothing while the manifest is invalid (`relay-server` `trust` tests)
+- [x] Fixtures: the attest key carries a synthetic chain; the m3 gate checks that a manifest whose attest key shows touch `never` gives zero slots
+- [ ] Real cards: Brian imports the operation keys onto both YubiKeys, generates an attest key on each, then `relayctl manifest add --role attest` per card (per-command approval)

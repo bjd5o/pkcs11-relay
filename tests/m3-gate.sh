@@ -132,4 +132,13 @@ check "ssh -I authenticates to a test sshd with the auth key" \
   ssh -I "$MOD" -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
       -o PreferredAuthentications=publickey tester@sshd true
 
+# --- Hardware attestation: an attest key whose YubiKey attestation shows touch never makes the
+# whole manifest invalid, so a provider with no cached copy lists zero slots. ---
+mkdir -p "$W/hw"
+sed -e 's#^manifest_url = .*#manifest_url = "file:///fixtures/manifest-touch-never.json"#' \
+    -e "s#^manifest_cache = .*#manifest_cache = \"$W/hw/manifest.json\"#" \
+    /fixtures/provider.toml >"$W/hw/provider.toml"
+check "attest key without touch always: zero slots" sh -c \
+  "RELAY_PKCS11_CONFIG=$W/hw/provider.toml pkcs11-tool --module $MOD -L 2>&1 | tee $W/hw/out | grep -q 'Available slots' && ! grep -q '^Slot ' $W/hw/out && grep -q 'touch policy never' $W/hw/out || { RELAY_PKCS11_CONFIG=$W/hw/provider.toml pkcs11-tool --module $MOD -L; exit 1; }"
+
 if [ "$FAILS" -eq 0 ]; then echo "milestone 3 gate passed"; else echo "$FAILS check(s) failed"; exit 1; fi
