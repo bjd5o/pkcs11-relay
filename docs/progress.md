@@ -120,5 +120,7 @@ Part B (design `docs/milestone-5b.md`, approved 2026-11-18):
 - [x] APNs on hardware (2026-11-18): the gate relay with Brian's `.p8` key (kept in git-ignored `gate-m5/secrets/`; `*.p8` is ignored repo-wide), sandbox environment. With the app in the background a client request produced the "1 pending request" notification within seconds; tapping it opened the request, and Brian denied it (signed denial accepted 12 s after queueing)
 - [x] Fix found by the iPhone gate: an expired attestation was dropped on load, so the app said "not enrolled" and could never renew; it is now kept and renewed at the next approval (spec: an expired device keeps fetching requests)
 - [ ] iPhone gate renewal step: re-enrolled with a 1-hour window; approve a request after 75%
-- [ ] Part B gate: the Mac and the USB-C iPad over USB (enrollment, a decrypt); push on the iPhone is done
+- [x] Part B gate, Mac over USB (2026-11-18): the macOS app built and signed from Xcode with the smart-card and push entitlements; set up from a `relayctl app-link` link at `https://localhost:8443`; enrolled over USB (`hw-auth`, `hw-sign`); `linux-client` re-paired from the Mac (`hw-unseal`, `hw-sign`); an ECDSA-SHA256 `pkcs11-tool --sign` with `hw-sign` approved with Touch ID and PIN on the Mac, and the signature verified with OpenSSL against the manifest's key
+  - Found: the relay can't add a key to a paired client; the client has to be revoked (`relay-server admin clients revoke`) and paired again
+- [ ] Part B gate: the USB-C iPad over USB (enrollment, an approval)
 
