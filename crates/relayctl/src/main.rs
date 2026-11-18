@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use relay_core::piv::Slot;
 use relay_core::{Algorithm, Role};
 use relayctl::keygen::{self, Pin, Touch};
-use relayctl::{card, manifest, util};
+use relayctl::{card, hw, manifest, util};
 
 #[derive(Parser)]
 #[command(
@@ -214,6 +214,21 @@ enum ManifestCmd {
         /// The hardware token the key lives on (one PKCS#11 slot per token).
         #[arg(long)]
         token: String,
+        /// With --serial/--slot: don't store the key's YubiKey attestation. By default it is
+        /// read (read-only) and stored for attest keys.
+        #[arg(long, conflicts_with_all = ["hardware_attestation", "attestation_chain"])]
+        no_hardware_attestation: bool,
+        /// With --serial/--slot: also store the attestation for a key of another role (only keys
+        /// generated on the card have one).
+        #[arg(long, requires = "slot")]
+        hardware_attestation: bool,
+        /// With --public-key: a PEM chain gathered elsewhere (attestation certificate, then
+        /// the F9 certificate, then any intermediates).
+        #[arg(long, requires = "public_key")]
+        attestation_chain: Option<PathBuf>,
+        /// Testing only: trust these roots instead of Yubico's.
+        #[arg(long, hide = true)]
+        attestation_roots: Option<PathBuf>,
     },
     /// Remove keys by fingerprint or label.
     Remove {
@@ -229,6 +244,9 @@ enum ManifestCmd {
     Show {
         #[arg(long)]
         manifest: PathBuf,
+        /// Testing only: trust these roots instead of Yubico's.
+        #[arg(long, hide = true)]
+        attestation_roots: Option<PathBuf>,
     },
     /// Increase the version, set the validity, write the detached signature.
     Sign {
@@ -247,6 +265,12 @@ enum ManifestCmd {
         /// Verify the result against this signer public key, as clients would.
         #[arg(long)]
         verify_with: Option<PathBuf>,
+        /// With --verify-with: accept attest keys without a hardware attestation.
+        #[arg(long)]
+        no_require_hardware_attestation: bool,
+        /// Testing only: trust these roots instead of Yubico's.
+        #[arg(long, hide = true)]
+        attestation_roots: Option<PathBuf>,
     },
     /// Check a manifest exactly as clients do.
     Verify {
@@ -262,6 +286,13 @@ enum ManifestCmd {
         cached: Option<PathBuf>,
         #[arg(long, default_value_t = 60)]
         skew: u64,
+        /// Accept attest keys without a hardware attestation, like clients configured with
+        /// `require = false`. Chains that are present are still checked.
+        #[arg(long)]
+        no_require_hardware_attestation: bool,
+        /// Testing only: trust these roots instead of Yubico's.
+        #[arg(long, hide = true)]
+        attestation_roots: Option<PathBuf>,
     },
 }
 
@@ -401,15 +432,45 @@ fn run(cli: Cli) -> Result<(), String> {
                 label,
                 id,
                 token,
+                no_hardware_attestation,
+                hardware_attestation,
+                attestation_chain,
+                attestation_roots,
             } => {
-                let key = match (public_key, serial, slot) {
-                    (Some(p), _, _) => util::read_public_key(&p)?,
+                let role: Role = role.into();
+                let anchors = hw::Anchors::load(attestation_roots.as_deref())?;
+                let (key, hw_att) = match (public_key, serial, slot) {
+                    (Some(p), _, _) => {
+                        let key = util::read_public_key(&p)?;
+                        match attestation_chain {
+                            Some(c) => {
+                                let (h, a) = hw::from_pem(&c, &key, &anchors, util::now())?;
+                                println!("attested: {}", hw::describe(&a));
+                                (key, Some(h))
+                            }
+                            None => (key, None),
+                        }
+                    }
                     (None, Some(serial), Some(slot)) => {
-                        card::export(&mut relay_pcsc::open(serial)?, slot)?
+                        let mut c = relay_pcsc::open(serial)?;
+                        let want = !no_hardware_attestation
+                            && (role == Role::Attest || hardware_attestation);
+                        if want {
+                            let (key, h, a) = hw::from_card(&mut c, slot, &anchors, util::now())?;
+                            println!("attested: {}", hw::describe(&a));
+                            (key, Some(h))
+                        } else {
+                            (card::export(&mut c, slot)?, None)
+                        }
                     }
                     _ => return Err("give --public-key, or --serial and --slot".into()),
                 };
-                let fp = manifest::add(&m, key, role.into(), &label, &id, &token)?;
+                if role == Role::Attest && hw_att.is_none() {
+                    eprintln!(
+                        "warning: attest key without hardware attestation; clients reject it unless configured with require = false"
+                    );
+                }
+                let fp = manifest::add(&m, key, hw_att, role, &label, &id, &token)?;
                 println!("added {fp}");
                 Ok(())
             }
@@ -428,8 +489,12 @@ fn run(cli: Cli) -> Result<(), String> {
                 println!("removed {n} key(s)");
                 Ok(())
             }
-            ManifestCmd::Show { manifest: m } => {
-                print!("{}", manifest::show(&m)?);
+            ManifestCmd::Show {
+                manifest: m,
+                attestation_roots,
+            } => {
+                let anchors = hw::Anchors::load(attestation_roots.as_deref())?;
+                print!("{}", manifest::show(&m, &anchors)?);
                 Ok(())
             }
             ManifestCmd::Sign {
@@ -439,6 +504,8 @@ fn run(cli: Cli) -> Result<(), String> {
                 gpg,
                 pgp_secret,
                 verify_with,
+                no_require_hardware_attestation,
+                attestation_roots,
             } => {
                 let signer = match (&gpg_key, &pgp_secret) {
                     (Some(k), None) => manifest::Signer::Gpg {
@@ -448,7 +515,14 @@ fn run(cli: Cli) -> Result<(), String> {
                     (None, Some(p)) => manifest::Signer::Software(p),
                     _ => return Err("give --gpg-key or --pgp-secret".into()),
                 };
-                let v = manifest::sign(&m, valid_days, signer, verify_with.as_deref())?;
+                let policy = hw::Anchors::load(attestation_roots.as_deref())?
+                    .policy(!no_require_hardware_attestation)?;
+                let v = manifest::sign(
+                    &m,
+                    valid_days,
+                    signer,
+                    verify_with.as_deref().map(|p| (p, &policy)),
+                )?;
                 println!(
                     "signed version {v}; wrote {} and {}",
                     m.display(),
@@ -462,15 +536,26 @@ fn run(cli: Cli) -> Result<(), String> {
                 signer,
                 cached,
                 skew,
+                no_require_hardware_attestation,
+                attestation_roots,
             } => {
                 let sig = signature.unwrap_or_else(|| manifest::sig_path(&m));
-                let v = manifest::verify(&m, &sig, &signer, cached.as_deref(), skew)?;
+                let policy = hw::Anchors::load(attestation_roots.as_deref())?
+                    .policy(!no_require_hardware_attestation)?;
+                let v = manifest::verify(&m, &sig, &signer, &policy, cached.as_deref(), skew)?;
                 println!(
                     "OK: version {}, valid until {}, {} keys",
                     v.version,
                     util::utc(v.valid_until),
                     v.keys.len()
                 );
+                for k in v.keys.iter().filter(|k| k.attested.is_some()) {
+                    println!(
+                        "  {} attested: {}",
+                        k.label,
+                        hw::describe(k.attested.as_ref().expect("attested"))
+                    );
+                }
                 Ok(())
             }
         },

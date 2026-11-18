@@ -249,3 +249,21 @@ fn chain_size_limits() {
         "leaf certificate",
     );
 }
+
+#[test]
+fn assemble_chain_picks_the_intermediates_by_issuer() {
+    use relay_core::hw_attestation::assemble_chain;
+    let s = setup();
+    let chain = s.chain(&s.opts());
+    let mut pool = s.h.intermediates();
+    pool.reverse();
+    pool.push(s.h.root_der());
+    pool.extend(TestHierarchy::new().intermediates());
+    let built = assemble_chain(chain[0].clone(), chain[1].clone(), &pool).unwrap();
+    assert_eq!(built, chain);
+    s.verify(&built).unwrap();
+    // With nothing to add, the chain stays leaf + F9 and does not verify.
+    let short = assemble_chain(chain[0].clone(), chain[1].clone(), &[]).unwrap();
+    assert_eq!(short.len(), 2);
+    assert!(s.verify(&short).is_err());
+}

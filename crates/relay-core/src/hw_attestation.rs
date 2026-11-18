@@ -176,6 +176,39 @@ pub fn certificates_from_pem(pem: &[u8]) -> Result<Vec<Vec<u8>>> {
     Ok(out)
 }
 
+/// Build a manifest chain from what a card returns (the attestation leaf and its `F9`
+/// certificate) plus the intermediates above `F9`, picked from `pool` by issuer name. This only
+/// orders certificates; [`verify_piv_attestation`] decides whether the result is trustworthy.
+pub fn assemble_chain(leaf: Vec<u8>, f9: Vec<u8>, pool: &[Vec<u8>]) -> Result<Vec<Vec<u8>>> {
+    let names = |der: &[u8]| -> Result<(Vec<u8>, Vec<u8>)> {
+        let c = x509_cert::Certificate::from_der(der)
+            .map_err(|e| invalid(format!("certificate: {e}")))?;
+        let t = c.tbs_certificate();
+        Ok((
+            t.subject().to_der().map_err(|e| invalid(e.to_string()))?,
+            t.issuer().to_der().map_err(|e| invalid(e.to_string()))?,
+        ))
+    };
+    let pool = pool
+        .iter()
+        .map(|c| names(c).map(|(subject, issuer)| (subject, issuer, c)))
+        .collect::<Result<Vec<_>>>()?;
+    let mut issuer = names(&f9)?.1;
+    let mut chain = vec![leaf, f9];
+    while chain.len() < MAX_CHAIN {
+        let Some((_, next_issuer, cert)) = pool.iter().find(|(subject, _, _)| *subject == issuer)
+        else {
+            break;
+        };
+        if *next_issuer == issuer {
+            break; // a self-signed root: never part of the manifest chain
+        }
+        chain.push((*cert).clone());
+        issuer = next_issuer.clone();
+    }
+    Ok(chain)
+}
+
 fn invalid(m: impl Into<String>) -> Error {
     Error::HardwareAttestationInvalid(m.into())
 }

@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod card;
+pub mod hw;
 pub mod keygen;
 pub mod manifest;
 pub mod util;

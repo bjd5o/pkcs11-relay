@@ -4,11 +4,32 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use relay_core::hw_attestation::testing::TestHierarchy;
 use relay_core::manifest::PgpSecretKey;
 use relay_core::piv::Slot;
+use relay_core::HardwarePolicy;
 use relay_core::{verify_attestation, Algorithm, Role};
 use relay_softcard::SoftCard;
-use relayctl::{card, manifest, util};
+use relayctl::{card, hw, manifest, util};
+
+const SERIAL: u32 = 31_415_926;
+
+/// A synthetic attestation hierarchy and the PEM file `--attestation-roots` reads.
+fn anchors(dir: &Path, h: &TestHierarchy) -> hw::Anchors {
+    use x509_cert::der::{Decode, EncodePem};
+    let mut pem = String::new();
+    for der in std::iter::once(h.root_der()).chain(h.intermediates()) {
+        pem.push_str(
+            &x509_cert::Certificate::from_der(&der)
+                .unwrap()
+                .to_pem(x509_cert::der::pem::LineEnding::LF)
+                .unwrap(),
+        );
+    }
+    let p = dir.join("roots.pem");
+    std::fs::write(&p, pem).unwrap();
+    hw::Anchors::load(Some(&p)).unwrap()
+}
 
 fn tmp(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("relayctl-{name}-{}", std::process::id()));
@@ -31,12 +52,28 @@ fn slot(s: u8) -> Slot {
 }
 
 #[test]
+fn imported_keys_cannot_be_attested() {
+    let dir = tmp("imported");
+    let h = TestHierarchy::new();
+    let anchors = anchors(&dir, &h);
+    let mut yk = SoftCard::new(b"123456").with_attestation(h.device(SERIAL, (5, 7, 4)));
+    let key = relay_softcard::SlotKey::generate(Algorithm::P256);
+    let cert = key.self_signed_certificate("imported");
+    yk.insert(slot(0x86), key, cert);
+    let e = hw::from_card(&mut yk, slot(0x86), &anchors, util::now()).unwrap_err();
+    assert!(e.contains("only keys generated on the card"), "{e}");
+}
+
+#[test]
 fn manifest_round_trip_and_attestation() {
     let dir = tmp("flow");
     let (sec, public) = pgp(&dir);
     let m = dir.join("manifest.json");
 
-    let mut yk = SoftCard::new(b"123456");
+    let h = TestHierarchy::new();
+    let anchors = anchors(&dir, &h);
+    let policy = anchors.policy(true).unwrap();
+    let mut yk = SoftCard::new(b"123456").with_attestation(h.device(SERIAL, (5, 7, 4)));
     yk.generate(slot(0x95), Algorithm::P256);
     yk.generate(slot(0x9c), Algorithm::Ed25519);
     yk.generate(slot(0x9d), Algorithm::Rsa2048);
@@ -46,11 +83,24 @@ fn manifest_round_trip_and_attestation() {
 
     manifest::init(&m).unwrap();
     assert!(manifest::init(&m).is_err(), "init never overwrites");
-    let attest = card::export(&mut yk, slot(0x95)).unwrap();
-    manifest::add(&m, attest.clone(), Role::Attest, "attest", "10", "yk").unwrap();
+    let (attest, chain, facts) = hw::from_card(&mut yk, slot(0x95), &anchors, util::now()).unwrap();
+    assert_eq!(attest, card::export(&mut yk, slot(0x95)).unwrap());
+    assert_eq!(facts.serial, SERIAL);
+    assert!(hw::describe(&facts).contains("touch always"));
+    manifest::add(
+        &m,
+        attest.clone(),
+        Some(chain),
+        Role::Attest,
+        "attest",
+        "10",
+        "yk",
+    )
+    .unwrap();
     manifest::add(
         &m,
         card::export(&mut yk, slot(0x9c)).unwrap(),
+        None,
         Role::Sign,
         "release",
         "01",
@@ -60,6 +110,7 @@ fn manifest_round_trip_and_attestation() {
     manifest::add(
         &m,
         card::export(&mut yk, slot(0x9d)).unwrap(),
+        None,
         Role::Encrypt,
         "unseal",
         "02",
@@ -70,13 +121,24 @@ fn manifest_round_trip_and_attestation() {
     assert!(manifest::add(
         &m,
         card::export(&mut yk, slot(0x9c)).unwrap(),
+        None,
         Role::Encrypt,
         "x",
         "03",
         "yk"
     )
     .is_err());
-    assert!(manifest::show(&m).unwrap().contains("release"));
+    let shown = manifest::show(&m, &anchors).unwrap();
+    assert!(shown.contains("release"));
+    assert!(
+        shown.contains(&format!("attested: YubiKey serial {SERIAL}")),
+        "{shown}"
+    );
+    // Yubico's real anchors do not accept the synthetic chain.
+    let yubico = hw::Anchors::load(None).unwrap();
+    assert!(manifest::show(&m, &yubico)
+        .unwrap()
+        .contains("attestation INVALID"));
 
     // Export through the PEM path, as `key export` / `manifest add --public-key` do.
     let pem = dir.join("unseal.pem");
@@ -90,7 +152,13 @@ fn manifest_round_trip_and_attestation() {
         card::export(&mut yk, slot(0x9d)).unwrap()
     );
 
-    let v = manifest::sign(&m, 30, manifest::Signer::Software(&sec), Some(&public)).unwrap();
+    let v = manifest::sign(
+        &m,
+        30,
+        manifest::Signer::Software(&sec),
+        Some((&public, &policy)),
+    )
+    .unwrap();
     assert_eq!(v, 2);
     let accepted = dir.join("accepted.json");
     std::fs::copy(&m, &accepted).unwrap();
@@ -101,13 +169,44 @@ fn manifest_round_trip_and_attestation() {
         1
     );
     manifest::sign(&m, 30, manifest::Signer::Software(&sec), None).unwrap();
-    let mf = manifest::verify(&m, &manifest::sig_path(&m), &public, Some(&accepted), 60).unwrap();
+    let mf = manifest::verify(
+        &m,
+        &manifest::sig_path(&m),
+        &public,
+        &policy,
+        Some(&accepted),
+        60,
+    )
+    .unwrap();
+    assert_eq!(
+        mf.keys
+            .iter()
+            .find(|k| k.role == Role::Attest)
+            .unwrap()
+            .attested
+            .unwrap()
+            .serial,
+        SERIAL
+    );
+    assert!(
+        manifest::verify(
+            &m,
+            &manifest::sig_path(&m),
+            &public,
+            &HardwarePolicy::default(),
+            None,
+            60
+        )
+        .is_err(),
+        "Yubico's root does not accept the synthetic chain"
+    );
     assert_eq!(mf.version, 3);
     // Rollback to the older copy is refused against the newer cached one.
     let e = manifest::verify(
         &accepted,
         &manifest::sig_path(&accepted),
         &public,
+        &policy,
         Some(&m),
         60,
     )
@@ -122,6 +221,7 @@ fn manifest_round_trip_and_attestation() {
         &dir.join("t.json"),
         &manifest::sig_path(&m),
         &public,
+        &policy,
         None,
         60
     )
@@ -207,6 +307,7 @@ fn gpg_signing() {
     manifest::add(
         &m,
         yk.generate(slot(0x95), Algorithm::P256),
+        None,
         Role::Attest,
         "attest",
         "10",
@@ -233,7 +334,7 @@ fn gpg_signing() {
             key: "gpg@test.invalid",
             program,
         },
-        Some(&public),
+        Some((&public, &HardwarePolicy::yubico(false))),
     )
     .unwrap();
     let _ = Command::new("gpgconf")

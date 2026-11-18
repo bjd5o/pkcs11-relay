@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use relay_core::hw_attestation::HardwareAttestation;
 use relay_core::manifest::{DraftKey, ManifestDraft, PgpSecretKey};
 use relay_core::{verify_manifest, Fingerprint, Manifest, ManifestSigner, PublicKey, Role};
 
@@ -44,6 +45,7 @@ pub fn init(path: &Path) -> Result<(), String> {
 pub fn add(
     path: &Path,
     key: PublicKey,
+    hardware_attestation: Option<HardwareAttestation>,
     role: Role,
     label: &str,
     id_hex: &str,
@@ -58,7 +60,7 @@ pub fn add(
         id,
         token: token.into(),
         public_key: key,
-        hardware_attestation: None,
+        hardware_attestation,
     });
     // to_json re-validates everything: roles, algorithms, duplicates.
     save(path, &d)?;
@@ -90,8 +92,9 @@ pub fn remove(
     Ok(n)
 }
 
-pub fn show(path: &Path) -> Result<String, String> {
+pub fn show(path: &Path, anchors: &crate::hw::Anchors) -> Result<String, String> {
     let d = load(path)?;
+    let t = now();
     let mut out = format!(
         "version {}\nissued  {}\nvalid   until {}{}\n",
         d.version,
@@ -113,6 +116,20 @@ pub fn show(path: &Path) -> Result<String, String> {
             k.token,
             k.public_key.fingerprint()
         ));
+        if let Some(h) = &k.hardware_attestation {
+            let line = match relay_core::verify_piv_attestation(
+                &h.chain,
+                &k.public_key,
+                &anchors.roots,
+                t,
+            ) {
+                Ok(a) => format!("attested: {}", crate::hw::describe(&a)),
+                Err(e) => format!("attestation INVALID: {e}"),
+            };
+            out.push_str(&format!("           {line}\n"));
+        } else if k.role == Role::Attest {
+            out.push_str("           no hardware attestation\n");
+        }
     }
     Ok(out)
 }
@@ -132,7 +149,7 @@ pub fn sign(
     path: &Path,
     valid_days: u64,
     signer: Signer<'_>,
-    verify_with: Option<&Path>,
+    verify_with: Option<(&Path, &relay_core::HardwarePolicy)>,
 ) -> Result<u64, String> {
     let mut d = load(path)?;
     d.version += 1;
@@ -170,8 +187,8 @@ pub fn sign(
             write(&asc, k.sign_detached(&json).map_err(|e| e.to_string())?)?;
         }
     }
-    if let Some(signer) = verify_with {
-        verify(path, &asc, signer, None, 60)?;
+    if let Some((signer, policy)) = verify_with {
+        verify(path, &asc, signer, policy, None, 60)?;
     }
     Ok(d.version)
 }
@@ -182,6 +199,7 @@ pub fn verify(
     path: &Path,
     sig: &Path,
     signer: &Path,
+    policy: &relay_core::HardwarePolicy,
     cached: Option<&Path>,
     skew: u64,
 ) -> Result<Manifest, String> {
@@ -194,7 +212,7 @@ pub fn verify(
                 &read(c)?,
                 &read(&sig_path(c))?,
                 &signer,
-                &relay_core::HardwarePolicy::yubico(false),
+                policy,
                 None,
                 t,
                 skew,
@@ -207,7 +225,7 @@ pub fn verify(
         &read(path)?,
         &read(sig)?,
         &signer,
-        &relay_core::HardwarePolicy::yubico(false),
+        policy,
         cached.as_ref(),
         t,
         skew,
