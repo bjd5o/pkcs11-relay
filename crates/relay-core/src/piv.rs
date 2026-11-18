@@ -311,9 +311,33 @@ pub fn get_data(t: &mut dyn CardTransport, object: [u8; 3]) -> Result<Vec<u8>> {
     Ok(find_tlv(&resp, 0x53)?.to_vec())
 }
 
+/// The data object holding the factory attestation certificate of slot `F9`.
+pub const F9_CERTIFICATE_OBJECT: [u8; 3] = [0x5f, 0xff, 0x01];
+
 /// Read the DER certificate in a slot's certificate object (tag `70`; uncompressed only).
 pub fn read_certificate(t: &mut dyn CardTransport, slot: Slot) -> Result<Vec<u8>> {
-    let obj = get_data(t, slot.certificate_object())?;
+    read_certificate_object(t, slot.certificate_object())
+}
+
+/// The card's factory attestation certificate (slot `F9`), read-only.
+pub fn read_f9_certificate(t: &mut dyn CardTransport) -> Result<Vec<u8>> {
+    read_certificate_object(t, F9_CERTIFICATE_OBJECT)
+}
+
+/// `GET ATTESTATION` (INS `F9`): the card's attestation certificate (DER) for the key in
+/// `slot`, signed by its slot-`F9` key. Read-only; works only for keys generated on the card.
+pub fn get_attestation(t: &mut dyn CardTransport, slot: Slot) -> Result<Vec<u8>> {
+    let cert = exchange(t, 0xf9, slot.id(), 0x00, &[])?;
+    if cert.first() != Some(&0x30) {
+        return Err(PivError::Malformed(
+            "attestation is not a DER certificate".into(),
+        ));
+    }
+    Ok(cert.to_vec())
+}
+
+fn read_certificate_object(t: &mut dyn CardTransport, object: [u8; 3]) -> Result<Vec<u8>> {
+    let obj = get_data(t, object)?;
     if let Ok(info) = find_tlv(&obj, 0x71) {
         if info.first().is_some_and(|b| b & 0x01 != 0) {
             return Err(PivError::Malformed(

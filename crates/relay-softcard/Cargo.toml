@@ -7,7 +7,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-relay-core.workspace = true
+# test-util: the synthetic attestation hierarchy. The softcard is only ever used by tests,
+# test tools and the simulator build of the app.
+relay-core = { workspace = true, features = ["test-util"] }
 rsa.workspace = true
 p256.workspace = true
 p384.workspace = true

@@ -594,6 +594,12 @@ pub mod testing {
             self.root.cert.clone()
         }
 
+        /// The published intermediates (PIV attestation CA, then intermediate), as relayctl
+        /// embeds Yubico's.
+        pub fn intermediates(&self) -> Vec<Vec<u8>> {
+            vec![self.piv_ca.cert.clone(), self.intermediate.cert.clone()]
+        }
+
         /// A card with this serial and firmware, its `F9` certificate issued by the PIV CA.
         pub fn device(&self, serial: u32, firmware: (u8, u8, u8)) -> TestDevice {
             let o = &self.options;

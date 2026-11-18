@@ -13,6 +13,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
+use relay_core::hw_attestation::testing::{LeafOptions, TestDevice};
 use relay_core::piv::{algorithm_id, CardTransport, PivError, Slot, PIV_AID};
 use relay_core::{Algorithm, PublicKey};
 use rsa::traits::PublicKeyParts;
@@ -25,6 +26,8 @@ use x509_cert::time::Validity;
 use zeroize::Zeroizing;
 
 const MAX_PIN_RETRIES: u8 = 3;
+/// Serial of a card without a synthetic attestation.
+pub const DEFAULT_SERIAL: u32 = 10_000_001;
 const RESPONSE_CHUNK: usize = 256;
 
 /// A private key held in a slot.
@@ -218,6 +221,9 @@ impl BuilderProfile for SelfSigned {
 struct SlotEntry {
     key: SlotKey,
     certificate: Vec<u8>,
+    /// PIN and touch policy bytes as attestation reports them, for keys generated on the
+    /// card; `None` for imported keys, which a YubiKey cannot attest.
+    generated: Option<(u8, u8)>,
 }
 
 /// The card's state.
@@ -233,6 +239,11 @@ pub struct SoftCard {
     pub log: Vec<Vec<u8>>,
     /// Card sessions run so far: for tests that the host side uses one per operation.
     pub sessions: usize,
+    /// The card's serial (`GET SERIAL`).
+    serial: u32,
+    /// Factory attestation (slot `F9`), from a synthetic hierarchy; `None` answers
+    /// `GET ATTESTATION` with "instruction not supported".
+    attestation: Option<TestDevice>,
 }
 
 impl SoftCard {
@@ -247,23 +258,60 @@ impl SoftCard {
             pending: Zeroizing::new(Vec::new()),
             log: Vec::new(),
             sessions: 0,
+            serial: DEFAULT_SERIAL,
+            attestation: None,
         }
     }
 
-    /// Put a key in a slot with a self-signed certificate; returns its public key.
+    /// Give the card a serial and a factory attestation key from a synthetic hierarchy.
+    pub fn with_attestation(mut self, device: TestDevice) -> Self {
+        self.serial = device.serial;
+        self.attestation = Some(device);
+        self
+    }
+
+    pub fn serial(&self) -> u32 {
+        self.serial
+    }
+
+    /// Set the policy bytes attestation reports for a key generated on the card
+    /// (PIN 01 never, 02 once, 03 always; touch 01 never, 02 always, 03 cached).
+    pub fn set_policy(&mut self, slot: Slot, pin: u8, touch: u8) {
+        if let Some(e) = self.slots.get_mut(&slot.id()) {
+            if e.generated.is_some() {
+                e.generated = Some((pin, touch));
+            }
+        }
+    }
+
+    /// Generate a key on the card, with a self-signed certificate; returns its public key.
+    /// Attestation reports PIN `once` and touch `always` unless [`SoftCard::set_policy`]
+    /// changes them.
     pub fn generate(&mut self, slot: Slot, alg: Algorithm) -> PublicKey {
         let key = SlotKey::generate(alg);
         let cert = key.self_signed_certificate(&format!("relay-softcard slot {:02x}", slot.id()));
-        self.insert(slot, key, cert)
+        self.put(slot, key, cert, Some((0x02, 0x02)))
     }
 
+    /// Import a key and its certificate; like on a YubiKey, it cannot be attested.
     pub fn insert(&mut self, slot: Slot, key: SlotKey, certificate_der: Vec<u8>) -> PublicKey {
+        self.put(slot, key, certificate_der, None)
+    }
+
+    fn put(
+        &mut self,
+        slot: Slot,
+        key: SlotKey,
+        certificate: Vec<u8>,
+        generated: Option<(u8, u8)>,
+    ) -> PublicKey {
         let pk = key.public_key();
         self.slots.insert(
             slot.id(),
             SlotEntry {
                 key,
-                certificate: certificate_der,
+                certificate,
+                generated,
             },
         );
         pk
@@ -395,6 +443,8 @@ impl SoftCard {
             0x20 => self.verify(p2, &full),
             0x87 => self.general_authenticate(p1, p2, &full),
             0xcb => self.get_data(&full),
+            0xf8 => Ok(self.serial.to_be_bytes().to_vec()),
+            0xf9 => self.attest(p1),
             _ => Err(0x6d00),
         };
         match result {
@@ -532,24 +582,39 @@ impl SoftCard {
         Ok(wrap_response(&out))
     }
 
+    /// `GET ATTESTATION`: a certificate for a key generated on the card, signed by `F9`.
+    fn attest(&self, slot: u8) -> Result<Vec<u8>, u16> {
+        let device = self.attestation.as_ref().ok_or(0x6d00u16)?;
+        let entry = self.slots.get(&slot).ok_or(0x6a82u16)?;
+        let (pin, touch) = entry.generated.ok_or(0x6a80u16)?;
+        let o = LeafOptions::for_device(device, pin, touch);
+        Ok(device.attestation_certificate(slot, entry.key.public_key().spki(), &o))
+    }
+
     fn get_data(&self, data: &[u8]) -> Result<Vec<u8>, u16> {
         if data.len() != 5 || data[0] != 0x5c || data[1] != 0x03 {
             return Err(0x6a80);
         }
         let obj = [data[2], data[3], data[4]];
-        let entry = self
-            .slots
-            .iter()
-            .find(|(id, _)| {
-                Slot::new(**id)
-                    .map(|s| s.certificate_object() == obj)
-                    .unwrap_or(false)
-            })
-            .map(|(_, e)| e)
-            .ok_or(0x6a82u16)?;
+        let certificate = if obj == relay_core::piv::F9_CERTIFICATE_OBJECT {
+            self.attestation
+                .as_ref()
+                .map(|d| d.f9_certificate())
+                .ok_or(0x6a82u16)?
+        } else {
+            self.slots
+                .iter()
+                .find(|(id, _)| {
+                    Slot::new(**id)
+                        .map(|s| s.certificate_object() == obj)
+                        .unwrap_or(false)
+                })
+                .map(|(_, e)| e.certificate.clone())
+                .ok_or(0x6a82u16)?
+        };
         let mut inner = vec![0x70];
-        push_len(&mut inner, entry.certificate.len());
-        inner.extend_from_slice(&entry.certificate);
+        push_len(&mut inner, certificate.len());
+        inner.extend_from_slice(&certificate);
         inner.extend_from_slice(&[0x71, 0x01, 0x00, 0xfe, 0x00]);
         let mut resp = vec![0x53];
         push_len(&mut resp, inner.len());
