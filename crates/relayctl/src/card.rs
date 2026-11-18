@@ -77,6 +77,31 @@ pub fn attest(
     .map_err(|e| e.to_string())?
 }
 
+/// A fixed signature input for `alg`, for the PIN-state checks (thrown away afterwards).
+fn test_signature(slot: Slot, alg: Algorithm) -> Result<(Mechanism, Vec<u8>), String> {
+    Ok(match alg {
+        Algorithm::P256 => (Mechanism::Ecdsa, vec![0x5a; 32]),
+        Algorithm::P384 => (Mechanism::Ecdsa, vec![0x5a; 48]),
+        Algorithm::Ed25519 => (Mechanism::Eddsa, b"relayctl pin-reset check".to_vec()),
+        Algorithm::Rsa2048 | Algorithm::Rsa4096 => {
+            // DigestInfo for SHA-256 over a fixed digest.
+            let mut di = vec![
+                0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
+                0x01, 0x05, 0x00, 0x04, 0x20,
+            ];
+            di.extend_from_slice(&[0x5a; 32]);
+            (Mechanism::RsaPkcs, di)
+        }
+        other => {
+            return Err(format!(
+                "slot {:02x} holds a {} key, which cannot sign; pick a signing key",
+                slot.id(),
+                other.as_str()
+            ))
+        }
+    })
+}
+
 /// Outcome of [`check_pin_reset`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum PinReset {
@@ -101,27 +126,7 @@ pub fn check_pin_reset(
     pin: &[u8],
 ) -> Result<PinReset, String> {
     let alg = export(card, slot)?.algorithm();
-    let (mech, input): (Mechanism, Vec<u8>) = match alg {
-        Algorithm::P256 => (Mechanism::Ecdsa, vec![0x5a; 32]),
-        Algorithm::P384 => (Mechanism::Ecdsa, vec![0x5a; 48]),
-        Algorithm::Ed25519 => (Mechanism::Eddsa, b"relayctl pin-reset check".to_vec()),
-        Algorithm::Rsa2048 | Algorithm::Rsa4096 => {
-            // DigestInfo for SHA-256 over a fixed digest.
-            let mut di = vec![
-                0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
-                0x01, 0x05, 0x00, 0x04, 0x20,
-            ];
-            di.extend_from_slice(&[0x5a; 32]);
-            (Mechanism::RsaPkcs, di)
-        }
-        other => {
-            return Err(format!(
-                "slot {:02x} holds a {} key, which cannot sign; pick a signing key",
-                slot.id(),
-                other.as_str()
-            ))
-        }
-    };
+    let (mech, input) = test_signature(slot, alg)?;
     let first = piv::in_session(card, |c| {
         piv::select(c)?;
         match piv::verify_pin(c, pin) {
@@ -149,6 +154,47 @@ pub fn check_pin_reset(
         Ok(()) => Ok(PinReset::StillVerified),
         Err(e) => Err(format!("unexpected card answer in the second session: {e}")),
     }
+}
+
+/// Check on a real card that `VERIFY` P1=`FF` clears the PIN, inside one session (the way the
+/// apps' CryptoTokenKit transport ends a session, since it can't reset the card):
+///
+/// `SELECT`, `VERIFY` (one attempt, never retried), sign a fixed test digest, `VERIFY` P1=`FF`,
+/// the same signature without a PIN, which must fail with "security status not satisfied".
+///
+/// Use a slot whose key has PIN policy `once` and touch `never`. Nothing is written; the
+/// signatures are thrown away.
+pub fn check_security_reset(
+    card: &mut dyn CardTransport,
+    slot: Slot,
+    pin: &[u8],
+) -> Result<PinReset, String> {
+    let alg = export(card, slot)?.algorithm();
+    let (mech, input) = test_signature(slot, alg)?;
+    piv::in_session(card, |c| {
+        piv::select(c)?;
+        match piv::verify_pin(c, pin) {
+            Ok(()) => {}
+            Err(PivError::WrongPin { retries }) => {
+                return Ok(Err(format!(
+                    "wrong PIN ({retries} tries left); stopping without retrying"
+                )))
+            }
+            Err(e) => return Err(e),
+        }
+        if let Err(e) = piv::perform(c, slot, alg, &mech, &input) {
+            return Ok(Err(format!("signing with the PIN failed: {e}")));
+        }
+        if let Err(e) = piv::reset_security_status(c) {
+            return Ok(Err(format!("the card refused VERIFY P1=FF: {e}")));
+        }
+        Ok(match piv::perform(c, slot, alg, &mech, &input) {
+            Err(PivError::SecurityStatusNotSatisfied) => Ok(PinReset::Cleared),
+            Ok(_) => Ok(PinReset::StillVerified),
+            Err(e) => Err(format!("unexpected card answer after the reset: {e}")),
+        })
+    })
+    .map_err(|e| e.to_string())?
 }
 
 pub fn fingerprint_line(slot: Slot, k: &PublicKey) -> String {

@@ -440,7 +440,7 @@ impl SoftCard {
                 }
             }
             _ if !self.selected => Err(0x6985),
-            0x20 => self.verify(p2, &full),
+            0x20 => self.verify(p1, p2, &full),
             0x87 => self.general_authenticate(p1, p2, &full),
             0xcb => self.get_data(&full),
             0xf8 => Ok(self.serial.to_be_bytes().to_vec()),
@@ -468,9 +468,17 @@ impl SoftCard {
         out
     }
 
-    fn verify(&mut self, p2: u8, data: &[u8]) -> Result<Vec<u8>, u16> {
+    fn verify(&mut self, p1: u8, p2: u8, data: &[u8]) -> Result<Vec<u8>, u16> {
         if p2 != 0x80 {
             return Err(0x6a88);
+        }
+        // P1 = FF: reset the security status (SP 800-73-4), no PIN, no attempt spent.
+        if p1 == 0xff {
+            if !data.is_empty() {
+                return Err(0x6a86);
+            }
+            self.verified = false;
+            return Ok(Vec::new());
         }
         if self.retries == 0 {
             return Err(0x6983);

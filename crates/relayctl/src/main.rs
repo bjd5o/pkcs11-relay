@@ -193,6 +193,15 @@ enum KeyCmd {
         #[arg(long, value_parser = slot)]
         slot: Slot,
     },
+    /// Check that VERIFY P1=FF clears the PIN within one session (how the apps' USB transport
+    /// ends sessions). One PIN entry, one attempt; nothing written. Use a slot with PIN policy
+    /// once and no touch.
+    CheckSecurityReset {
+        #[arg(long)]
+        serial: u32,
+        #[arg(long, value_parser = slot)]
+        slot: Slot,
+    },
     /// Export a slot's public key (PEM).
     Export {
         #[arg(long)]
@@ -416,6 +425,19 @@ fn run(cli: Cli) -> Result<(), String> {
                     println!("{}", card::fingerprint_line(s, &k));
                 }
                 Ok(())
+            }
+            KeyCmd::CheckSecurityReset { serial, slot } => {
+                let mut c = relay_pcsc::open(serial)?;
+                let pin = util::prompt_secret("PIV PIN: ")?;
+                match card::check_security_reset(&mut c, slot, pin.as_bytes())? {
+                    card::PinReset::Cleared => {
+                        println!("ok: after VERIFY P1=FF the card refused to sign without a PIN");
+                        Ok(())
+                    }
+                    card::PinReset::StillVerified => Err(
+                        "FAILED: the card still signed after VERIFY P1=FF; it does not reset the PIN state this way".into(),
+                    ),
+                }
             }
             KeyCmd::CheckPinReset { serial, slot } => {
                 let mut c = relay_pcsc::open(serial)?;

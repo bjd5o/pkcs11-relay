@@ -294,6 +294,13 @@ pub fn verify_pin(t: &mut dyn CardTransport, pin: &[u8]) -> Result<()> {
     r.map(|_| ())
 }
 
+/// `VERIFY` with P1 = `FF`: reset the PIN's security status (NIST SP 800-73-4, Part 2). It sends
+/// no PIN and costs no attempt. Card transports that can't reset the card (CryptoTokenKit) end
+/// every session with it, so no PIN stays verified.
+pub fn reset_security_status(t: &mut dyn CardTransport) -> Result<()> {
+    exchange(t, 0x20, 0xff, 0x80, &[]).map(|_| ())
+}
+
 /// Remaining PIN tries, without presenting a PIN (`None` if already verified).
 pub fn pin_retries(t: &mut dyn CardTransport) -> Result<Option<u8>> {
     match exchange(t, 0x20, 0x00, 0x80, &[]) {

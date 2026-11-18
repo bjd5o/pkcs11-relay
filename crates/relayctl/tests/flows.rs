@@ -503,3 +503,16 @@ fn relay_test_ca(dir: &Path) {
     )
     .unwrap();
 }
+
+#[test]
+fn verify_ff_clears_the_pin_within_a_session() {
+    // The softcard implements VERIFY P1=FF; a card that ignores it would sign twice.
+    let mut card = NoReset(SoftCard::new(b"123456"));
+    card.0.generate(slot(0x86), Algorithm::P256);
+    assert_eq!(
+        card::check_security_reset(&mut card, slot(0x86), b"123456").unwrap(),
+        card::PinReset::Cleared
+    );
+    let e = card::check_security_reset(&mut card, slot(0x86), b"000000").unwrap_err();
+    assert!(e.contains("wrong PIN"), "{e}");
+}
