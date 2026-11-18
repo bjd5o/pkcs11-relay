@@ -4,7 +4,14 @@ use relay_core::setup_link::{parse, verify_setup_link, SetupLinkDraft, PREFIX};
 use relay_core::signer::{parse_key, signer_status, SignerStatus};
 use relay_core::{verify_manifest, Error, HardwarePolicy, ManifestSigner, PgpSecretKey};
 
-const NOW: u64 = 1_795_000_000;
+/// The time the test runs: rPGP signs at the real current time, so a fixed time would turn
+/// every signature into one "created in the future" once the clock passed it.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
 
 fn signer() -> (PgpSecretKey, ManifestSigner) {
     let k = PgpSecretKey::generate("link <link@test.invalid>").unwrap();
@@ -18,8 +25,8 @@ fn draft(signer: &ManifestSigner) -> SetupLinkDraft {
         ca: Some([7u8; 32]),
         signer: signer.fingerprint(),
         device: "iphone".into(),
-        iat: NOW - 60,
-        exp: NOW + 900,
+        iat: now() - 60,
+        exp: now() + 900,
     }
 }
 
@@ -40,7 +47,7 @@ fn a_signed_link_verifies_and_round_trips() {
     let l = link(&k, &d);
     assert!(l.starts_with(PREFIX));
     assert!(l.len() < 400, "Ed25519 links stay small: {}", l.len());
-    let v = verify_setup_link(&l, &s, NOW, 60).unwrap();
+    let v = verify_setup_link(&l, &s, now(), 60).unwrap();
     assert_eq!(v.relay, d.relay);
     assert_eq!(v.ca, d.ca);
     assert_eq!(v.device, "iphone");
@@ -48,7 +55,7 @@ fn a_signed_link_verifies_and_round_trips() {
     assert_eq!(v.signed_bytes(), d.signed_bytes().unwrap());
     // Without a CA pin.
     let d2 = SetupLinkDraft { ca: None, ..d };
-    let v2 = verify_setup_link(&link(&k, &d2), &s, NOW, 60).unwrap();
+    let v2 = verify_setup_link(&link(&k, &d2), &s, now(), 60).unwrap();
     assert_eq!(v2.ca, None);
 }
 
@@ -130,7 +137,7 @@ fn the_fixed_form_is_enforced() {
         assert_eq!(e.kind(), "SetupLinkInvalid", "{name}: {e}");
     }
     // exp after iat, at most seven days later.
-    for (iat, exp) in [(NOW, NOW), (NOW, NOW + 7 * 86_400 + 1)] {
+    for (iat, exp) in [(now(), now()), (now(), now() + 7 * 86_400 + 1)] {
         let d = SetupLinkDraft {
             iat,
             exp,
@@ -148,7 +155,7 @@ fn signature_and_signer_are_checked() {
     // Any change to the signed bytes breaks the signature.
     let altered = l.replacen("device=iphone", "device=ipad", 1);
     assert_eq!(
-        kind(verify_setup_link(&altered, &s, NOW, 60)),
+        kind(verify_setup_link(&altered, &s, now(), 60)),
         "SetupLinkSignatureInvalid"
     );
     // Another key's signature over the right bytes, naming the right signer.
@@ -161,13 +168,13 @@ fn signature_and_signer_are_checked() {
         )
         .unwrap();
     assert_eq!(
-        kind(verify_setup_link(&forged, &s, NOW, 60)),
+        kind(verify_setup_link(&forged, &s, now(), 60)),
         "SetupLinkSignatureInvalid"
     );
     // A link naming another signer.
     let (_, s2) = signer();
     assert_eq!(
-        kind(verify_setup_link(&l, &s2, NOW, 60)),
+        kind(verify_setup_link(&l, &s2, now(), 60)),
         "SetupLinkWrongSigner"
     );
 }
@@ -181,7 +188,7 @@ fn manifest_and_link_signatures_cannot_stand_in_for_each_other() {
     let msig = k.sign_detached_binary(manifest).unwrap();
     let swapped = d.with_signature(&msig).unwrap();
     assert_eq!(
-        kind(verify_setup_link(&swapped, &s, NOW, 60)),
+        kind(verify_setup_link(&swapped, &s, now(), 60)),
         "SetupLinkSignatureInvalid"
     );
     // A link's signed bytes and signature presented as a manifest.
@@ -192,7 +199,7 @@ fn manifest_and_link_signatures_cannot_stand_in_for_each_other() {
         &s,
         &HardwarePolicy::yubico(),
         None,
-        NOW,
+        now(),
         60,
     )
     .unwrap_err();
@@ -202,7 +209,11 @@ fn manifest_and_link_signatures_cannot_stand_in_for_each_other() {
 #[test]
 fn time_window_with_skew() {
     let (k, s) = signer();
-    let d = draft(&s);
+    let mut d = draft(&s);
+    // Issued a little after it is signed, so checking at `iat - skew` is still after the
+    // signature's creation time.
+    d.iat += 180;
+    d.exp += 180;
     let l = link(&k, &d);
     verify_setup_link(&l, &s, d.iat - 60, 60).unwrap();
     verify_setup_link(&l, &s, d.exp + 60, 60).unwrap();

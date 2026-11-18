@@ -7,7 +7,14 @@ use relay_core::{
     PgpSecretKey, PublicKey, Role,
 };
 
-const NOW: u64 = 1_795_000_000;
+/// The time the test runs: rPGP signs manifests at the real current time, so a fixed time
+/// would turn every signature into one "created in the future" once the clock passed it.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
 const SERIAL: u32 = 7_654_321;
 
 fn p256() -> PublicKey {
@@ -54,8 +61,8 @@ impl Fx {
         );
         let draft = ManifestDraft {
             version: 1,
-            issued_at: NOW - 100,
-            valid_until: NOW + 86_400,
+            issued_at: now() - 100,
+            valid_until: now() + 86_400,
             keys: vec![
                 DraftKey {
                     role: Role::Sign,
@@ -83,7 +90,7 @@ impl Fx {
     }
 
     fn verify(&self, m: &(Vec<u8>, Vec<u8>)) -> relay_core::Result<relay_core::Manifest> {
-        verify_manifest(&m.0, &m.1, &self.signer, &self.policy(), None, NOW, 60)
+        verify_manifest(&m.0, &m.1, &self.signer, &self.policy(), None, now(), 60)
     }
 }
 
@@ -159,7 +166,7 @@ fn chain_from_another_hierarchy_is_rejected() {
     let fx = Fx::new();
     let m = fx.manifest(Some((2, 2)), true);
     let other = HardwarePolicy::with_roots(vec![TestHierarchy::new().root_der()]).unwrap();
-    let e = verify_manifest(&m.0, &m.1, &fx.signer, &other, None, NOW, 60);
+    let e = verify_manifest(&m.0, &m.1, &fx.signer, &other, None, now(), 60);
     assert_rejected(e, "key attest");
     // The built-in Yubico root does not accept the synthetic chain either.
     let e = verify_manifest(
@@ -168,7 +175,7 @@ fn chain_from_another_hierarchy_is_rejected() {
         &fx.signer,
         &HardwarePolicy::default(),
         None,
-        NOW,
+        now(),
         60,
     );
     assert_rejected(e, "does not verify");
@@ -190,7 +197,8 @@ fn malformed_hardware_attestation_json_is_rejected() {
         m["keys"][1]["hardware_attestation"][field] = value;
         let bytes = serde_json::to_vec(&m).unwrap();
         let sig = fx.pgp.sign_detached(&bytes).unwrap().into_bytes();
-        let e = verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(), None, NOW, 60).unwrap_err();
+        let e =
+            verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(), None, now(), 60).unwrap_err();
         assert!(matches!(e, Error::ManifestMalformed(_)), "{field}: {e}");
     }
     // `null` is the same as no chain, which a manifest that doesn't require one accepts.
@@ -198,7 +206,7 @@ fn malformed_hardware_attestation_json_is_rejected() {
     v["require_hardware_attestation"] = serde_json::json!(false);
     let bytes = serde_json::to_vec(&v).unwrap();
     let sig = fx.pgp.sign_detached(&bytes).unwrap().into_bytes();
-    verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(), None, NOW, 60).unwrap();
+    verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(), None, now(), 60).unwrap();
 }
 
 #[test]
@@ -230,7 +238,8 @@ fn device_policy_fields_are_required_and_bounded() {
         }
         let bytes = serde_json::to_vec(&m).unwrap();
         let sig = fx.pgp.sign_detached(&bytes).unwrap().into_bytes();
-        let e = verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(), None, NOW, 60).unwrap_err();
+        let e =
+            verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(), None, now(), 60).unwrap_err();
         assert!(matches!(e, Error::ManifestMalformed(_)), "{field}: {e}");
     }
 }
