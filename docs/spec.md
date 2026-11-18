@@ -119,8 +119,9 @@ sequenceDiagram
   Note over C: 9. generate client identity key
   C->>R: 10. pending client registration (prints pairing code to log)
   R->>A: 11. push, fetch
-  Note over A: 12. compare code, approve client, choose keys
-  A->>R: 13. approval
+  Note over A: 12. compare code, choose keys and grant window, PIN
+  A->>K: attest key signs the client grant
+  A->>R: 13. approval (client grant)
   R-->>C: 14. approved
   M-->>C: 15. signed manifest (then discovery)
 ```
@@ -137,8 +138,14 @@ Enrollment has three independent parts: publishing keys in the manifest, enrolli
 
 1. Configure the client with the relay URL, the manifest URL and your PGP public key. All three are public and the same for every client, so bake them into the image or a mounted config file.
 2. On first start, the client generates its identity key, posts a pending registration to the relay, and prints a pairing code derived from its key's fingerprint to its log: four words from the EFF large wordlist (about 51.7 bits; at least 50 bits is required).
-3. In the app, open the pending clients, compare the code with the client's log (`docker logs`, or over SSH), then approve, choosing which keys the client may use.
+3. In the app, open the pending clients, compare the code with the client's log (`docker logs`, or over SSH), then approve, choosing which keys the client may use and its grant window (up to the manifest's `max_client_grant_window_secs`). Approving needs the YubiKey: after the PIN, the `attest` key signs a **client grant** naming the client's identity key, its keys and its window (Keys and messages, below).
 4. The client fetches and verifies the manifest, then runs discovery.
+
+**Sharing clients with other approvers.** Every approver trusts a client only through a client grant that verifies against a manifest `attest` key, not through the relay. A device enrolled after a client was paired fetches the existing grants and answers that client at once, with no new pairing and no tap; it shows once which clients came with the setup. Changing a client's keys or window is a new grant with a higher sequence number, signed in one card session from the app's Clients screen, and every approver follows it.
+
+**Renewing and lapsing client grants.** Grants expire like attestations. When three quarters of a grant's window has passed, the next approval of that client's request renews it in the same card session. A client unused for a whole window lapses: its next request is still shown, with a notice that approving renews its access, and keys outside its last grant stay refused.
+
+**Revoking a client or an approver.** In the app, revoking a client produces a revocation signed by an `attest` key; it takes effect at once on that device and reaches the others through the relay. The relay can withhold it, so against a compromised relay a revocation is bounded by the client's grant window and by the person approving. For an emergency, list the client's identity-key fingerprint in the manifest's `revoked_clients`, or an approver's device-key fingerprint in `revoked_devices`: the signed manifest reaches every client and device, and a relay that withholds it only leaves them on a copy that will expire.
 
 **Order no longer matters.** Clients trust only your PGP key, so they can be deployed before any approver exists. Their keys appear once the manifest lists them and an enrolled approver advertises them.
 
@@ -161,7 +168,7 @@ The provider holds no private keys and no key list of its own. It builds its slo
 - **Build and send the request.** Generate a one-time reply key pair, sign the request with the client identity key, post it to the relay, then wait on a long-poll or WebSocket until a response or the deadline. For `sign` keys, send the full message so the approver can hash and display it; for `auth` keys, send the digest.
 - **Verify the manifest's hardware attestation.** When the manifest is loaded, every `attest` key's YubiKey attestation chain (required when the manifest's `require_hardware_attestation` is true) must verify against Yubico's attestation root, show touch `always`, a PIN policy other than `never` and firmware 5.7.4 or later; otherwise the whole manifest is invalid.
 - **Verify the response before using it**, in this order, discarding it at the first failure:
-  1. the attestation statement's signature verifies against a key the manifest lists with role `attest`;
+  1. the attestation statement's signature verifies against a key the manifest lists with role `attest`, and its device key is not in the manifest's `revoked_devices`;
   2. the current time is inside the statement's validity window, allowing a small clock skew, and the window is no longer than the manifest's `max_attestation_window_secs`;
   3. the key that signed the response matches the device key fingerprint in the statement;
   4. the response signature verifies and the response echoes this request's id, key and mechanism;
@@ -197,12 +204,14 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 
 **Responsibilities**
 
-- **Authenticate both sides.** Clients sign every request with their identity key; approver devices authenticate with their device key, or with a separate relay-auth key that the device key vouched for once at enrollment, so a device key that needs a biometric per signature is not used for routine polling. Every HTTP call also carries a signature over its method, path, time, a random nonce and the body hash, and the relay rejects replayed nonces.
+- **Authenticate both sides.** Clients sign every request with their identity key; approver devices authenticate with their device key, or with a separate relay-auth key that the device key vouched for once at enrollment, so a device key that needs a biometric per signature is not used for routine polling. Listing clients and approvers, and posting client grants and revocations, need a third key, the device's admin-auth key, which the device key also vouched for and which needs a recent biometric. Every HTTP call also carries a signature over its method, path, time, a random nonce and the body hash, and the relay rejects replayed nonces.
 - **Advertise keys.** Keep, per approver device, the hardware keys it registered and its current attestation, and serve the combined list to clients. Advertisements are untrusted hints: the provider filters them through the manifest.
 - **Check the manifest.** Verify the manifest it serves with the same rules as clients. Advertise only keys it lists, only from devices whose attestation one of its `attest` keys signed with a window no longer than the manifest's maximum, and reject registrations whose attestation fails these checks. The relay ignores whether the attestation's window has passed: an expired device keeps receiving requests so it can renew during an approval, and clients reject its responses until then. If the manifest is invalid, advertise nothing and log why. Clients still verify everything themselves.
 - **Admit devices by setup link.** A device id the relay does not hold (including one that was revoked) registers only with the setup link the app was set up from. The link must be signed by the relay's own manifest signer key, be inside its validity window, name this device id and not have been used before; the relay records the SHA-256 of the link's signed bytes, never the signature.
 - **Watch the manifest signer.** Check the signer key for revocation and expiry, from its own copy and from keys.openpgp.org every 15 minutes. While it is revoked or expired, advertise no keys, cancel pending requests and refuse every client and device call. If the keyserver is unreachable, keep the last known status.
-- **Route by approval.** A client may only address keys it was approved for at pairing; anything else is rejected before it is queued.
+- **Route by grant.** A client may only address keys in its latest client grant; anything else is rejected before it is queued. The relay checks each grant and revocation it stores against the manifest's `attest` keys, but devices verify them again: the relay can withhold them, never forge them.
+- **Carry grants and revocations.** Store each client's latest grant and every revocation whose grants have not all expired. Send the client's grant and every live revocation with each pending request, so a device can check a request without another call.
+- **Enforce manifest revocations.** Refuse every call from a client listed in `revoked_clients` and from a device whose device key is listed in `revoked_devices`, delete their registrations, and stop routing to that device.
 - **Queue with expiry.** Keep pending requests in memory until their `expires_at`; accept exactly one response per request id; reject duplicate ids.
 - **Ring the doorbell.** Send a content-free push ("1 pending request") to every device advertising the requested key, through APNs, FCM, ntfy or Web Push. The first response wins; the request is withdrawn from the other devices.
 - **Deliver.** Pass the device-signed response and its attestation to the client's open long-poll or WebSocket, then delete the request.
@@ -220,9 +229,12 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 | `GET /v1/requests/{id}/result` | Provider | Long-poll (or WebSocket) for the attested response |
 | `POST /v1/clients/pending` | New client | Start pairing; tailnet only, rate-limited |
 | `GET /v1/clients/self` | Pending or paired client | Learn whether pairing was approved, and for which keys |
-| `POST /v1/clients/{id}/approval` | Approver app | Approve a pending client for keys chosen from the manifest |
+| `POST /v1/clients/{id}/approval` | Approver app | Approve a pending client with a client grant signed by an `attest` key |
+| `GET /v1/clients` | Approver app (admin-auth key) | Every client's latest grant, host and last seen, and every live revocation |
+| `POST /v1/clients/{id}/grant`, `POST /v1/clients/{id}/revocation` | Approver app (admin-auth key) | Change, renew or revoke a client's grant |
+| `GET /v1/devices` | Approver app (admin-auth key) | Every approver's device key, attestation, keys, push kind and last seen |
 | `POST /v1/devices` | Approver app | Register or update a device: device key, attestation, operable keys, push token; for a device id the relay does not hold, the signed setup link |
-| `GET /v1/devices/{id}/pending` | Approver app | Fetch pending requests and pairings after a push |
+| `GET /v1/devices/{id}/pending` | Approver app | Fetch pending requests (each with its client's grant), pairings and live revocations after a push |
 | `POST /v1/requests/{id}/response` | Approver app | Return the signed response: approval, denial or error |
 
 **Configuration**
@@ -230,7 +242,7 @@ The relay is a mailbox, a doorbell and a directory: it queues signed requests, w
 | Setting | Example | Used for |
 | --- | --- | --- |
 | Listener and TLS | `:8443`, certificate and key | Serving the API |
-| Client registry | client id → signing public key, approved keys, rate limit | Authenticating and routing requests |
+| Client registry | client id → signing public key, latest client grant, rate limit; live revocations | Authenticating and routing requests |
 | Device registry | device id → device public key, current attestation, operable keys, push tokens | Advertising keys; knowing whom to ring |
 | Push credentials | APNs `.p8` key, key id, team id; or an FCM service account; or an ntfy topic and token | Sending the doorbell |
 | Limits | max TTL 120 s, max 4 pending per client, max body 64 KiB | Bounding abuse and approval spam |
@@ -255,14 +267,16 @@ The approver app is the only place a request becomes an operation: it checks who
 - **Device key.** At enrollment, generate a non-exportable P-256 signing key in the Secure Enclave, Android Keystore (StrongBox where available) or a TPM. It signs every response, denial and error.
 - **Attestation.** Hold a current attestation statement signed by a manifest `attest` key and attach it to every response. Renew it early, during an approval that already has the YubiKey present.
 - **Advertise.** Register with the relay the hardware keys it can operate, its device key, its attestation and its push token; update the registration whenever any of them changes.
+- **Client grants.** Keep every client grant and revocation it has verified. Sign a grant with the `attest` key when the person approves a pairing or changes a client, and renew a client's grant during an approval once three quarters of its window has passed or once it has lapsed, with a notice on the approval screen. Never go back to a grant with a lower sequence number than one already seen.
+- **Clients and Approvers screens.** List every paired client (keys, approver, grant window and expiry, status) with actions to change keys, renew and revoke, and every approver (keys, attestation status checked on this device, push kind and last seen as reported by the relay). These calls use the admin-auth key, unlocked by one biometric that lasts at most an hour and ends when the app goes to the background.
 - **Check every request** before showing it:
-  - the request signature matches a paired client;
+  - the request signature matches a client with a verified, unrevoked grant, and the client is not in the manifest's `revoked_clients`;
   - it has not expired, and its id is not in the local replay cache;
-  - the key is one this device operates and the client was approved for it;
+  - the key is one this device operates and is in the client's grant;
   - the operation and mechanism fit the key's role in the manifest, which the app fetches and verifies exactly as clients do;
   - the per-client rate limit is not exceeded.
 
-  Anything that fails is denied and logged.
+  Anything that fails is denied with a signed reason and logged, and the app shows the reason. A lapsed grant is not a failure: the request is shown with the renewal notice.
 - **Show an approval screen.** Client name, host, purpose text, key label and role, operation and time remaining. For `sign` keys, hash the message itself, decode it by type and show its fields; sign only the digest the app computed.
 - **Authenticate to the key.** Collect the PIN in the app and send `VERIFY` (or let CryptoTokenKit prompt). Touch happens here too if the key's policy requires it.
 - **Run the operation and fix up formats.** PIV keys do raw RSA, so the app adds or removes padding around the card operation:
@@ -282,9 +296,10 @@ The approver app is the only place a request becomes an operation: it checks who
 | Device id | `brian-iphone` | Addressing on the relay |
 | Device key | generated at enrollment, non-exportable | Signing responses, denials and errors |
 | Relay-auth key | generated at enrollment, non-exportable, no biometric; bound to the device key by one signature | Authenticating relay calls |
+| Admin-auth key | generated at enrollment, non-exportable, biometric; bound to the device key by one signature; one unlock lasts at most 1 hour and ends when the app goes to the background | Listing clients and approvers; posting grants and revocations |
 | Attestation | current statement and its `not_after` | Proving to clients that the device is enrolled |
 | Attestation window | 7 days, chosen at setup up to the manifest's maximum | How long each statement lasts; renewal starts at 75% |
-| Paired clients | client id → display name, signing public key, approved keys, rate limit | Deciding which requests can even be shown |
+| Client grants | verified grants by client key, plus verified revocations; each grant with its keys, sequence number and window | Deciding which requests can even be shown |
 | Key map | key fingerprint → YubiKey serial or CryptoTokenKit token id, slot | Finding the right key for each request |
 | Push and platform | APNs or FCM registration; NFC entitlement on iOS | Being woken; talking to the key |
 | Local policy | biometric before PIN, no PIN caching, replay cache kept 24 h | Hardening the approval step |
@@ -303,7 +318,7 @@ The hardware key holds every private key that matters, the manifest says which o
 - Hold each key in its own slot, for exactly one role: `sign`, `auth`, `encrypt` or `attest`.
 - Enforce the PIN, and touch if configured, for each key.
 - Perform the raw operation: RSA private-key operation or ECDSA signature over a digest.
-- Sign device attestation statements with the `attest` key, at enrollment and at each renewal.
+- Sign device attestation statements with the `attest` key, at enrollment and at each renewal, and client grants and revocations at pairing, at each change or renewal, and at each revocation.
 - Keep a certificate in each used slot, so software on the approver can discover the key.
 
 **Configuration**
@@ -328,6 +343,7 @@ Keys generated on the card cannot be copied, so a backup is a second YubiKey: li
 - Group keys by hardware token, so the provider can present one slot per token.
 - Let clients refuse rollbacks (`version`) and bound how long a stale copy stays usable (`valid_until`).
 - Set the device policy every client applies: whether attest keys need hardware attestation, and the longest attestation window.
+- Set the longest client grant window, and list clients and approvers revoked in an emergency.
 
 **Format.** JSON, with an OpenPGP detached signature next to it (`manifest.json.asc`).
 
@@ -336,6 +352,9 @@ Keys generated on the card cannot be copied, so a backup is a second YubiKey: li
 | `version` | `7` | Monotonic; clients reject anything lower than their cached copy |
 | `require_hardware_attestation` | `true` | Every `attest` key must carry a valid `hardware_attestation` |
 | `max_attestation_window_secs` | `604800` | The longest attestation window clients accept (`not_after − not_before`) |
+| `max_client_grant_window_secs` | `2592000` | The longest client grant window approvers accept; each client's own window is chosen at pairing |
+| `revoked_clients` | `["sha256:9b2e…"]` | Optional. Client identity-key fingerprints; the relay and every approver refuse these clients |
+| `revoked_devices` | `["sha256:51d0…"]` | Optional. Device-key fingerprints; the relay refuses these devices and providers reject their responses |
 | `issued_at`, `valid_until` | `2026-11-15`, `2026-12-15` | Clients refuse an expired manifest, so re-sign before it lapses |
 | `keys[].fingerprint` | `sha256:4f1c…` | SHA-256 of the key's SubjectPublicKeyInfo |
 | `keys[].role` | `encrypt` | Exactly one of `sign`, `auth`, `encrypt`, `attest` |
@@ -359,6 +378,7 @@ Keys generated on the card cannot be copied, so a backup is a second YubiKey: li
 - Edit the manifest, increase its `version`, set `valid_until`, sign it with your PGP key and publish it.
 - Re-sign and republish the manifest before `valid_until`, even when nothing changed.
 - If the `attest` key lives on an offline YubiKey, sign attestation renewals that approver devices request.
+- Add a client or an approver to the manifest's `revoked_clients` or `revoked_devices` in an emergency.
 
 Device enrollment and client pairing happen in the approver app, not here.
 
@@ -372,8 +392,9 @@ Only hardware keys perform protected operations, only your PGP key decides which
 | --- | --- | --- | --- |
 | PGP manifest key | You | YubiKey OpenPGP applet, or an offline key | Signing the manifest |
 | `sign`, `auth` and `encrypt` keys | Hardware key | The card, non-exportable | The operations themselves |
-| `attest` key | Hardware key | The card, in its own slot | Signing device attestation statements |
+| `attest` key | Hardware key | The card, in its own slot | Signing device attestation statements, client grants and client revocations |
 | Device key | Approver app | Secure Enclave, Android Keystore or TPM | Signing responses, denials and errors |
+| Relay-auth and admin-auth keys | Approver app | Same as the device key, which vouches for both | Authenticating relay calls; the admin-auth key, behind a biometric, for listing and changing clients |
 | Client identity key | Provider | File on the client host, mode `0600` | Signing requests |
 | One-time reply key | Provider | Process memory, one per request | Opening that request's result |
 | Relay TLS key | Relay | Relay host | Transport encryption |
@@ -389,11 +410,19 @@ Only hardware keys perform protected operations, only your PGP key decides which
 - Fields: `v`, `device_id`, `device_key` (public key), `device_key_fingerprint`, `not_before`, `not_after`, `attest_key_fingerprint`, `sig`.
 - `sig` covers the context string `relay-pkcs11/attestation/v1` and every other field.
 
+**Client grant.** Signed by a key the manifest lists with role `attest`, when a pairing is approved and at each change or renewal.
+
+- Fields: `v`, `client_id`, `client_key`, `keys` (fingerprints of the manifest keys the client may use), `seq`, `window_secs`, `issued_at`, `not_after`, `approved_by` (device id, for display), `attest_key_fingerprint`, `sig`.
+- `sig` covers the context string `relay-pkcs11/client-grant/v1` and every other field.
+- An approver uses the grant with the highest `seq` it has seen for a client key. It is lapsed after `not_after`, and void when its `attest` key leaves the manifest.
+
+**Client revocation.** Signed by a manifest `attest` key. Fields: `v`, `client_key`, `seq` (the highest grant sequence it cancels), `issued_at`, `attest_key_fingerprint`, `sig`, over the context string `relay-pkcs11/client-revocation/v1`.
+
 **Response envelope.** Signed by the device key, with the device's current attestation attached.
 
-- Fields: `v`, `req_id`, `request_hash`, `status` (`approved`, `denied` or `error`), `reason` (an optional code with `denied` or `error`, such as `user_denied` or `wrong_pin`; any card or decoding failure is reported only as `card_error`), `responded_at`, `sealed_result` (absent unless approved), `device_key_fingerprint`, `device_sig`, `attestation`.
+- Fields: `v`, `req_id`, `request_hash`, `status` (`approved`, `denied` or `error`), `reason` (an optional code with `denied` or `error`, such as `user_denied`, `wrong_pin`, `client_not_granted`, `client_revoked` or `key_not_granted`; any card or decoding failure is reported only as `card_error`), `responded_at`, `sealed_result` (absent unless approved), `device_key_fingerprint`, `device_sig`, `attestation`.
 - `device_sig` covers the context string `relay-pkcs11/response/v1` plus every field except `attestation`, so a response cannot be replayed onto another request. `request_hash` is the hash of the entire request envelope.
-- The client trusts the response only if the attestation verifies against a manifest `attest` key, is inside its window, and names the key that made `device_sig`.
+- The client trusts the response only if the attestation verifies against a manifest `attest` key, is inside its window, names the key that made `device_sig`, and that key is not in the manifest's `revoked_devices`.
 - Sealed result, encrypted to `reply_pub`: the output bytes in the exact format the PKCS#11 mechanism returns.
 
 **Suite.** OpenPGP for the manifest; HPKE (RFC 9180) with DHKEM(P-256, HKDF-SHA256) and AES-256-GCM for sealing results; ECDSA P-256 for device keys (the Secure Enclave's only curve) and attestation statements; Ed25519 or P-256 for client signatures; deterministic CBOR encoding so every party signs identical bytes.
@@ -404,18 +433,18 @@ Compromising the relay, the manifest host or the push service yields denial of s
 
 | Compromised | What the attacker gets | What still stops them |
 | --- | --- | --- |
-| Relay | Every request in full (by design, for the audit log); can delay, drop or flood requests; can advertise keys or devices of its own | The manifest decides which keys exist; a device without a valid attestation cannot produce an accepted response; results are sealed to the reply key |
+| Relay | Every request in full (by design, for the audit log); can delay, drop or flood requests; can advertise keys or devices of its own; can withhold client grants and revocations from approvers | The manifest decides which keys exist; a device without a valid attestation cannot produce an accepted response; results are sealed to the reply key; grants are signed by `attest` keys, so a withheld change or revocation lasts at most one grant window, and `revoked_clients` in the manifest reaches every approver |
 | Manifest host | Can withhold the manifest or serve an old one | The PGP signature; `version` blocks rollback below a client's cache; `valid_until` bounds how stale a copy can be |
 | PGP manifest key | Decides which keys clients trust, including `attest` keys, whether attest keys need hardware attestation, and the longest attestation window | Keep it on hardware, offline if possible; rotating it means reconfiguring every client |
-| `attest` key | Can vouch for an attacker's device, whose responses clients then accept | Touch `always`; keep it on a YubiKey you hold or offline; remove it from the manifest to void every attestation it signed; hardware attestation in the manifest proves it was generated on a YubiKey with touch `always` |
+| `attest` key | Can vouch for an attacker's device, whose responses clients then accept; can grant an attacker's client to every approver | Touch `always`; keep it on a YubiKey you hold or offline; remove it from the manifest to void every attestation it signed; hardware attestation in the manifest proves it was generated on a YubiKey with touch `always` |
 | Push provider | Timing of pending requests | The push carries no content |
 | Client host (root) | Can request operations as that client; reads any result returned to the consumer (for OpenBao, the unsealed root key) | Each request needs approval; per-client key approvals and rate limits. Only approve what you initiated |
-| Client identity key, copied elsewhere | Same requests as the client host, from anywhere that reaches the relay | Approval; revoke it in the relay and the app |
+| Client identity key, copied elsewhere | Same requests as the client host, from anywhere that reaches the relay | Approval; revoke it in the app, or in the manifest's `revoked_clients` |
 | Approver device, stolen and locked | Nothing | Device lock, then the hardware key, then its PIN |
 | Approver device, running malware | Sees the PIN as it is typed; can sign forged decrypt results with the device key until its attestation expires | Short attestation windows; forged signature results fail the provider's check against the hardware key; touch `always` |
 | Hardware key, stolen | Nothing while the PIN is required (3 tries, then blocked) | PIN policy; never use PIN policy `never` on these keys |
 
-**Revoking one device early** is the gap: an attestation stays valid until `not_after`. Either keep windows short, or add a `revoked_devices` list of device key fingerprints to the manifest and have clients check it.
+**Revoking one device early:** an attestation stays valid until `not_after`, so list the device key in the manifest's `revoked_devices`. Clients reject its responses from the next manifest they load, and the relay refuses the device at once.
 
 **Approval fatigue** is the realistic attack: someone with access to the client triggers a request at a moment you expect one, such as right after a restart. The approval screen's host and purpose text, rate limits, and a habit of approving only what you just started are the defenses.
 
@@ -438,6 +467,9 @@ Every failure surfaces to the consumer as an ordinary PKCS#11 error, so existing
 | Signed denial from an attested device | Returns at once | `CKR_FUNCTION_REJECTED` |
 | Signed error from an attested device (card absent, wrong PIN, PIN blocked) | Logs the reason | `CKR_DEVICE_ERROR` |
 | Attestation invalid, expired or not signed by a manifest `attest` key | Discards the response | `CKR_DEVICE_ERROR` |
+| Response from a device whose key is in the manifest's `revoked_devices` | Discards it, logs loudly; the relay refuses such responses too | `CKR_DEVICE_ERROR` |
+| This client's own key is in the manifest's `revoked_clients` | The provider logs it and keeps the manifest's slots with no keys in them; the relay refuses its calls (403 `ClientRevoked`), and an approver that receives a request anyway signs a denial (`client_revoked`) | Slots without keys; `CKR_DEVICE_ERROR` for a request in flight, or `CKR_FUNCTION_REJECTED` for a signed denial |
+| Request from a client with no usable grant on the approver (missing, revoked, or its `attest` key left the manifest), or for a key outside its grant | The approver signs a denial with the reason | `CKR_FUNCTION_REJECTED` |
 | Response signed by a key other than the attested device key, or not bound to this request | Discards it, logs loudly as possible tampering | `CKR_DEVICE_ERROR` |
 | Caller's output buffer too small | Keeps the result cached for the session | `CKR_BUFFER_TOO_SMALL` with the needed length |
 | Second call of the length-query pattern | Serves the cached result; no new request | `CKR_OK` |
