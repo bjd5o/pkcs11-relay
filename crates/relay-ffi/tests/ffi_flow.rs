@@ -178,6 +178,7 @@ fn the_app_surface_end_to_end() {
         &std::fs::read(dir.join("manifest.json")).unwrap(),
         &std::fs::read(dir.join("manifest.json.asc")).unwrap(),
         &signer,
+        &relay_core::HardwarePolicy::yubico(false),
         None,
         now(),
         60,

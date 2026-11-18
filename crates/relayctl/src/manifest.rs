@@ -58,6 +58,7 @@ pub fn add(
         id,
         token: token.into(),
         public_key: key,
+        hardware_attestation: None,
     });
     // to_json re-validates everything: roles, algorithms, duplicates.
     save(path, &d)?;
@@ -189,11 +190,27 @@ pub fn verify(
     let t = now();
     let cached = match cached {
         Some(c) => Some(
-            verify_manifest(&read(c)?, &read(&sig_path(c))?, &signer, None, t, skew)
-                .map_err(|e| format!("cached copy: {e}"))?,
+            verify_manifest(
+                &read(c)?,
+                &read(&sig_path(c))?,
+                &signer,
+                &relay_core::HardwarePolicy::yubico(false),
+                None,
+                t,
+                skew,
+            )
+            .map_err(|e| format!("cached copy: {e}"))?,
         ),
         None => None,
     };
-    verify_manifest(&read(path)?, &read(sig)?, &signer, cached.as_ref(), t, skew)
-        .map_err(|e| format!("{} ({})", e, e.kind()))
+    verify_manifest(
+        &read(path)?,
+        &read(sig)?,
+        &signer,
+        &relay_core::HardwarePolicy::yubico(false),
+        cached.as_ref(),
+        t,
+        skew,
+    )
+    .map_err(|e| format!("{} ({})", e, e.kind()))
 }

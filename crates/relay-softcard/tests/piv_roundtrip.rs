@@ -38,6 +38,7 @@ fn fixture() -> Fixture {
             id: vec![i as u8 + 1],
             token: "softcard".into(),
             public_key: card.generate(slot(*s), *alg),
+            hardware_attestation: None,
         })
         .collect();
     let draft = ManifestDraft {
@@ -287,6 +288,7 @@ fn p384_signatures_pass_check_5() {
             id: vec![1],
             token: "t".into(),
             public_key: sign,
+            hardware_attestation: None,
         },
         DraftKey {
             role: Role::Auth,
@@ -294,6 +296,7 @@ fn p384_signatures_pass_check_5() {
             id: vec![2],
             token: "t".into(),
             public_key: auth,
+            hardware_attestation: None,
         },
     ];
     let m = Manifest::from_json_unverified(
@@ -346,6 +349,7 @@ fn ed25519_signatures_pass_check_5() {
             id: vec![1],
             token: "t".into(),
             public_key: sign,
+            hardware_attestation: None,
         },
         DraftKey {
             role: Role::Auth,
@@ -353,6 +357,7 @@ fn ed25519_signatures_pass_check_5() {
             id: vec![2],
             token: "t".into(),
             public_key: auth,
+            hardware_attestation: None,
         },
     ];
     let m = Manifest::from_json_unverified(

@@ -39,6 +39,7 @@ fn fixture(window: u64) -> Fx {
         id: vec![id],
         token: "yk".into(),
         public_key: pk,
+        hardware_attestation: None,
     };
     let draft = ManifestDraft {
         version: 2,

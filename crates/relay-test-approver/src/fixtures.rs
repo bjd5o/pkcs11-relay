@@ -170,6 +170,7 @@ pub fn generate(
             id: vec![i as u8 + 1],
             token: format!("softcard-{}", s.card),
             public_key: k.public_key(),
+            hardware_attestation: None,
         });
     }
     for card in ["a", "b", "c"] {
@@ -187,6 +188,7 @@ pub fn generate(
         id: vec![0x99],
         token: "softcard-a".into(),
         public_key: attest_pk,
+        hardware_attestation: None,
     });
 
     let draft = ManifestDraft {

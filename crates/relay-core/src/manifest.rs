@@ -11,6 +11,11 @@ use pgp::crypto::hash::HashAlgorithm;
 use pgp::packet::SignatureType;
 use serde::Deserialize;
 
+use crate::hw_attestation::{
+    verify_piv_attestation, HardwareAttestation, HardwarePolicy, PinPolicy, PivAttestation,
+    TouchPolicy, FORMAT_YUBIKEY_PIV, MAX_CERT_LEN, MAX_CHAIN, MIN_CHAIN,
+};
+
 use crate::error::{Error, Result};
 use crate::keys::{Algorithm, Fingerprint, PublicKey, Role};
 
@@ -129,6 +134,15 @@ struct KeyJson {
     token: String,
     algorithm: String,
     public_key: String,
+    #[serde(default)]
+    hardware_attestation: Option<HardwareAttestationJson>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HardwareAttestationJson {
+    format: String,
+    chain: Vec<String>,
 }
 
 /// One trusted key. Everything security-relevant about a key comes from here.
@@ -142,6 +156,11 @@ pub struct ManifestKey {
     pub token: String,
     pub algorithm: Algorithm,
     pub public_key: PublicKey,
+    /// The key's YubiKey attestation chain, if the manifest carries one.
+    pub hardware_attestation: Option<HardwareAttestation>,
+    /// What the chain proved, filled in by [`verify_manifest`]. `None` in a manifest that was
+    /// not verified, or for a key without a chain.
+    pub attested: Option<PivAttestation>,
 }
 
 /// A verified manifest.
@@ -196,6 +215,80 @@ impl Manifest {
     }
 }
 
+fn parse_hardware_attestation(
+    h: HardwareAttestationJson,
+    fp: &Fingerprint,
+) -> Result<HardwareAttestation> {
+    if h.format != FORMAT_YUBIKEY_PIV {
+        return Err(malformed(format!(
+            "unsupported hardware_attestation format {:?} for {fp}",
+            h.format
+        )));
+    }
+    if h.chain.len() < MIN_CHAIN || h.chain.len() > MAX_CHAIN {
+        return Err(malformed(format!(
+            "hardware_attestation chain for {fp} must hold {MIN_CHAIN}-{MAX_CHAIN} certificates"
+        )));
+    }
+    let chain = h
+        .chain
+        .iter()
+        .map(|c| {
+            let der = base64::engine::general_purpose::STANDARD
+                .decode(c)
+                .map_err(|_| malformed(format!("hardware_attestation for {fp} is not base64")))?;
+            if der.is_empty() || der.len() > MAX_CERT_LEN {
+                return Err(malformed(format!(
+                    "hardware_attestation certificate for {fp} must be 1-{MAX_CERT_LEN} bytes"
+                )));
+            }
+            Ok(der)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(HardwareAttestation { chain })
+}
+
+/// Apply the hardware attestation policy (wire-format §9.4) and record what each chain proved.
+fn check_hardware(m: &mut Manifest, policy: &HardwarePolicy, now: u64) -> Result<()> {
+    for k in &mut m.keys {
+        let fp = k.fingerprint.clone();
+        let Some(h) = &k.hardware_attestation else {
+            if k.role == Role::Attest && policy.require_for_attest {
+                return Err(Error::HardwareAttestationInvalid(format!(
+                    "attest key {} ({fp}) has no hardware attestation",
+                    k.label
+                )));
+            }
+            continue;
+        };
+        let a = verify_piv_attestation(&h.chain, &k.public_key, &policy.roots, now).map_err(
+            |e| match e {
+                Error::HardwareAttestationInvalid(m) => {
+                    Error::HardwareAttestationInvalid(format!("key {} ({fp}): {m}", k.label))
+                }
+                other => other,
+            },
+        )?;
+        if k.role == Role::Attest {
+            if a.touch_policy != TouchPolicy::Always {
+                return Err(Error::HardwareAttestationInvalid(format!(
+                    "attest key {} ({fp}) has touch policy {}, not always",
+                    k.label,
+                    a.touch_policy.as_str()
+                )));
+            }
+            if a.pin_policy == PinPolicy::Never {
+                return Err(Error::HardwareAttestationInvalid(format!(
+                    "attest key {} ({fp}) has PIN policy never",
+                    k.label
+                )));
+            }
+        }
+        k.attested = Some(a);
+    }
+    Ok(())
+}
+
 fn malformed(m: impl Into<String>) -> Error {
     Error::ManifestMalformed(m.into())
 }
@@ -243,6 +336,10 @@ fn parse(bytes: &[u8]) -> Result<Manifest> {
             .map_err(|_| malformed("public_key is not base64"))?;
         let public_key =
             PublicKey::from_spki(&spki).map_err(|e| malformed(format!("public_key: {e}")))?;
+        let hardware_attestation = k
+            .hardware_attestation
+            .map(|h| parse_hardware_attestation(h, &fingerprint))
+            .transpose()?;
         if public_key.fingerprint() != &fingerprint {
             return Err(malformed(format!(
                 "fingerprint does not match public_key for {fingerprint}"
@@ -283,6 +380,8 @@ fn parse(bytes: &[u8]) -> Result<Manifest> {
             token: k.token,
             algorithm,
             public_key,
+            hardware_attestation,
+            attested: None,
         });
     }
     Ok(Manifest {
@@ -294,12 +393,14 @@ fn parse(bytes: &[u8]) -> Result<Manifest> {
     })
 }
 
-/// Verify a fetched manifest (wire-format §9.3): signature first, then JSON, then expiry,
-/// then rollback against the cached copy. On error the caller keeps its valid cached copy.
+/// Verify a fetched manifest (wire-format §9.3): signature first, then JSON, then hardware
+/// attestation, then expiry, then rollback against the cached copy. On error the caller keeps
+/// its valid cached copy.
 pub fn verify_manifest(
     bytes: &[u8],
     signature: &[u8],
     signer: &ManifestSigner,
+    policy: &HardwarePolicy,
     cached: Option<&Manifest>,
     now: u64,
     skew: u64,
@@ -308,7 +409,8 @@ pub fn verify_manifest(
         return Err(malformed("manifest too large"));
     }
     signer.verify(bytes, signature, now, skew)?;
-    let m = parse(bytes)?;
+    let mut m = parse(bytes)?;
+    check_hardware(&mut m, policy, now)?;
     m.check_fresh(now, skew)?;
     if let Some(c) = cached {
         if m.version < c.version {
@@ -341,6 +443,7 @@ pub struct DraftKey {
     pub id: Vec<u8>,
     pub token: String,
     pub public_key: PublicKey,
+    pub hardware_attestation: Option<HardwareAttestation>,
 }
 
 impl ManifestDraft {
@@ -360,6 +463,7 @@ impl ManifestDraft {
                     id: k.id,
                     token: k.token,
                     public_key: k.public_key,
+                    hardware_attestation: k.hardware_attestation,
                 })
                 .collect(),
         })
@@ -371,15 +475,23 @@ impl ManifestDraft {
             .keys
             .iter()
             .map(|k| {
-                serde_json::json!({
+                let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+                let mut v = serde_json::json!({
                     "fingerprint": k.public_key.fingerprint().as_str(),
                     "role": k.role.as_str(),
                     "label": k.label,
                     "id": hex::encode(&k.id),
                     "token": k.token,
                     "algorithm": k.public_key.algorithm().as_str(),
-                    "public_key": base64::engine::general_purpose::STANDARD.encode(k.public_key.spki()),
-                })
+                    "public_key": b64(k.public_key.spki()),
+                });
+                if let Some(h) = &k.hardware_attestation {
+                    v["hardware_attestation"] = serde_json::json!({
+                        "format": FORMAT_YUBIKEY_PIV,
+                        "chain": h.chain.iter().map(|c| b64(c)).collect::<Vec<_>>(),
+                    });
+                }
+                v
             })
             .collect();
         let doc = serde_json::json!({

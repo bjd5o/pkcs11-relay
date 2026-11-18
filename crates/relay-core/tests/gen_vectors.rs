@@ -34,6 +34,86 @@ fn generate() {
     response_vectors(&fx);
 }
 
+/// Only the hardware attestation vectors (wire-format §9.4), leaving every other vector as is:
+///
+///     cargo test -p relay-core --test gen_vectors generate_hw_attestation -- --ignored
+#[test]
+#[ignore]
+fn generate_hw_attestation() {
+    use relay_core::hw_attestation::testing::{HierarchyOptions, LeafOptions, TestHierarchy};
+    let key = |seed: u8| {
+        let k = p256::ecdsa::SigningKey::from_slice(&[seed; 32]).unwrap();
+        p256::pkcs8::EncodePublicKey::to_public_key_der(k.verifying_key())
+            .unwrap()
+            .into_vec()
+    };
+    let attest = key(0x41);
+    let hier = TestHierarchy::new();
+    let d = hier.device(12_345_678, (5, 7, 4));
+    let good = LeafOptions::for_device(&d, 2, 2);
+    let v = |name: &str, desc: &str, root: &[u8], chain: &[Vec<u8>], pk: &[u8], expect: Value| {
+        write(
+            "hw-attestation",
+            name,
+            json!({
+                "description": desc,
+                "root": h(root),
+                "chain": chain.iter().map(|c| h(c)).collect::<Vec<_>>(),
+                "public_key": h(pk),
+                "now": NOW,
+                "expect": expect,
+            }),
+        );
+    };
+    let root = hier.root_der();
+    v(
+        "valid",
+        "leaf, F9, PIV attestation CA, intermediate; PIN once, touch always",
+        &root,
+        &d.chain(0x85, &attest, &good),
+        &attest,
+        json!({"serial": 12_345_678, "firmware": "5.7.4", "pin_policy": "once", "touch_policy": "always", "form_factor": 3}),
+    );
+    v(
+        "wrong-key",
+        "a valid chain for another key",
+        &root,
+        &d.chain(0x85, &key(0x42), &good),
+        &attest,
+        json!("HardwareAttestationInvalid"),
+    );
+    v(
+        "other-root",
+        "a valid chain checked against another root",
+        &TestHierarchy::new().root_der(),
+        &d.chain(0x85, &attest, &good),
+        &attest,
+        json!("HardwareAttestationInvalid"),
+    );
+    let old = hier.device(12_345_678, (5, 7, 3));
+    v(
+        "firmware-5.7.3",
+        "firmware older than 5.7.4",
+        &root,
+        &old.chain(0x85, &attest, &LeafOptions::for_device(&old, 2, 2)),
+        &attest,
+        json!("HardwareAttestationInvalid"),
+    );
+    let opgp = TestHierarchy::with_options(HierarchyOptions {
+        branch_cn: "Yubico OPGP Attestation Test 1".into(),
+        ..Default::default()
+    });
+    let od = opgp.device(12_345_678, (5, 7, 4));
+    v(
+        "not-piv-branch",
+        "issued through an OpenPGP attestation CA",
+        &opgp.root_der(),
+        &od.chain(0x85, &attest, &LeafOptions::for_device(&od, 2, 2)),
+        &attest,
+        json!("HardwareAttestationInvalid"),
+    );
+}
+
 fn attestation_vectors(fx: &Fx) {
     let a = |name: &str, desc: &str, bytes: &[u8], now: u64, expect: &str| {
         write(

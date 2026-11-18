@@ -373,7 +373,16 @@ impl Approver {
         let t = now();
         // The saved copy is a rollback floor while it is still valid.
         let cached = match (&saved.manifest, &saved.manifest_signature) {
-            (Some(m), Some(s)) => verify_manifest(m, s, &signer, None, t, config.skew_secs).ok(),
+            (Some(m), Some(s)) => verify_manifest(
+                m,
+                s,
+                &signer,
+                &relay_core::HardwarePolicy::yubico(false),
+                None,
+                t,
+                config.skew_secs,
+            )
+            .ok(),
             _ => None,
         };
         let (manifest, sig) = fetch_manifest(&relay, &config, &signer, cached.as_ref(), t)?;

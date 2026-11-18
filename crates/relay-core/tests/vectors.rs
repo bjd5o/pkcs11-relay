@@ -108,3 +108,45 @@ fn response_vectors() {
         }
     }
 }
+
+#[test]
+fn hw_attestation_vectors() {
+    use relay_core::hw_attestation::verify_piv_attestation;
+    for (name, v) in cases("hw-attestation") {
+        let chain: Vec<Vec<u8>> = v["chain"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| hex::decode(c.as_str().unwrap()).unwrap())
+            .collect();
+        let pk = relay_core::PublicKey::from_spki(&hx(&v, "public_key")).unwrap();
+        let r = verify_piv_attestation(&chain, &pk, &[hx(&v, "root")], u(&v, "now"));
+        match &v["expect"] {
+            Value::String(kind) => assert_eq!(&kind_of(r), kind, "{name}"),
+            want => {
+                let a = r.unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert_eq!(a.serial as u64, want["serial"].as_u64().unwrap(), "{name}");
+                assert_eq!(
+                    a.firmware_string(),
+                    want["firmware"].as_str().unwrap(),
+                    "{name}"
+                );
+                assert_eq!(
+                    a.pin_policy.as_str(),
+                    want["pin_policy"].as_str().unwrap(),
+                    "{name}"
+                );
+                assert_eq!(
+                    a.touch_policy.as_str(),
+                    want["touch_policy"].as_str().unwrap(),
+                    "{name}"
+                );
+                assert_eq!(
+                    a.form_factor.map(u64::from),
+                    want["form_factor"].as_u64(),
+                    "{name}"
+                );
+            }
+        }
+    }
+}

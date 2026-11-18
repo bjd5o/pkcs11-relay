@@ -3,6 +3,8 @@
 //!
 //! Manifest rows (signature invalid, rolled back, expired → zero slots) are in
 //! `manifest_pgp.rs`, against signatures made by real gpg.
+//! The hardware attestation row (missing when required, invalid or outside policy → zero
+//! slots) is in `manifest_hw.rs`; the relay's own manifest row is in relay-server's tests.
 //!
 //! Rows that only the provider can produce, covered in milestone 3:
 //! manifest unreachable with no cache; relay unreachable during discovery; relay unreachable

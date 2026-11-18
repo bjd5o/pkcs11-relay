@@ -218,5 +218,14 @@ pub async fn load_manifest(
     };
     let bytes = fetch(url, ca).await?;
     let sig = fetch(&format!("{url}.asc"), ca).await?;
-    relay_core::verify_manifest(&bytes, &sig, signer, None, now(), skew).map_err(|e| e.to_string())
+    relay_core::verify_manifest(
+        &bytes,
+        &sig,
+        signer,
+        &relay_core::HardwarePolicy::yubico(false),
+        None,
+        now(),
+        skew,
+    )
+    .map_err(|e| e.to_string())
 }

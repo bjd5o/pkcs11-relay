@@ -68,6 +68,7 @@ fn draft(fx_keys: &[(Role, &str, u8, PublicKey)], version: u64) -> ManifestDraft
                 id: vec![*id],
                 token: TOKEN.into(),
                 public_key: pk.clone(),
+                hardware_attestation: None,
             })
             .collect(),
     }
