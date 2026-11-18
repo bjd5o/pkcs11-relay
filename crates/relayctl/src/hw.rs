@@ -46,8 +46,8 @@ impl Anchors {
         }
     }
 
-    pub fn policy(&self, require: bool) -> Result<HardwarePolicy, String> {
-        HardwarePolicy::with_roots(require, self.roots.clone()).map_err(|e| e.to_string())
+    pub fn policy(&self) -> Result<HardwarePolicy, String> {
+        HardwarePolicy::with_roots(self.roots.clone()).map_err(|e| e.to_string())
     }
 }
 

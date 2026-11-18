@@ -47,6 +47,8 @@
       "token": "softcard-0001"
     }
   ],
+  "max_attestation_window_secs": 2592000,
+  "require_hardware_attestation": false,
   "v": 1,
   "valid_until": 1797292800,
   "version": 1

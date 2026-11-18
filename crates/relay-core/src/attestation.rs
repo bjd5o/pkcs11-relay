@@ -154,6 +154,18 @@ pub(crate) fn check_window(st: &AttestationStatement, now: u64, skew: u64) -> Re
     Ok(())
 }
 
+/// Step 5: the window is no longer than the manifest allows.
+pub(crate) fn check_window_length(st: &AttestationStatement, manifest: &Manifest) -> Result<()> {
+    let window = st.fields.not_after - st.fields.not_before;
+    if window > manifest.max_attestation_window_secs {
+        return Err(Error::AttestationWindowTooLong {
+            window,
+            max: manifest.max_attestation_window_secs,
+        });
+    }
+    Ok(())
+}
+
 /// `verify_attestation(statement, manifest, now, skew)` (wire-format §5.1).
 pub fn verify_attestation(
     bytes: &[u8],
@@ -163,6 +175,7 @@ pub fn verify_attestation(
 ) -> Result<VerifiedAttestation> {
     let st = verify_signature(bytes, manifest)?;
     check_window(&st, now, skew)?;
+    check_window_length(&st, manifest)?;
     let f = st.fields;
     Ok(VerifiedAttestation {
         device_id: f.device_id,
@@ -173,11 +186,13 @@ pub fn verify_attestation(
     })
 }
 
-/// Steps 1–3 of §5.1 only: who signed the attestation, not whether it is current. For the
-/// relay, which keeps routing to a device whose attestation expired so that the device can
-/// renew it during its next approval; clients always run [`verify_attestation`].
+/// Steps 1–3 and 5 of §5.1: who signed the attestation and its window length, not whether it
+/// is current. For the relay, which keeps routing to a device whose attestation expired so that
+/// the device can renew it during its next approval; clients always run [`verify_attestation`].
 pub fn verify_attestation_signer(bytes: &[u8], manifest: &Manifest) -> Result<VerifiedAttestation> {
-    let f = verify_signature(bytes, manifest)?.fields;
+    let st = verify_signature(bytes, manifest)?;
+    check_window_length(&st, manifest)?;
+    let f = st.fields;
     Ok(VerifiedAttestation {
         device_id: f.device_id,
         device_key: f.device_key,

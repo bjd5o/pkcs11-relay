@@ -50,6 +50,7 @@ fn fixture(window: u64) -> Fx {
             key(Role::Sign, "sign", 0x11, sign.clone()),
             key(Role::Sign, "elsewhere", 0x12, other),
         ],
+        ..Default::default()
     };
     let manifest = Manifest::from_json_unverified(&draft.to_json().unwrap()).unwrap();
     let client = SoftwareKey::generate_ed25519();
@@ -414,8 +415,9 @@ fn discovery_reports_an_attest_key_attested_on_another_card() {
             public_key: attest,
             hardware_attestation: Some(HardwareAttestation { chain }),
         }],
+        ..Default::default()
     };
-    let policy = relay_core::HardwarePolicy::with_roots(true, vec![h.root_der()]).unwrap();
+    let policy = relay_core::HardwarePolicy::with_roots(vec![h.root_der()]).unwrap();
     let manifest = Manifest::from_json_unverified(&draft.to_json().unwrap())
         .unwrap()
         .check_hardware_unverified(&policy, NOW)
@@ -437,4 +439,32 @@ fn discovery_reports_an_attest_key_attested_on_another_card() {
         report.contains("attest's hardware attestation names YubiKey 222, but this card is 111"),
         "{report}"
     );
+}
+
+#[test]
+fn attestation_windows_respect_the_manifest_maximum() {
+    let mut f = fixture(86_400);
+    let max = f.manifest.max_attestation_window_secs;
+    // Longer than the manifest allows: refused before the card is asked for anything.
+    let sessions = f.card.sessions;
+    let e = f
+        .engine
+        .attest(&mut f.card, PIN, NOW, NOW + max + 1)
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("longer than the manifest allows"),
+        "{e}"
+    );
+    assert_eq!(
+        f.card.sessions, sessions,
+        "no card session for a refused window"
+    );
+    f.engine.attest(&mut f.card, PIN, NOW, NOW + max).unwrap();
+    assert!(!f.engine.renewal_due(NOW + 1));
+
+    // The manifest lowers the maximum: the current attestation is due for renewal at once.
+    let mut lower = f.manifest.clone();
+    lower.max_attestation_window_secs = 3_600;
+    f.engine.set_manifest(lower);
+    assert!(f.engine.renewal_due(NOW + 1));
 }

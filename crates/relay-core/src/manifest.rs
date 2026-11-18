@@ -22,6 +22,11 @@ use crate::keys::{Algorithm, Fingerprint, PublicKey, Role};
 /// Largest manifest file accepted (wire-format §9.1).
 pub const MAX_MANIFEST_LEN: usize = 1 << 20;
 
+/// Bounds of `max_attestation_window_secs` (wire-format §9.2), and its default in new manifests.
+pub const MIN_ATTESTATION_WINDOW: u64 = 60;
+pub const MAX_ATTESTATION_WINDOW: u64 = 365 * 86_400;
+pub const DEFAULT_MAX_ATTESTATION_WINDOW: u64 = 7 * 86_400;
+
 /// Whether `manifest_url` points at the relay's own `/v1/manifest` (same origin as
 /// `relay_url`). Fetchers then use the relay's trust anchors for TLS; the manifest's signature,
 /// not the transport, is what makes it trustworthy either way.
@@ -121,6 +126,8 @@ struct ManifestJson {
     version: u64,
     issued_at: u64,
     valid_until: u64,
+    require_hardware_attestation: bool,
+    max_attestation_window_secs: u64,
     keys: Vec<KeyJson>,
 }
 
@@ -169,6 +176,10 @@ pub struct Manifest {
     pub version: u64,
     pub issued_at: u64,
     pub valid_until: u64,
+    /// Every `attest` key must carry a valid hardware attestation (wire-format §9.4).
+    pub require_hardware_attestation: bool,
+    /// The longest attestation window clients accept (wire-format §5.1 step 5).
+    pub max_attestation_window_secs: u64,
     pub keys: Vec<ManifestKey>,
     bytes: Vec<u8>,
 }
@@ -258,10 +269,11 @@ fn parse_hardware_attestation(
 
 /// Apply the hardware attestation policy (wire-format §9.4) and record what each chain proved.
 fn check_hardware(m: &mut Manifest, policy: &HardwarePolicy, now: u64) -> Result<()> {
+    let require = m.require_hardware_attestation;
     for k in &mut m.keys {
         let fp = k.fingerprint.clone();
         let Some(h) = &k.hardware_attestation else {
-            if k.role == Role::Attest && policy.require_for_attest {
+            if k.role == Role::Attest && require {
                 return Err(Error::HardwareAttestationInvalid(format!(
                     "attest key {} ({fp}) has no hardware attestation",
                     k.label
@@ -312,6 +324,11 @@ fn parse(bytes: &[u8]) -> Result<Manifest> {
     }
     if j.issued_at >= j.valid_until {
         return Err(malformed("valid_until must be after issued_at"));
+    }
+    if !(MIN_ATTESTATION_WINDOW..=MAX_ATTESTATION_WINDOW).contains(&j.max_attestation_window_secs) {
+        return Err(malformed(format!(
+            "max_attestation_window_secs must be {MIN_ATTESTATION_WINDOW}-{MAX_ATTESTATION_WINDOW}"
+        )));
     }
     if j.keys.len() > MAX_KEYS {
         return Err(malformed("too many keys"));
@@ -396,6 +413,8 @@ fn parse(bytes: &[u8]) -> Result<Manifest> {
         version: j.version,
         issued_at: j.issued_at,
         valid_until: j.valid_until,
+        require_hardware_attestation: j.require_hardware_attestation,
+        max_attestation_window_secs: j.max_attestation_window_secs,
         keys,
         bytes: bytes.to_vec(),
     })
@@ -436,12 +455,28 @@ pub fn verify_manifest(
 
 /// An editable manifest, for `relayctl manifest add|remove` and fixture generation. Produces
 /// the JSON that gets signed; it carries no trust of its own.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestDraft {
     pub version: u64,
     pub issued_at: u64,
     pub valid_until: u64,
+    pub require_hardware_attestation: bool,
+    pub max_attestation_window_secs: u64,
     pub keys: Vec<DraftKey>,
+}
+
+impl Default for ManifestDraft {
+    /// Hardware attestation required, a 7-day maximum window, no keys.
+    fn default() -> Self {
+        ManifestDraft {
+            version: 0,
+            issued_at: 0,
+            valid_until: 0,
+            require_hardware_attestation: true,
+            max_attestation_window_secs: DEFAULT_MAX_ATTESTATION_WINDOW,
+            keys: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -462,6 +497,8 @@ impl ManifestDraft {
             version: m.version,
             issued_at: m.issued_at,
             valid_until: m.valid_until,
+            require_hardware_attestation: m.require_hardware_attestation,
+            max_attestation_window_secs: m.max_attestation_window_secs,
             keys: m
                 .keys
                 .into_iter()
@@ -507,6 +544,8 @@ impl ManifestDraft {
             "version": self.version,
             "issued_at": self.issued_at,
             "valid_until": self.valid_until,
+            "require_hardware_attestation": self.require_hardware_attestation,
+            "max_attestation_window_secs": self.max_attestation_window_secs,
             "keys": keys,
         });
         let mut out = serde_json::to_vec_pretty(&doc).map_err(|e| malformed(e.to_string()))?;

@@ -222,6 +222,7 @@ pub fn generate(
         issued_at: now - 60,
         valid_until: now + 7 * 86_400,
         keys: keys.clone(),
+        ..Default::default()
     };
     let manifest = draft.to_json().map_err(|e| e.to_string())?;
     let pgp = PgpSecretKey::generate("pkcs11-relay test fixtures <fixtures@test.invalid>")

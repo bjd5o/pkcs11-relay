@@ -7,6 +7,6 @@ const MANIFEST: &[u8] = include_bytes!("../../crates/relay-core/tests/vectors/fi
 
 fuzz_target!(|data: &[u8]| {
     let signer = relay_core::ManifestSigner::from_bytes(SIGNER).unwrap();
-    let _ = relay_core::verify_manifest(MANIFEST, data, &signer, &relay_core::HardwarePolicy::yubico(false), None, 1_794_744_000, 60);
+    let _ = relay_core::verify_manifest(MANIFEST, data, &signer, &relay_core::HardwarePolicy::yubico(), None, 1_794_744_000, 60);
     let _ = relay_core::ManifestSigner::from_bytes(data);
 });

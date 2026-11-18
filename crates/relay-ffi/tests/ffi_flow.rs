@@ -91,7 +91,6 @@ fn the_app_surface_end_to_end() {
         manifest_file: Some(dir.join("manifest.json")),
         manifest_signer: Some(dir.join("signer.asc")),
         hardware_attestation: relay_core::hw_attestation::PolicyConfig {
-            require: true,
             roots_file: Some(dir.join("attestation-root.pem")),
         },
         ..Default::default()
@@ -108,7 +107,6 @@ fn the_app_surface_end_to_end() {
         device_id: "brian-iphone".into(),
         attestation_window_secs: 86_400,
         skew_secs: 60,
-        require_hardware_attestation: true,
         attestation_roots_pem: Some(
             std::fs::read_to_string(dir.join("attestation-root.pem")).unwrap(),
         ),
@@ -188,7 +186,6 @@ fn the_app_surface_end_to_end() {
         &std::fs::read(dir.join("manifest.json.asc")).unwrap(),
         &signer,
         &relay_core::hw_attestation::PolicyConfig {
-            require: true,
             roots_file: Some(dir.join("attestation-root.pem")),
         }
         .policy()

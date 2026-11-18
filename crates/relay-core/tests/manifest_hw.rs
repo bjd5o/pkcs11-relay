@@ -35,12 +35,12 @@ impl Fx {
         }
     }
 
-    fn policy(&self, require: bool) -> HardwarePolicy {
-        HardwarePolicy::with_roots(require, vec![self.h.root_der()]).unwrap()
+    fn policy(&self) -> HardwarePolicy {
+        HardwarePolicy::with_roots(vec![self.h.root_der()]).unwrap()
     }
 
     /// A manifest with one sign key and one attest key; `chain` builds the attest key's chain.
-    fn manifest(&self, chain: Option<(u8, u8)>) -> (Vec<u8>, Vec<u8>) {
+    fn manifest(&self, chain: Option<(u8, u8)>, require: bool) -> (Vec<u8>, Vec<u8>) {
         let d = self.h.device(SERIAL, (5, 7, 4));
         let attest = p256();
         let hw = chain.map(
@@ -74,26 +74,16 @@ impl Fx {
                     hardware_attestation: hw,
                 },
             ],
+            require_hardware_attestation: require,
+            ..Default::default()
         };
         let json = draft.to_json().unwrap();
         let sig = self.pgp.sign_detached(&json).unwrap().into_bytes();
         (json, sig)
     }
 
-    fn verify(
-        &self,
-        m: &(Vec<u8>, Vec<u8>),
-        require: bool,
-    ) -> relay_core::Result<relay_core::Manifest> {
-        verify_manifest(
-            &m.0,
-            &m.1,
-            &self.signer,
-            &self.policy(require),
-            None,
-            NOW,
-            60,
-        )
+    fn verify(&self, m: &(Vec<u8>, Vec<u8>)) -> relay_core::Result<relay_core::Manifest> {
+        verify_manifest(&m.0, &m.1, &self.signer, &self.policy(), None, NOW, 60)
     }
 }
 
@@ -114,7 +104,7 @@ fn assert_rejected(r: relay_core::Result<relay_core::Manifest>, needle: &str) {
 #[test]
 fn attested_manifest_verifies_and_records_the_card() {
     let fx = Fx::new();
-    let m = fx.verify(&fx.manifest(Some((2, 2))), true).unwrap();
+    let m = fx.verify(&fx.manifest(Some((2, 2)), true)).unwrap();
     let a = m.keys.iter().find(|k| k.role == Role::Attest).unwrap();
     let att = a.attested.unwrap();
     assert_eq!(att.serial, SERIAL);
@@ -133,31 +123,33 @@ fn attested_manifest_verifies_and_records_the_card() {
 #[test]
 fn missing_chain_is_rejected_by_default_and_accepted_when_not_required() {
     let fx = Fx::new();
-    let m = fx.manifest(None);
-    assert_rejected(fx.verify(&m, true), "has no hardware attestation");
-    assert!(HardwarePolicy::default().require_for_attest);
-    fx.verify(&m, false).unwrap();
+    assert_rejected(
+        fx.verify(&fx.manifest(None, true)),
+        "has no hardware attestation",
+    );
+    assert!(relay_core::ManifestDraft::default().require_hardware_attestation);
+    fx.verify(&fx.manifest(None, false)).unwrap();
 }
 
 #[test]
 fn attest_key_needs_touch_always_and_a_pin() {
     let fx = Fx::new();
     assert_rejected(
-        fx.verify(&fx.manifest(Some((2, 3))), true),
+        fx.verify(&fx.manifest(Some((2, 3)), true)),
         "touch policy cached",
     );
     assert_rejected(
-        fx.verify(&fx.manifest(Some((2, 1))), true),
+        fx.verify(&fx.manifest(Some((2, 1)), true)),
         "touch policy never",
     );
     assert_rejected(
-        fx.verify(&fx.manifest(Some((1, 2))), true),
+        fx.verify(&fx.manifest(Some((1, 2)), true)),
         "PIN policy never",
     );
-    fx.verify(&fx.manifest(Some((3, 2))), true).unwrap();
+    fx.verify(&fx.manifest(Some((3, 2)), true)).unwrap();
     // Even when chains are optional, a chain that is present must pass.
     assert_rejected(
-        fx.verify(&fx.manifest(Some((2, 3))), false),
+        fx.verify(&fx.manifest(Some((2, 3)), false)),
         "touch policy cached",
     );
 }
@@ -165,8 +157,8 @@ fn attest_key_needs_touch_always_and_a_pin() {
 #[test]
 fn chain_from_another_hierarchy_is_rejected() {
     let fx = Fx::new();
-    let m = fx.manifest(Some((2, 2)));
-    let other = HardwarePolicy::with_roots(false, vec![TestHierarchy::new().root_der()]).unwrap();
+    let m = fx.manifest(Some((2, 2)), true);
+    let other = HardwarePolicy::with_roots(vec![TestHierarchy::new().root_der()]).unwrap();
     let e = verify_manifest(&m.0, &m.1, &fx.signer, &other, None, NOW, 60);
     assert_rejected(e, "key attest");
     // The built-in Yubico root does not accept the synthetic chain either.
@@ -185,7 +177,7 @@ fn chain_from_another_hierarchy_is_rejected() {
 #[test]
 fn malformed_hardware_attestation_json_is_rejected() {
     let fx = Fx::new();
-    let (json, _) = fx.manifest(Some((2, 2)));
+    let (json, _) = fx.manifest(Some((2, 2)), true);
     let mut v: serde_json::Value = serde_json::from_slice(&json).unwrap();
     let edits: [(&str, serde_json::Value); 4] = [
         ("format", serde_json::json!("tpm")),
@@ -198,12 +190,47 @@ fn malformed_hardware_attestation_json_is_rejected() {
         m["keys"][1]["hardware_attestation"][field] = value;
         let bytes = serde_json::to_vec(&m).unwrap();
         let sig = fx.pgp.sign_detached(&bytes).unwrap().into_bytes();
-        let e =
-            verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(true), None, NOW, 60).unwrap_err();
+        let e = verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(), None, NOW, 60).unwrap_err();
         assert!(matches!(e, Error::ManifestMalformed(_)), "{field}: {e}");
     }
+    // `null` is the same as no chain, which a manifest that doesn't require one accepts.
     v["keys"][1]["hardware_attestation"] = serde_json::json!(null);
+    v["require_hardware_attestation"] = serde_json::json!(false);
     let bytes = serde_json::to_vec(&v).unwrap();
     let sig = fx.pgp.sign_detached(&bytes).unwrap().into_bytes();
-    verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(false), None, NOW, 60).unwrap();
+    verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(), None, NOW, 60).unwrap();
+}
+
+#[test]
+fn device_policy_fields_are_required_and_bounded() {
+    let fx = Fx::new();
+    let (json, _) = fx.manifest(Some((2, 2)), true);
+    let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    assert_eq!(v["max_attestation_window_secs"], 7 * 86_400);
+    let cases: [(&str, Option<serde_json::Value>); 5] = [
+        ("require_hardware_attestation", None),
+        ("max_attestation_window_secs", None),
+        ("max_attestation_window_secs", Some(serde_json::json!(59))),
+        (
+            "max_attestation_window_secs",
+            Some(serde_json::json!(365 * 86_400 + 1)),
+        ),
+        (
+            "require_hardware_attestation",
+            Some(serde_json::json!("yes")),
+        ),
+    ];
+    for (field, value) in cases {
+        let mut m = v.clone();
+        match value {
+            None => {
+                m.as_object_mut().unwrap().remove(field);
+            }
+            Some(x) => m[field] = x,
+        }
+        let bytes = serde_json::to_vec(&m).unwrap();
+        let sig = fx.pgp.sign_detached(&bytes).unwrap().into_bytes();
+        let e = verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(), None, NOW, 60).unwrap_err();
+        assert!(matches!(e, Error::ManifestMalformed(_)), "{field}: {e}");
+    }
 }

@@ -50,7 +50,7 @@ pub struct Config {
 }
 
 fn default_window() -> u64 {
-    30 * 86_400
+    7 * 86_400
 }
 fn default_skew() -> u64 {
     60

@@ -58,9 +58,6 @@ enum Cmd {
         /// A window in minutes instead of days (to test renewal, which starts at 75%).
         #[arg(long, conflicts_with = "attestation_days")]
         attestation_minutes: Option<u64>,
-        /// Let the app accept attest keys without a YubiKey attestation (`require = false`).
-        #[arg(long)]
-        no_hardware_attestation: bool,
         /// Testing only: PEM roots that replace Yubico's attestation root in the app.
         #[arg(long, hide = true)]
         attestation_roots: Option<PathBuf>,
@@ -236,6 +233,17 @@ enum ManifestCmd {
         #[arg(long, hide = true)]
         attestation_roots: Option<PathBuf>,
     },
+    /// Set the manifest's device policy.
+    Set {
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Whether every attest key must carry a YubiKey attestation chain.
+        #[arg(long)]
+        require_hardware_attestation: Option<bool>,
+        /// The longest attestation window clients accept, e.g. `7d`, `12h`, `30m`.
+        #[arg(long, value_parser = util::parse_duration)]
+        max_attestation_window: Option<u64>,
+    },
     /// Remove keys by fingerprint or label.
     Remove {
         #[arg(long)]
@@ -271,9 +279,6 @@ enum ManifestCmd {
         /// Verify the result against this signer public key, as clients would.
         #[arg(long)]
         verify_with: Option<PathBuf>,
-        /// With --verify-with: accept attest keys without a hardware attestation.
-        #[arg(long)]
-        no_require_hardware_attestation: bool,
         /// Testing only: trust these roots instead of Yubico's.
         #[arg(long, hide = true)]
         attestation_roots: Option<PathBuf>,
@@ -292,10 +297,6 @@ enum ManifestCmd {
         cached: Option<PathBuf>,
         #[arg(long, default_value_t = 60)]
         skew: u64,
-        /// Accept attest keys without a hardware attestation, like clients configured with
-        /// `require = false`. Chains that are present are still checked.
-        #[arg(long)]
-        no_require_hardware_attestation: bool,
         /// Testing only: trust these roots instead of Yubico's.
         #[arg(long, hide = true)]
         attestation_roots: Option<PathBuf>,
@@ -480,6 +481,15 @@ fn run(cli: Cli) -> Result<(), String> {
                 println!("added {fp}");
                 Ok(())
             }
+            ManifestCmd::Set {
+                manifest: m,
+                require_hardware_attestation,
+                max_attestation_window,
+            } => {
+                manifest::set(&m, require_hardware_attestation, max_attestation_window)?;
+                print!("{}", manifest::show(&m, &hw::Anchors::load(None)?)?);
+                Ok(())
+            }
             ManifestCmd::Remove {
                 manifest: m,
                 fingerprint,
@@ -510,7 +520,6 @@ fn run(cli: Cli) -> Result<(), String> {
                 gpg,
                 pgp_secret,
                 verify_with,
-                no_require_hardware_attestation,
                 attestation_roots,
             } => {
                 let signer = match (&gpg_key, &pgp_secret) {
@@ -521,8 +530,7 @@ fn run(cli: Cli) -> Result<(), String> {
                     (None, Some(p)) => manifest::Signer::Software(p),
                     _ => return Err("give --gpg-key or --pgp-secret".into()),
                 };
-                let policy = hw::Anchors::load(attestation_roots.as_deref())?
-                    .policy(!no_require_hardware_attestation)?;
+                let policy = hw::Anchors::load(attestation_roots.as_deref())?.policy()?;
                 let v = manifest::sign(
                     &m,
                     valid_days,
@@ -542,12 +550,10 @@ fn run(cli: Cli) -> Result<(), String> {
                 signer,
                 cached,
                 skew,
-                no_require_hardware_attestation,
                 attestation_roots,
             } => {
                 let sig = signature.unwrap_or_else(|| manifest::sig_path(&m));
-                let policy = hw::Anchors::load(attestation_roots.as_deref())?
-                    .policy(!no_require_hardware_attestation)?;
+                let policy = hw::Anchors::load(attestation_roots.as_deref())?.policy()?;
                 let v = manifest::verify(&m, &sig, &signer, &policy, cached.as_deref(), skew)?;
                 println!(
                     "OK: version {}, valid until {}, {} keys",
@@ -606,7 +612,6 @@ fn run(cli: Cli) -> Result<(), String> {
             device_id,
             attestation_days,
             attestation_minutes,
-            no_hardware_attestation,
             attestation_roots,
             out,
         } => {
@@ -630,7 +635,6 @@ fn run(cli: Cli) -> Result<(), String> {
                 "manifest_signer": signer_pem,
                 "device_id": device_id,
                 "attestation_window_secs": attestation_minutes.map_or(attestation_days * 86_400, |m| m * 60),
-                "require_hardware_attestation": !no_hardware_attestation,
                 "attestation_roots_pem": attestation_roots
                     .map(|p| std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display())))
                     .transpose()?,

@@ -46,6 +46,7 @@ fn fixture() -> Fixture {
         issued_at: 1_000,
         valid_until: 2_000_000_000,
         keys,
+        ..Default::default()
     };
     let manifest = Manifest::from_json_unverified(&draft.to_json().unwrap()).unwrap();
     piv::select(&mut card).unwrap();
@@ -305,6 +306,7 @@ fn p384_signatures_pass_check_5() {
             issued_at: 1,
             valid_until: 2_000_000_000,
             keys,
+            ..Default::default()
         }
         .to_json()
         .unwrap(),
@@ -366,6 +368,7 @@ fn ed25519_signatures_pass_check_5() {
             issued_at: 1,
             valid_until: 2_000_000_000,
             keys,
+            ..Default::default()
         }
         .to_json()
         .unwrap(),

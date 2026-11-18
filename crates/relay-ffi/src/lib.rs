@@ -179,8 +179,6 @@ pub struct ApproverConfig {
     pub device_id: String,
     pub attestation_window_secs: u64,
     pub skew_secs: u64,
-    /// Every manifest attest key must carry a valid YubiKey attestation (default true).
-    pub require_hardware_attestation: bool,
     /// Testing only: PEM roots that replace Yubico's attestation root.
     pub attestation_roots_pem: Option<String>,
 }
@@ -751,11 +749,11 @@ fn fetch_manifest(
 /// given.
 fn hardware_policy(cfg: &ApproverConfig) -> Result<HardwarePolicy, RelayError> {
     match &cfg.attestation_roots_pem {
-        None => Ok(HardwarePolicy::yubico(cfg.require_hardware_attestation)),
+        None => Ok(HardwarePolicy::yubico()),
         Some(pem) => {
             let roots = relay_core::hw_attestation::certificates_from_pem(pem.as_bytes())
                 .map_err(invalid)?;
-            HardwarePolicy::with_roots(cfg.require_hardware_attestation, roots).map_err(invalid)
+            HardwarePolicy::with_roots(roots).map_err(invalid)
         }
     }
 }

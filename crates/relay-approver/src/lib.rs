@@ -416,15 +416,21 @@ impl Engine {
             .map(AttestationInfo::of)
     }
 
-    /// No attestation yet, or past 75% of its window.
+    /// No attestation yet, past 75% of its window, or a window longer than the manifest now
+    /// allows (it lowered `max_attestation_window_secs`): clients reject it until it is renewed.
     pub fn renewal_due(&self, now: u64) -> bool {
-        self.attestation_info().is_none_or(|i| now >= i.renew_at)
+        let max = self.manifest().max_attestation_window_secs;
+        self.attestation_info()
+            .is_none_or(|i| now >= i.renew_at || i.not_after - i.not_before > max)
     }
 
     /// Restore a stored attestation: it must verify against the manifest now and vouch for this
     /// device's key.
     pub fn load_attestation(&self, bytes: &[u8], now: u64) -> Result<AttestationInfo> {
-        let manifest = self.manifest();
+        let mut manifest = self.manifest();
+        // A window longer than the manifest now allows is kept, and renewed at the next approval
+        // (`renewal_due`); everything else about it must verify.
+        manifest.max_attestation_window_secs = u64::MAX;
         let v = verify_attestation(bytes, &manifest, now, self.cfg.skew_secs).map_err(invalid)?;
         if v.device_key != self.signer.public_key() {
             return Err(invalid("the stored attestation is for another device key"));
@@ -443,6 +449,13 @@ impl Engine {
         let (slot, fp) = self.attest_key().ok_or_else(|| {
             ApproverError::NoAttestKey(self.last_discovery.lock().expect("lock").clone())
         })?;
+        let max = self.manifest().max_attestation_window_secs;
+        if not_after.saturating_sub(not_before) > max {
+            return Err(invalid(format!(
+                "an attestation window of {} s is longer than the manifest allows ({max} s); choose a shorter one",
+                not_after.saturating_sub(not_before)
+            )));
+        }
         let st = UnsignedAttestation::new(
             &self.cfg.device_id,
             self.signer.public_key(),

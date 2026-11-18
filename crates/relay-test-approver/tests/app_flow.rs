@@ -53,7 +53,6 @@ fn app_path_with_a_separate_auth_key() {
         manifest_file: Some(dir.join("manifest.json")),
         manifest_signer: Some(dir.join("signer.asc")),
         hardware_attestation: relay_core::hw_attestation::PolicyConfig {
-            require: true,
             roots_file: Some(dir.join("attestation-root.pem")),
         },
         ..Default::default()
@@ -69,7 +68,6 @@ fn app_path_with_a_separate_auth_key() {
     let auth: Arc<dyn DeviceSigner> = Arc::new(SoftwareKey::generate_p256()); // the relay-auth key
     let rc = RelayClient::new(&url, Some(&ca), auth.clone()).unwrap();
     let policy = relay_core::hw_attestation::PolicyConfig {
-        require: true,
         roots_file: Some(dir.join("attestation-root.pem")),
     }
     .policy()

@@ -72,7 +72,7 @@ fn manifest_round_trip_and_attestation() {
 
     let h = TestHierarchy::new();
     let anchors = anchors(&dir, &h);
-    let policy = anchors.policy(true).unwrap();
+    let policy = anchors.policy().unwrap();
     let mut yk = SoftCard::new(b"123456").with_attestation(h.device(SERIAL, (5, 7, 4)));
     yk.generate(slot(0x95), Algorithm::P256);
     yk.generate(slot(0x9c), Algorithm::Ed25519);
@@ -303,6 +303,11 @@ fn gpg_signing() {
 
     let m = dir.join("manifest.json");
     manifest::init(&m).unwrap();
+    // This attest key has no hardware attestation; the manifest says it needn't.
+    manifest::set(&m, Some(false), None).unwrap();
+    assert!(manifest::show(&m, &hw::Anchors::load(None).unwrap())
+        .unwrap()
+        .contains("hardware attestation not required; attestation window at most 7d"));
     let mut yk = SoftCard::new(b"123456");
     manifest::add(
         &m,
@@ -334,7 +339,7 @@ fn gpg_signing() {
             key: "gpg@test.invalid",
             program,
         },
-        Some((&public, &HardwarePolicy::yubico(false))),
+        Some((&public, &HardwarePolicy::yubico())),
     )
     .unwrap();
     let _ = Command::new("gpgconf")

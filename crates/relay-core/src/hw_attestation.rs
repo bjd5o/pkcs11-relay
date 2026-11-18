@@ -99,11 +99,10 @@ pub struct HardwareAttestation {
     pub chain: Vec<Vec<u8>>,
 }
 
-/// Which hardware attestation a manifest must carry (wire-format §9.4, policy).
+/// Where hardware attestation chains must lead (wire-format §9.4). Whether attest keys need a
+/// chain at all is the manifest's `require_hardware_attestation`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HardwarePolicy {
-    /// Every `attest` key must carry a valid chain. On by default.
-    pub require_for_attest: bool,
     /// Trust anchors (DER). The built-in Yubico root unless replaced for tests.
     pub roots: Vec<Vec<u8>>,
 }
@@ -111,24 +110,20 @@ pub struct HardwarePolicy {
 impl Default for HardwarePolicy {
     fn default() -> Self {
         HardwarePolicy {
-            require_for_attest: true,
             roots: vec![YUBICO_ATTESTATION_ROOT_1.to_vec()],
         }
     }
 }
 
 impl HardwarePolicy {
-    /// The default policy with `require_for_attest` set as given.
-    pub fn yubico(require_for_attest: bool) -> Self {
-        HardwarePolicy {
-            require_for_attest,
-            ..Default::default()
-        }
+    /// Yubico's attestation root.
+    pub fn yubico() -> Self {
+        Self::default()
     }
 
     /// Replace the trust anchors: for test hierarchies only. Each root must parse as a
     /// certificate.
-    pub fn with_roots(require_for_attest: bool, roots: Vec<Vec<u8>>) -> Result<Self> {
+    pub fn with_roots(roots: Vec<Vec<u8>>) -> Result<Self> {
         if roots.is_empty() {
             return Err(invalid("no attestation roots configured"));
         }
@@ -136,10 +131,7 @@ impl HardwarePolicy {
             webpki::anchor_from_trusted_cert(&CertificateDer::from(r.as_slice()))
                 .map_err(|e| invalid(format!("attestation root unusable: {e:?}")))?;
         }
-        Ok(HardwarePolicy {
-            require_for_attest,
-            roots,
-        })
+        Ok(HardwarePolicy { roots })
     }
 
     /// Whether the roots are the built-in Yubico ones.
@@ -149,58 +141,36 @@ impl HardwarePolicy {
 }
 
 /// The `[hardware_attestation]` section shared by the provider, relay and approver configs.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+/// Testing only: whether chains are required is set by the manifest.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyConfig {
-    /// Every attest key must carry a valid YubiKey attestation chain. Default true.
-    #[serde(default = "default_require")]
-    pub require: bool,
-    /// Testing only: a PEM file of roots that replace Yubico's attestation root.
+    /// A PEM file of roots that replace Yubico's attestation root.
     pub roots_file: Option<std::path::PathBuf>,
 }
 
-fn default_require() -> bool {
-    true
-}
-
-impl Default for PolicyConfig {
-    fn default() -> Self {
-        PolicyConfig {
-            require: true,
-            roots_file: None,
-        }
-    }
-}
-
 impl PolicyConfig {
-    /// Build the policy, reading `roots_file` if set. Callers log a warning when
-    /// [`PolicyConfig::warning`] returns one.
+    /// Build the policy, reading `roots_file` if set. Callers log [`PolicyConfig::warning`].
     pub fn policy(&self) -> std::result::Result<HardwarePolicy, String> {
         match &self.roots_file {
-            None => Ok(HardwarePolicy::yubico(self.require)),
+            None => Ok(HardwarePolicy::yubico()),
             Some(p) => {
                 let pem = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
                 let roots =
                     certificates_from_pem(&pem).map_err(|e| format!("{}: {e}", p.display()))?;
-                HardwarePolicy::with_roots(self.require, roots)
-                    .map_err(|e| format!("{}: {e}", p.display()))
+                HardwarePolicy::with_roots(roots).map_err(|e| format!("{}: {e}", p.display()))
             }
         }
     }
 
     /// What an operator should be told about this configuration, if anything.
     pub fn warning(&self) -> Option<String> {
-        match (&self.roots_file, self.require) {
-            (Some(p), _) => Some(format!(
+        self.roots_file.as_ref().map(|p| {
+            format!(
                 "hardware_attestation.roots_file {} replaces Yubico's root: testing only",
                 p.display()
-            )),
-            (None, false) => Some(
-                "hardware_attestation.require = false: attest keys without a YubiKey attestation are accepted"
-                    .into(),
-            ),
-            (None, true) => None,
-        }
+            )
+        })
     }
 }
 
@@ -799,7 +769,7 @@ mod tests {
             "Yubico Attestation Root 1"
         );
         assert!(HardwarePolicy::default().is_builtin());
-        HardwarePolicy::with_roots(true, vec![YUBICO_ATTESTATION_ROOT_1.to_vec()]).unwrap();
+        HardwarePolicy::with_roots(vec![YUBICO_ATTESTATION_ROOT_1.to_vec()]).unwrap();
     }
 
     #[test]

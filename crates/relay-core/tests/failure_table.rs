@@ -170,6 +170,34 @@ fn row_attestation_expired() {
     );
 }
 
+/// The window is longer than the manifest's `max_attestation_window_secs` (fixture: 30 days).
+#[test]
+fn row_attestation_window_too_long() {
+    let fx = load();
+    let (req, reply, sig) = fx.sign_request(b"msg");
+    let resp = fx.approve(&req, &sig, &fx.attestation(), &fx.device);
+    let mut manifest = fx.manifest.clone();
+    manifest.max_attestation_window_secs = 29 * 86_400;
+    let e = verify_response(&resp, req.bytes(), &manifest, NOW, SKEW, reply).unwrap_err();
+    assert_eq!(
+        e,
+        Error::AttestationWindowTooLong {
+            window: VALID_UNTIL - ISSUED_AT,
+            max: 29 * 86_400
+        }
+    );
+    assert_eq!(e.failure_row(), FailureRow::AttestationRejected);
+    assert_eq!(e.ckr(), Some(relay_core::error::ckr::DEVICE_ERROR));
+    // The relay's check: the signer, and the length, not the time.
+    assert!(relay_core::attestation::verify_attestation_signer(
+        fx.attestation().bytes(),
+        &manifest
+    )
+    .is_err());
+    relay_core::attestation::verify_attestation_signer(fx.attestation().bytes(), &fx.manifest)
+        .unwrap();
+}
+
 #[test]
 fn row_attestation_not_yet_valid() {
     let fx = load();

@@ -310,8 +310,9 @@ pub fn verify_response(
 
     // 1. Attestation signature against a manifest attest key.
     let st = attestation::verify_signature(&r.attestation, manifest)?;
-    // 2. Validity window.
+    // 2. Validity window, no longer than the manifest allows.
     attestation::check_window(&st, now, skew)?;
+    attestation::check_window_length(&st, manifest)?;
     // 3. The signer is the attested device key.
     if &r.device_key_fingerprint != st.fields.device_key.fingerprint() {
         return Err(Error::ResponseSignerMismatch);

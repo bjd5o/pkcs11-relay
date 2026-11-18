@@ -216,7 +216,6 @@ mod tests {
                 manifest_file: Some(self.dir.join("manifest.json")),
                 manifest_signer: Some(self.dir.join("signer.asc")),
                 hardware_attestation: PolicyConfig {
-                    require: true,
                     roots_file: Some(self.dir.join("root.pem")),
                 },
                 ..Default::default()
@@ -246,6 +245,7 @@ mod tests {
                     key(Role::Attest, "attest", 1, attest, hw),
                     key(Role::Sign, "sign", 2, self.sign.clone(), None),
                 ],
+                ..Default::default()
             }
             .to_json()
             .unwrap();

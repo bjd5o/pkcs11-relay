@@ -36,7 +36,6 @@ async fn gate_in_process() {
         manifest_file: Some(dir.join("manifest.json")),
         manifest_signer: Some(dir.join("signer.asc")),
         hardware_attestation: relay_core::hw_attestation::PolicyConfig {
-            require: true,
             roots_file: Some(dir.join("attestation-root.pem")),
         },
         ..Default::default()

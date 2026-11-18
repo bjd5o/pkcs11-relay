@@ -71,6 +71,10 @@ fn draft(fx_keys: &[(Role, &str, u8, PublicKey)], version: u64) -> ManifestDraft
                 hardware_attestation: None,
             })
             .collect(),
+        // The fixture attest key has no hardware attestation, and the fixture attestations
+        // span ISSUED_AT..VALID_UNTIL (30 days).
+        require_hardware_attestation: false,
+        max_attestation_window_secs: 30 * 86_400,
     }
 }
 

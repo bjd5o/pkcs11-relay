@@ -38,6 +38,7 @@ pub fn init(path: &Path) -> Result<(), String> {
             issued_at: t,
             valid_until: t + 86_400,
             keys: Vec::new(),
+            ..Default::default()
         },
     )
 }
@@ -65,6 +66,22 @@ pub fn add(
     // to_json re-validates everything: roles, algorithms, duplicates.
     save(path, &d)?;
     Ok(fp)
+}
+
+/// Change the manifest's device policy (wire-format §9.2).
+pub fn set(
+    path: &Path,
+    require_hardware_attestation: Option<bool>,
+    max_attestation_window_secs: Option<u64>,
+) -> Result<(), String> {
+    let mut d = load(path)?;
+    if let Some(r) = require_hardware_attestation {
+        d.require_hardware_attestation = r;
+    }
+    if let Some(w) = max_attestation_window_secs {
+        d.max_attestation_window_secs = w;
+    }
+    save(path, &d)
 }
 
 /// Remove keys by fingerprint, or by label (optionally within one token). Returns how many.
@@ -106,6 +123,15 @@ pub fn show(path: &Path, anchors: &crate::hw::Anchors) -> Result<String, String>
             ""
         }
     );
+    out.push_str(&format!(
+        "hardware attestation {}; attestation window at most {}\n",
+        if d.require_hardware_attestation {
+            "required"
+        } else {
+            "not required"
+        },
+        crate::util::duration(d.max_attestation_window_secs)
+    ));
     for k in &d.keys {
         out.push_str(&format!(
             "  {:<8} {:<9} {:<18} id={:<4} token={:<16} {}\n",

@@ -71,6 +71,8 @@ pub enum Error {
     AttestationUnknownSigner,
     #[error("attestation outside its validity window")]
     AttestationExpired,
+    #[error("attestation window of {window} s exceeds the manifest's maximum of {max} s")]
+    AttestationWindowTooLong { window: u64, max: u64 },
 
     // --- Response (row: CKR_DEVICE_ERROR, possible tampering) ---
     #[error("response signed by a key other than the attested device key")]
@@ -126,9 +128,10 @@ impl Error {
             MechanismInvalid | MechanismParamInvalid | DataLenRange => {
                 FailureRow::MechanismNotAllowed
             }
-            AttestationInvalid(_) | AttestationUnknownSigner | AttestationExpired => {
-                FailureRow::AttestationRejected
-            }
+            AttestationInvalid(_)
+            | AttestationUnknownSigner
+            | AttestationExpired
+            | AttestationWindowTooLong { .. } => FailureRow::AttestationRejected,
             ResponseSignerMismatch
             | ResponseSignatureInvalid
             | ResponseNotBound(_)
@@ -184,6 +187,7 @@ impl Error {
             AttestationInvalid(_) => "AttestationInvalid",
             AttestationUnknownSigner => "AttestationUnknownSigner",
             AttestationExpired => "AttestationExpired",
+            AttestationWindowTooLong { .. } => "AttestationWindowTooLong",
             ResponseSignerMismatch => "ResponseSignerMismatch",
             ResponseSignatureInvalid => "ResponseSignatureInvalid",
             ResponseNotBound(_) => "ResponseNotBound",

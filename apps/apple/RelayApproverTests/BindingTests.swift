@@ -13,7 +13,7 @@ final class BindingTests: XCTestCase {
         let config = ApproverConfig(
             relayUrl: "https://127.0.0.1:9", relayCaPem: nil, manifestUrl: "https://127.0.0.1:9/v1/manifest",
             manifestSigner: "x", deviceId: "t", attestationWindowSecs: 60, skewSecs: 60,
-            requireHardwareAttestation: true, attestationRootsPem: nil)
+            attestationRootsPem: nil)
         let bad = FixedKey(spki: Data([0x30, 0x00]))
         XCTAssertThrowsError(
             try Approver(
