@@ -172,3 +172,72 @@ fn setup_link_vectors() {
         }
     }
 }
+
+#[test]
+fn client_grant_vectors() {
+    let fx = load();
+    for (name, v) in cases("client-grant") {
+        let got = match relay_core::verify_client_grant(
+            &hx(&v, "grant"),
+            &fx.manifest,
+            u(&v, "now"),
+            u(&v, "skew"),
+        ) {
+            Ok(g) if g.lapsed => "lapsed".into(),
+            r => kind_of(r),
+        };
+        assert_eq!(got, v["expect"].as_str().unwrap(), "{name}");
+        // The relay's check ignores time, so every vector that fails only on time passes it.
+        let signer = kind_of(relay_core::verify_client_grant_signer(
+            &hx(&v, "grant"),
+            &fx.manifest,
+        ));
+        let time_only = matches!(name.as_str(), "lapsed.json" | "not-yet-valid.json");
+        if got == "ok" || time_only {
+            assert_eq!(signer, "ok", "{name}");
+        } else {
+            assert_eq!(signer, "GrantInvalid", "{name}");
+        }
+    }
+}
+
+#[test]
+fn client_revocation_vectors() {
+    let fx = load();
+    for (name, v) in cases("client-revocation") {
+        let got = kind_of(relay_core::verify_client_revocation(
+            &hx(&v, "revocation"),
+            &fx.manifest,
+        ));
+        assert_eq!(got, v["expect"].as_str().unwrap(), "{name}");
+    }
+}
+
+/// A grant for a client in the manifest's `revoked_clients` fails with `ClientRevoked`; the
+/// relay's signer-only check still passes it (the relay refuses the client separately).
+#[test]
+fn grant_for_a_client_revoked_in_the_manifest() {
+    let fx = load();
+    let (_, v) = cases("client-grant")
+        .into_iter()
+        .find(|(n, _)| n == "valid.json")
+        .unwrap();
+    let mut json: serde_json::Value = serde_json::from_slice(fx.manifest.bytes()).unwrap();
+    json["revoked_clients"] = serde_json::json!([fx.client.public_key().fingerprint().as_str()]);
+    let revoked =
+        relay_core::Manifest::from_json_unverified(&serde_json::to_vec(&json).unwrap()).unwrap();
+    let g = hx(&v, "grant");
+    assert_eq!(
+        kind_of(relay_core::verify_client_grant(
+            &g,
+            &revoked,
+            u(&v, "now"),
+            60
+        )),
+        "ClientRevoked"
+    );
+    assert_eq!(
+        kind_of(relay_core::verify_client_grant_signer(&g, &revoked)),
+        "ok"
+    );
+}

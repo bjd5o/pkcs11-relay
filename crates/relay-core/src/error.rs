@@ -112,6 +112,14 @@ pub enum Error {
     #[error("the setup link is valid from {iat} to {exp}; it is now {now}")]
     SetupLinkExpired { iat: u64, exp: u64, now: u64 },
 
+    // --- Client grants and revocations (wire-format §12) ---
+    #[error("client grant invalid: {0}")]
+    GrantInvalid(String),
+    #[error("client revoked")]
+    ClientRevoked,
+    #[error("client revocation invalid: {0}")]
+    RevocationInvalid(String),
+
     // --- Everything else ---
     #[error("decode error: {0}")]
     Decode(String),
@@ -157,7 +165,10 @@ impl Error {
             | SetupLinkInvalid(_)
             | SetupLinkWrongSigner { .. }
             | SetupLinkSignatureInvalid(_)
-            | SetupLinkExpired { .. } => FailureRow::RequestRejected,
+            | SetupLinkExpired { .. }
+            | GrantInvalid(_)
+            | ClientRevoked
+            | RevocationInvalid(_) => FailureRow::RequestRejected,
             Decode(_) | InvalidKey(_) | Card(_) | Crypto(_) => FailureRow::Internal,
         }
     }
@@ -218,6 +229,9 @@ impl Error {
             SetupLinkWrongSigner { .. } => "SetupLinkWrongSigner",
             SetupLinkSignatureInvalid(_) => "SetupLinkSignatureInvalid",
             SetupLinkExpired { .. } => "SetupLinkExpired",
+            GrantInvalid(_) => "GrantInvalid",
+            ClientRevoked => "ClientRevoked",
+            RevocationInvalid(_) => "RevocationInvalid",
             Decode(_) => "Decode",
             InvalidKey(_) => "InvalidKey",
             Card(_) => "Card",

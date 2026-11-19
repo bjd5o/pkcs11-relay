@@ -594,3 +594,253 @@ fn response_vectors(fx: &Fx) {
         json!({}),
     );
 }
+
+/// Only the client grant and revocation vectors (wire-format §12), leaving every other vector
+/// as is:
+///
+///     cargo test -p relay-core --test gen_vectors generate_client_grants -- --ignored
+#[test]
+#[ignore]
+fn generate_client_grants() {
+    use relay_core::cbor::{decode_map, encode, Value};
+    use relay_core::grant::{UnsignedGrant, UnsignedRevocation};
+    use relay_core::signing::SoftwareKey;
+
+    let fx = load();
+    let granted = vec![
+        fx.key(Role::Sign).fingerprint.clone(),
+        fx.key(Role::Encrypt).fingerprint.clone(),
+    ];
+    let grant_by = |signer: &SoftwareKey, keys: Vec<relay_core::Fingerprint>, window: u64| {
+        let g = UnsignedGrant::new(
+            CLIENT_ID,
+            fx.client.public_key(),
+            keys,
+            1,
+            window,
+            ISSUED_AT,
+            "test-device",
+            signer.public_key().fingerprint().clone(),
+        )
+        .unwrap();
+        let sig = signer.sign(&g.to_be_signed());
+        g.with_signature(sig)
+    };
+    const WINDOW: u64 = 7 * 86_400;
+    let w = |name: &str, desc: &str, bytes: &[u8], now: u64, expect: &str| {
+        write(
+            "client-grant",
+            name,
+            json!({"description": desc, "grant": h(bytes), "now": now, "skew": SKEW, "expect": expect}),
+        );
+    };
+    let good = grant_by(&fx.attest, granted.clone(), WINDOW);
+    let end = ISSUED_AT + WINDOW;
+    w(
+        "valid",
+        "grant from the manifest attest key, inside its window",
+        good.bytes(),
+        NOW,
+        "ok",
+    );
+    w(
+        "skew-boundary-after",
+        "now = not_after + skew: not yet lapsed",
+        good.bytes(),
+        end + SKEW,
+        "ok",
+    );
+    w(
+        "lapsed",
+        "now = not_after + skew + 1: verifies, lapsed",
+        good.bytes(),
+        end + SKEW + 1,
+        "lapsed",
+    );
+    w(
+        "skew-boundary-before",
+        "now = issued_at - skew",
+        good.bytes(),
+        ISSUED_AT - SKEW,
+        "ok",
+    );
+    w(
+        "not-yet-valid",
+        "now = issued_at - skew - 1",
+        good.bytes(),
+        ISSUED_AT - SKEW - 1,
+        "GrantInvalid",
+    );
+    let rogue = grant_by(&fx.rogue_attest, granted.clone(), WINDOW);
+    w(
+        "unknown-signer",
+        "signed by a P-256 key the manifest does not list",
+        rogue.bytes(),
+        NOW,
+        "GrantInvalid",
+    );
+    let by_sign = grant_by(&fx.sign, granted.clone(), WINDOW);
+    w(
+        "signer-not-attest-role",
+        "signed by a manifest key whose role is sign",
+        by_sign.bytes(),
+        NOW,
+        "GrantInvalid",
+    );
+    let mut sig = good.sig;
+    sig[10] ^= 1;
+    let bad = good.fields.clone().with_signature(sig);
+    w(
+        "bad-signature",
+        "one bit of the signature flipped",
+        bad.bytes(),
+        NOW,
+        "GrantInvalid",
+    );
+    let mut changed = good.fields.clone();
+    changed.seq = 2;
+    let changed = changed.with_signature(good.sig);
+    w(
+        "field-changed-after-signing",
+        "seq changed after signing",
+        changed.bytes(),
+        NOW,
+        "GrantInvalid",
+    );
+    let long = grant_by(&fx.attest, granted.clone(), 30 * 86_400 + 1);
+    w(
+        "window-too-long",
+        "window one second over the manifest's max_client_grant_window_secs",
+        long.bytes(),
+        NOW,
+        "GrantInvalid",
+    );
+    let unknown_key = grant_by(
+        &fx.attest,
+        vec![fx.rogue_attest.public_key().fingerprint().clone()],
+        WINDOW,
+    );
+    w(
+        "key-not-in-manifest",
+        "grants a key the manifest does not list",
+        unknown_key.bytes(),
+        NOW,
+        "GrantInvalid",
+    );
+    let attest_key = grant_by(
+        &fx.attest,
+        vec![fx.key(Role::Attest).fingerprint.clone()],
+        WINDOW,
+    );
+    w(
+        "key-is-attest",
+        "grants the manifest's attest key",
+        attest_key.bytes(),
+        NOW,
+        "GrantInvalid",
+    );
+    // Decode-level failures: edit the CBOR directly (the signature no longer matters).
+    let edited = |f: &dyn Fn(&mut std::collections::BTreeMap<String, Value>)| {
+        let mut m = decode_map(good.bytes()).unwrap();
+        f(&mut m);
+        encode(&Value::Map(m))
+    };
+    let mut unsorted: Vec<String> = granted.iter().map(|k| k.as_str().to_string()).collect();
+    unsorted.sort();
+    unsorted.reverse();
+    w(
+        "keys-unsorted",
+        "keys out of order",
+        &edited(&|m| {
+            m.insert("keys".into(), Value::TextArray(unsorted.clone()));
+        }),
+        NOW,
+        "GrantInvalid",
+    );
+    w(
+        "not-after-mismatch",
+        "not_after is not issued_at + window_secs",
+        &edited(&|m| {
+            m.insert("not_after".into(), Value::Uint(end + 1));
+        }),
+        NOW,
+        "GrantInvalid",
+    );
+    w(
+        "keys-empty",
+        "an empty key list",
+        &edited(&|m| {
+            m.insert("keys".into(), Value::TextArray(vec![]));
+        }),
+        NOW,
+        "GrantInvalid",
+    );
+    let mut noncanon = good.bytes().to_vec();
+    // `v` = 1 written as 0x18 0x01; the first map entry is "v" (0x61 0x76) then 0x01.
+    let i = noncanon
+        .windows(3)
+        .position(|w| w == [0x61, 0x76, 0x01])
+        .unwrap();
+    noncanon.splice(i + 2..i + 3, [0x18, 0x01]);
+    w(
+        "non-canonical",
+        "v encoded in two bytes",
+        &noncanon,
+        NOW,
+        "GrantInvalid",
+    );
+
+    let r = |name: &str, desc: &str, bytes: &[u8], expect: &str| {
+        write(
+            "client-revocation",
+            name,
+            json!({"description": desc, "revocation": h(bytes), "expect": expect}),
+        );
+    };
+    let rev_by = |signer: &SoftwareKey, seq: u64| {
+        let u = UnsignedRevocation::new(
+            fx.client.public_key(),
+            seq,
+            ISSUED_AT + 3_600,
+            signer.public_key().fingerprint().clone(),
+        )
+        .unwrap();
+        let sig = signer.sign(&u.to_be_signed());
+        u.with_signature(sig)
+    };
+    let rev = rev_by(&fx.attest, 1);
+    r(
+        "valid",
+        "revocation of seq 1 from the manifest attest key",
+        rev.bytes(),
+        "ok",
+    );
+    r(
+        "unknown-signer",
+        "signed by a key the manifest does not list",
+        rev_by(&fx.rogue_attest, 1).bytes(),
+        "RevocationInvalid",
+    );
+    r(
+        "signer-not-attest-role",
+        "signed by the manifest's sign key",
+        rev_by(&fx.sign, 1).bytes(),
+        "RevocationInvalid",
+    );
+    let mut sig = rev.sig;
+    sig[0] ^= 1;
+    r(
+        "bad-signature",
+        "one bit of the signature flipped",
+        rev.fields.clone().with_signature(sig).bytes(),
+        "RevocationInvalid",
+    );
+    let mut m = decode_map(rev.bytes()).unwrap();
+    m.insert("seq".into(), Value::Uint(0));
+    r(
+        "seq-zero",
+        "cancels seq 0",
+        &encode(&Value::Map(m)),
+        "RevocationInvalid",
+    );
+}
