@@ -267,6 +267,8 @@ pub struct Status {
     pub device_id: String,
     pub manifest_version: u64,
     pub manifest_valid_until: u64,
+    /// The longest client grant window the manifest allows (for the pairing screen).
+    pub max_client_grant_window_secs: u64,
     pub attestation: Option<AttestationStatus>,
     pub keys: Vec<KeyInfo>,
     pub clients: Vec<SavedClient>,
@@ -714,6 +716,7 @@ impl Approver {
             device_id: self.cfg.device_id.clone(),
             manifest_version: m.version,
             manifest_valid_until: m.valid_until,
+            max_client_grant_window_secs: m.max_client_grant_window_secs,
             attestation: self.engine.attestation_info().map(|i| AttestationStatus {
                 not_before: i.not_before,
                 not_after: i.not_after,
@@ -803,15 +806,18 @@ impl Approver {
                 signature: b.clone().expect("set above"),
             }
         };
+        // The admin-key binding needs a device-key signature, so a biometric. A registration
+        // made in the background (a push token) goes without it until `enable_admin` or the
+        // next enrollment makes it.
         let admin = match &self.admin {
             Some((_, key)) => {
                 let mut b = self.admin_binding.lock().expect("lock");
                 if b.is_none() {
-                    *b = Some(self.engine.bind_admin_key(key)?.signature);
+                    *b = self.engine.bind_admin_key(key).ok().map(|x| x.signature);
                 }
-                Some(relay_approver::AuthBinding {
+                b.clone().map(|signature| relay_approver::AuthBinding {
                     auth_key: key.clone(),
-                    signature: b.clone().expect("set above"),
+                    signature,
                 })
             }
             None => None,
@@ -1032,6 +1038,25 @@ impl Approver {
     /// Forget a client paired before grants, locally only.
     pub fn remove_client(&self, client_id: String) -> bool {
         self.engine.remove_client(&client_id)
+    }
+
+    /// Whether the relay knows this device's admin-auth key (the Clients and Approvers calls
+    /// need it).
+    pub fn admin_enabled(&self) -> bool {
+        self.admin.is_some() && self.admin_binding.lock().expect("lock").is_some()
+    }
+
+    /// Bind the admin-auth key with a device-key signature (call with the device key's
+    /// biometric context set) and register it with the relay. Needed once on a device enrolled
+    /// before admin keys.
+    pub fn enable_admin(&self) -> Result<(), RelayError> {
+        let (_, key) = self
+            .admin
+            .as_ref()
+            .ok_or_else(|| invalid("this device has no admin-auth key"))?;
+        let b = self.engine.bind_admin_key(key)?;
+        *self.admin_binding.lock().expect("lock") = Some(b.signature);
+        self.register()
     }
 
     /// Every client this device knows, from verified grants (and pairings from before grants).

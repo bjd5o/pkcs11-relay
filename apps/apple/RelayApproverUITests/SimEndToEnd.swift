@@ -56,9 +56,20 @@ final class SimEndToEnd: XCTestCase {
         let key = app.switches["key-openbao-unseal"]
         XCTAssertTrue(key.waitForExistence(timeout: 10))
         key.switches.firstMatch.exists ? key.switches.firstMatch.tap() : key.tap()
+        // Approving signs the client's grant on the card: the PIN, then the (software) tap.
+        let pairingPin = app.secureTextFields["pairing-pin"]
+        for _ in 0..<6 where !pairingPin.exists || !pairingPin.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(pairingPin.waitForExistence(timeout: 10))
+        pairingPin.tap()
+        pairingPin.typeText(pin)
         let approvePairing = app.buttons["approve-pairing"]
+        for _ in 0..<3 where !approvePairing.isHittable {
+            app.swipeUp()
+        }
         XCTAssertTrue(approvePairing.waitForExistence(timeout: 10))
-        XCTAssertTrue(approvePairing.isEnabled, "a key was chosen")
+        XCTAssertTrue(approvePairing.isEnabled, "a key and a PIN were given")
         approvePairing.tap()
 
         // Approve the decrypt with the PIN.

@@ -1,9 +1,11 @@
-// The two Secure Enclave keys behind relay-ffi's `DeviceKey` trait.
+// The three Secure Enclave keys behind relay-ffi's `DeviceKey` trait.
 //
 // - device key: `.privateKeyUsage` + `.biometryCurrentSet`. Signs responses, denials and the
-//   relay-auth binding, so every signature needs a fresh Face ID / Touch ID. The approval flow
+//   key bindings, so every signature needs a fresh Face ID / Touch ID. The approval flow
 //   evaluates one LAContext and hands it here, so one biometric covers the whole approval.
-// - auth key: `.privateKeyUsage` only. Signs relay calls (polling), never responses.
+// - auth key: `.privateKeyUsage` only. Signs routine relay calls (polling), never responses.
+// - admin key: `.privateKeyUsage` + `.biometryCurrentSet`. Signs the Clients and Approvers calls
+//   (wire-format §8.5). One LAContext covers a screen session of at most an hour.
 //
 // Rust hands over the exact bytes to sign; CryptoKit hashes them with SHA-256 and returns the
 // raw r || s signature (wire-format §1.4). Rust checks every signature before it is used.
@@ -31,6 +33,9 @@ final class EnclaveKey: DeviceKey, @unchecked Sendable {
     enum Kind: String {
         case device = "device-key"
         case auth = "relay-auth-key"
+        case admin = "admin-auth-key"
+
+        var needsBiometric: Bool { self != .auth }
     }
 
     let kind: Kind
@@ -51,7 +56,7 @@ final class EnclaveKey: DeviceKey, @unchecked Sendable {
         publicKeyDER = try Self.publicKey(blob)
     }
 
-    /// The evaluated biometric context for the next signatures (device key only).
+    /// The evaluated biometric context for the next signatures (device and admin keys).
     func use(_ context: LAContext?) {
         lock.lock()
         self.context = context
@@ -69,7 +74,7 @@ final class EnclaveKey: DeviceKey, @unchecked Sendable {
             let key = try P256.Signing.PrivateKey(rawRepresentation: blob)
             return try key.signature(for: message).rawRepresentation
             #else
-            if kind == .device && ctx == nil { throw EnclaveKeyError.noBiometricContext }
+            if kind.needsBiometric && ctx == nil { throw EnclaveKeyError.noBiometricContext }
             let key = try SecureEnclave.P256.Signing.PrivateKey(
                 dataRepresentation: blob, authenticationContext: ctx)
             return try key.signature(for: message).rawRepresentation
@@ -79,10 +84,11 @@ final class EnclaveKey: DeviceKey, @unchecked Sendable {
         }
     }
 
-    /// Delete both keys (re-enrollment from scratch).
+    /// Delete every key (re-enrollment from scratch).
     static func reset() {
         Keychain.delete(account: Kind.device.rawValue)
         Keychain.delete(account: Kind.auth.rawValue)
+        Keychain.delete(account: Kind.admin.rawValue)
     }
 
     private static func create(_ kind: Kind) throws -> Data {
@@ -91,7 +97,7 @@ final class EnclaveKey: DeviceKey, @unchecked Sendable {
         return P256.Signing.PrivateKey().rawRepresentation
         #else
         var flags: SecAccessControlCreateFlags = [.privateKeyUsage]
-        if kind == .device { flags.insert(.biometryCurrentSet) }
+        if kind.needsBiometric { flags.insert(.biometryCurrentSet) }
         guard let ac = SecAccessControlCreateWithFlags(
             nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, flags, nil)
         else { throw EnclaveKeyError.accessControl }

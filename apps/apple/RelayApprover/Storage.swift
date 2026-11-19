@@ -46,6 +46,11 @@ private struct StoredClient: Codable {
     var keys: [String]
 }
 
+private struct StoredGrant: Codable {
+    var grant: Data
+    var accepted: Bool
+}
+
 private struct StoredKey: Codable {
     var fingerprint: String
     var slot: UInt8
@@ -56,7 +61,11 @@ private struct StoredState: Codable {
     var manifestSignature: Data?
     var attestation: Data?
     var authBinding: Data?
+    // Optional so a state file from before client grants still loads.
+    var adminBinding: Data?
     var clients: [StoredClient]
+    var grants: [StoredGrant]?
+    var revocations: [Data]?
     var keys: [StoredKey]
 
     init(_ s: SavedState) {
@@ -64,15 +73,20 @@ private struct StoredState: Codable {
         manifestSignature = s.manifestSignature
         attestation = s.attestation
         authBinding = s.authBinding
+        adminBinding = s.adminBinding
         clients = s.clients.map { StoredClient(clientId: $0.clientId, publicKey: $0.publicKey, keys: $0.keys) }
+        grants = s.grants.map { StoredGrant(grant: $0.grant, accepted: $0.accepted) }
+        revocations = s.revocations
         keys = s.keys.map { StoredKey(fingerprint: $0.fingerprint, slot: $0.slot) }
     }
 
     var saved: SavedState {
         SavedState(
             manifest: manifest, manifestSignature: manifestSignature, attestation: attestation,
-            authBinding: authBinding,
+            authBinding: authBinding, adminBinding: adminBinding,
             clients: clients.map { SavedClient(clientId: $0.clientId, publicKey: $0.publicKey, keys: $0.keys) },
+            grants: (grants ?? []).map { SavedGrant(grant: $0.grant, accepted: $0.accepted) },
+            revocations: revocations ?? [],
             keys: keys.map { SavedKey(fingerprint: $0.fingerprint, slot: $0.slot) })
     }
 }
@@ -109,7 +123,7 @@ enum Storage {
         read("state.json").flatMap { try? JSONDecoder().decode(StoredState.self, from: $0) }?.saved
             ?? SavedState(
                 manifest: nil, manifestSignature: nil, attestation: nil, authBinding: nil,
-                clients: [], keys: [])
+                adminBinding: nil, clients: [], grants: [], revocations: [], keys: [])
     }
 
     static func saveState(_ s: SavedState) throws {

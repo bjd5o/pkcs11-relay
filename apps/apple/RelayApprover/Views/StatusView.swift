@@ -72,11 +72,9 @@ struct StatusView: View {
                             }
                         }
                     }
-                    Section("Paired clients") {
-                        if s.clients.isEmpty { Text("None").foregroundStyle(.secondary) }
-                        ForEach(s.clients, id: \.clientId) { c in
-                            Text("\(c.clientId): \(c.keys.count) key(s)")
-                        }
+                    Section("Clients") {
+                        Text("Paired clients and the other approvers are on the Clients tab.")
+                            .foregroundStyle(.secondary)
                     }
                 }
                 Section {

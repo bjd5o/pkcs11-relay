@@ -8,7 +8,7 @@ import SwiftUI
 @MainActor
 final class AppModel: ObservableObject {
     @Published var setup: SetupFile?
-    enum Tab: Hashable { case requests, status }
+    enum Tab: Hashable { case requests, clients, status }
     @Published var tab: Tab = .requests
     /// The APNs device token, kept until the approver exists to send it.
     private var pushToken: String?
@@ -17,7 +17,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var preview: SetupPreview?
     @Published private(set) var approver: Approver?
     @Published private(set) var status: Status?
-    @Published private(set) var inbox = Inbox(requests: [], pairings: [], rejected: 0)
+    @Published private(set) var inbox = Inbox(requests: [], pairings: [], rejected: 0, rejections: [])
+    /// The Clients and Approvers screens: verified here, refreshed by `syncClients`.
+    @Published private(set) var clients: [ClientInfo] = []
+    @Published private(set) var approvers: [ApproverInfo] = []
     @Published var error: String?
     @Published private(set) var busy: String?
     /// Keys the first enrollment tap found, and what it read slot by slot.
@@ -26,6 +29,10 @@ final class AppModel: ObservableObject {
 
     private var deviceKey: EnclaveKey?
     private var authKey: EnclaveKey?
+    private var adminKey: EnclaveKey?
+    /// When the admin key's biometric context was evaluated: it lasts an hour at most, and
+    /// ends when the app goes to the background (wire-format §8.5).
+    private var adminUnlockedAt: Date?
     private var pollTask: Task<Void, Never>?
 
     init() {
@@ -133,12 +140,14 @@ final class AppModel: ObservableObject {
         await run("Connecting to the relay") {
             let device = try EnclaveKey(.device)
             let auth = try EnclaveKey(.auth)
+            let admin = try EnclaveKey(.admin)
             self.deviceKey = device
             self.authKey = auth
+            self.adminKey = admin
             let saved = Storage.loadState()
             let config = setup.config
             let a = try await Self.background {
-                try Approver(config: config, deviceKey: device, authKey: auth, saved: saved)
+                try Approver(config: config, deviceKey: device, authKey: auth, adminKey: admin, saved: saved)
             }
             self.approver = a
             self.refresh()
@@ -264,14 +273,99 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func approvePairing(_ p: PairingInfo, keys: [String]) async {
-        guard let a = approver else { return }
+    /// Approve a pairing: Face ID, the PIN, then the card's attest key signs the client's grant.
+    func approvePairing(_ p: PairingInfo, keys: [String], windowSecs: UInt64, pin: String) async -> Bool {
+        guard let a = approver else { return false }
+        var done = false
         await run("Approving the client") {
             // A local confirmation: approving a client is a security decision.
             _ = try await evaluateBiometrics(reason: "Approve client \(p.clientId)")
-            try await Self.background { try a.approvePairing(clientId: p.clientId, keys: keys) }
+            let card = try await self.card(nfc: "Hold your YubiKey to sign client \(p.clientId)'s grant")
+            let pin = Data(pin.utf8)
+            try await Self.background {
+                try a.approvePairing(clientId: p.clientId, keys: keys, windowSecs: windowSecs, card: card, pin: pin)
+            }
+            self.refresh()
+            done = true
+        }
+        return done
+    }
+
+    // MARK: Clients and Approvers (admin key)
+
+    /// The admin key's biometric context: evaluated when the screen needs it, reused for an
+    /// hour, dropped when the app goes to the background.
+    private func unlockAdmin() async throws {
+        guard let a = approver, let admin = adminKey, let device = deviceKey else { return }
+        if let at = adminUnlockedAt, Date().timeIntervalSince(at) < 3_600 { return }
+        let ctx = try await evaluateBiometrics(reason: "Show and change your clients and approvers")
+        admin.use(ctx)
+        adminUnlockedAt = Date()
+        // A device enrolled before admin keys binds it once, with the device key.
+        if !a.adminEnabled() {
+            device.use(ctx)
+            defer { device.use(nil) }
+            try await Self.background { try a.enableAdmin() }
+        }
+    }
+
+    /// The app went to the background: the admin session ends.
+    func lockAdmin() {
+        adminKey?.use(nil)
+        adminUnlockedAt = nil
+    }
+
+    /// Fetch every client's grant and every approver from the relay; both are verified here.
+    func syncClients() async {
+        guard let a = approver else { return }
+        await run("Loading clients and approvers") {
+            try await self.unlockAdmin()
+            _ = try await Self.background { try a.syncClients() }
+            self.approvers = try await Self.background { try a.approvers() }
+            self.clients = a.clients()
             self.refresh()
         }
+    }
+
+    /// What this device knows without the relay (no biometric needed).
+    func loadLocalClients() {
+        clients = approver?.clients() ?? []
+    }
+
+    func changeClient(_ c: ClientInfo, keys: [String], windowSecs: UInt64, pin: String) async -> Bool {
+        await clientAction("Changing \(c.clientId)", nfc: "Hold your YubiKey to sign the new grant", pin: pin) { a, card, pin in
+            try a.changeClient(clientId: c.clientId, keys: keys, windowSecs: windowSecs, card: card, pin: pin)
+        }
+    }
+
+    func renewClient(_ c: ClientInfo, pin: String) async -> Bool {
+        await clientAction("Renewing \(c.clientId)", nfc: "Hold your YubiKey to renew the grant", pin: pin) { a, card, pin in
+            try a.renewClient(clientId: c.clientId, card: card, pin: pin)
+        }
+    }
+
+    func revokeClient(_ c: ClientInfo, pin: String) async -> Bool {
+        await clientAction("Revoking \(c.clientId)", nfc: "Hold your YubiKey to sign the revocation", pin: pin) { a, card, pin in
+            try a.revokeClient(clientId: c.clientId, card: card, pin: pin)
+        }
+    }
+
+    private func clientAction(
+        _ what: String, nfc: String, pin: String,
+        _ f: @escaping @Sendable (Approver, CardChannel, Data) throws -> Void
+    ) async -> Bool {
+        guard let a = approver else { return false }
+        var done = false
+        await run(what) {
+            try await self.unlockAdmin()
+            let card = try await self.card(nfc: nfc)
+            let pin = Data(pin.utf8)
+            try await Self.background { try f(a, card, pin) }
+            self.clients = a.clients()
+            self.refresh()
+            done = true
+        }
+        return done
     }
 
     func retryPin() {
@@ -284,7 +378,7 @@ final class AppModel: ObservableObject {
     private func dropRequest(_ id: String) {
         inbox = Inbox(
             requests: inbox.requests.filter { $0.requestId != id },
-            pairings: inbox.pairings, rejected: inbox.rejected)
+            pairings: inbox.pairings, rejected: inbox.rejected, rejections: inbox.rejections)
     }
 
     private func run(_ what: String, _ body: () async throws -> Void) async {

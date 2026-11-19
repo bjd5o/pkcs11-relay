@@ -41,9 +41,19 @@ struct InboxView: View {
                 }
                 if model.inbox.rejected > 0 {
                     Section {
+                        ForEach(model.inbox.rejections, id: \.requestId) { r in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(r.clientId).font(.headline)
+                                Text(reasonText(r.reason)).font(.subheadline)
+                                Text(r.why).font(.caption).foregroundStyle(.secondary)
+                            }
+                            .accessibilityIdentifier("rejected-\(r.reason)")
+                        }
                         Button("Deny \(model.inbox.rejected) request(s) that failed their checks") {
                             Task { await model.answerRejections() }
                         }
+                    } header: {
+                        Text("Failed their checks")
                     }
                 }
             }
@@ -58,5 +68,16 @@ struct InboxView: View {
                 }
             }
         }
+    }
+}
+
+/// What a rejection reason code means, for the inbox.
+func reasonText(_ code: String) -> String {
+    switch code {
+    case "client_not_granted": return "No valid grant for this client on this device"
+    case "client_revoked": return "This client has been revoked"
+    case "key_not_granted": return "The client isn't allowed to use this key"
+    case "expired": return "Expired before it could be shown"
+    default: return "Refused by this app's checks"
     }
 }

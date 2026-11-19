@@ -23,6 +23,8 @@ struct RelayApproverApp: App {
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { model.becameActive() }
+                    // The admin key's unlock ends when the app leaves the foreground.
+                    if phase == .background { model.lockAdmin() }
                 }
         }
         #if os(macOS)
@@ -90,6 +92,7 @@ struct ContentView: View {
             } else {
                 TabView(selection: $model.tab) {
                     InboxView().tabItem { Label("Requests", systemImage: "tray") }.tag(AppModel.Tab.requests)
+                    ClientsView().tabItem { Label("Clients", systemImage: "person.2") }.tag(AppModel.Tab.clients)
                     StatusView().tabItem { Label("Status", systemImage: "checkmark.shield") }.tag(AppModel.Tab.status)
                 }
             }

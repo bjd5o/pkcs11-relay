@@ -12,6 +12,24 @@ struct ApprovalView: View {
 
     var body: some View {
         Form {
+            if let n = request.notice {
+                Section {
+                    if n.firstOnDevice {
+                        Label("First request from \(request.clientId) on this device.", systemImage: "person.badge.plus")
+                            .accessibilityIdentifier("first-request-notice")
+                        Text("Paired on \(n.approvedBy) on \(date(n.issuedAt)), keys: \(n.keyLabels.joined(separator: ", ")). Approving also accepts this client here.")
+                    }
+                    if let lapsed = n.lapsedSince {
+                        Label("This client's access lapsed on \(date(lapsed)).", systemImage: "clock.badge.exclamationmark")
+                            .accessibilityIdentifier("lapsed-notice")
+                        Text("Approving renews it for \(duration(n.windowSecs)), with keys: \(n.keyLabels.joined(separator: ", ")).")
+                    }
+                } header: {
+                    Text("About this client")
+                } footer: {
+                    Text("Denying changes nothing; the notice comes back with its next request.")
+                }
+            }
             Section("Checked by this app") {
                 LabeledContent("Client", value: request.clientId)
                 LabeledContent("Key", value: "\(request.keyLabel) (\(request.keyRole))")
@@ -57,8 +75,11 @@ struct ApprovalView: View {
                     pinFocused = false
                     Task {
                         if let o = await model.approve(request, pin: entered) {
+                            var done = ["Approved"]
+                            if o.renewed { done.append("attestation renewed") }
+                            if o.grantRenewed { done.append("client's access renewed") }
                             result = o.approved
-                                ? "Approved" + (o.renewed ? "; attestation renewed" : "")
+                                ? done.joined(separator: "; ")
                                 : "Not done: \(o.cardError ?? "card error"). The client was told."
                             if o.approved { dismiss() }
                         }

@@ -17,10 +17,10 @@ final class BindingTests: XCTestCase {
         let bad = FixedKey(spki: Data([0x30, 0x00]))
         XCTAssertThrowsError(
             try Approver(
-                config: config, deviceKey: bad, authKey: bad,
+                config: config, deviceKey: bad, authKey: bad, adminKey: bad,
                 saved: SavedState(
                     manifest: nil, manifestSignature: nil, attestation: nil, authBinding: nil,
-                    clients: [], keys: [])))
+                    adminBinding: nil, clients: [], grants: [], revocations: [], keys: [])))
     }
 
     /// The CryptoKit signature format is what Rust expects: raw r || s over SHA-256.
