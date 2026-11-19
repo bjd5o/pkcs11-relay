@@ -268,3 +268,14 @@ Decision (Brian): the person accepts each client on each device. The client's fi
 
 Context: the client grant (wire-format §12.1) lists its keys as an array of text strings, but §1.2 allowed no arrays in signed messages, and the decoder rejected them.
 Decision (Brian): allow definite-length arrays whose items are all text strings, at most 64 items, anywhere a field table says so. Other arrays stay rejected. Deterministic encoding is unchanged: items keep their order, and the grant requires `keys` sorted. The alternative, one comma-joined text field, was rejected because it needs its own list syntax checked by hand.
+
+## 2026-11-19: Client grants, details settled while building
+
+Context: implementing `docs/client-grants.md`. These details were left open by the design; none changes its trust model.
+Decision (Claude, for Brian's review):
+- **Renewal posts:** a grant renewed during an approval is posted with the relay-auth key; the relay accepts that key only when the new grant keeps the stored grant's keys and window. Any change needs the admin-auth key.
+- **Admin binding on older installs:** a registration made without a biometric (a push token in the background) goes without the admin-key binding; the Clients screen binds it once, under Face ID, with `enable_admin`.
+- **Pairing window:** the app offers 1 hour up to the manifest's maximum and defaults to 7 days (or the maximum, if shorter).
+- **Revocation scope:** the app's Revoke cancels every grant up to the newest this device holds (at least seq 1, so a client paired before grants is covered too). The relay refuses a revocation below its stored grant's sequence (409 `RevocationStale`) and serves one until that grant's `not_after`, or for the manifest's maximum window when it holds no grant.
+- **Relay without a manifest:** a relay with no `manifest_file` checks only a grant's format; with an invalid manifest it refuses grant and revocation posts (503 `ManifestInvalid`). Devices verify everything themselves either way.
+- **The old pairing body:** the relay no longer accepts `{"fingerprint", "keys"}`; every approval carries a grant.

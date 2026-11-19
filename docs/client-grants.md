@@ -1,6 +1,6 @@
 # Client grants, and the Clients and Approvers screens (design draft)
 
-Status: **approved by Brian on 2026-11-18** (see Decisions). Post-MVP. It changes the spec
+Status: **approved by Brian on 2026-11-18** (see Decisions); **built 2026-11-19**, hardware gate still to run (`docs/progress.md`). Post-MVP. It changes the spec
 (pairing, the manifest, response check 1, the wire format and the Failure handling table). Those
 spec edits are shown to Brian before they are made, and come before any code.
 
