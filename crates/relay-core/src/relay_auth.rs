@@ -14,6 +14,8 @@ use crate::signing::{random_bytes, SoftwareKey};
 pub const CONTEXT: &str = "relay-pkcs11/relay-auth/v1";
 /// Context of the device key's signature over a separate relay-auth key (wire-format §8.4).
 pub const AUTH_KEY_CONTEXT: &str = "relay-pkcs11/auth-key/v1";
+/// Context of the device key's vouch for its admin-auth key (wire-format §8.5).
+pub const ADMIN_KEY_CONTEXT: &str = "relay-pkcs11/admin-auth-key/v1";
 pub const HEADER_KEY: &str = "x-relay-key";
 pub const HEADER_TIME: &str = "x-relay-time";
 pub const HEADER_NONCE: &str = "x-relay-nonce";
@@ -39,12 +41,23 @@ pub struct AuthHeaders {
 /// The bytes the device key signs to let `auth_key` authenticate this device's relay calls:
 /// `AUTH_KEY_CONTEXT || 0x00 || device_id || 0x00 || auth_key fingerprint` (wire-format §8.4).
 pub fn auth_key_binding(device_id: &str, auth_key: &PublicKey) -> Vec<u8> {
+    binding(AUTH_KEY_CONTEXT, device_id, auth_key)
+}
+
+/// The bytes the device key signs to let `admin_key` sign this device's admin calls (listing
+/// and changing clients, wire-format §8.5): `ADMIN_KEY_CONTEXT || 0x00 || device_id || 0x00 ||
+/// admin_key fingerprint`.
+pub fn admin_key_binding(device_id: &str, admin_key: &PublicKey) -> Vec<u8> {
+    binding(ADMIN_KEY_CONTEXT, device_id, admin_key)
+}
+
+fn binding(context: &str, device_id: &str, key: &PublicKey) -> Vec<u8> {
     let mut out = Vec::new();
-    for part in [AUTH_KEY_CONTEXT, device_id] {
+    for part in [context, device_id] {
         out.extend_from_slice(part.as_bytes());
         out.push(0);
     }
-    out.extend_from_slice(auth_key.fingerprint().as_str().as_bytes());
+    out.extend_from_slice(key.fingerprint().as_str().as_bytes());
     out
 }
 
@@ -62,6 +75,21 @@ pub fn verify_auth_key_binding(
     device_key
         .verify_message(&auth_key_binding(device_id, auth_key), sig)
         .map_err(|_| Error::Crypto("auth key binding signature does not verify".into()))
+}
+
+/// Check that `device_key` vouched for `admin_key` as this device's admin-auth key. P-256.
+pub fn verify_admin_key_binding(
+    device_key: &PublicKey,
+    device_id: &str,
+    admin_key: &PublicKey,
+    sig: &[u8],
+) -> Result<()> {
+    if admin_key.algorithm() != crate::keys::Algorithm::P256 {
+        return Err(Error::Crypto("admin-auth keys are P-256".into()));
+    }
+    device_key
+        .verify_message(&admin_key_binding(device_id, admin_key), sig)
+        .map_err(|_| Error::Crypto("admin key binding signature does not verify".into()))
 }
 
 /// The bytes a caller signs for one HTTP call.
@@ -333,5 +361,23 @@ mod binding_tests {
         let ed = SoftwareKey::generate_ed25519().public_key();
         let sig = device.sign(&auth_key_binding("phone", &ed));
         assert!(verify_auth_key_binding(&device.public_key(), "phone", &ed, &sig).is_err());
+    }
+
+    #[test]
+    fn admin_key_binding_round_trip_and_separate_context() {
+        let device = SoftwareKey::generate_p256();
+        let admin = SoftwareKey::generate_p256().public_key();
+        let sig = device.sign(&admin_key_binding("phone", &admin));
+        verify_admin_key_binding(&device.public_key(), "phone", &admin, &sig).unwrap();
+        assert!(verify_admin_key_binding(&device.public_key(), "other", &admin, &sig).is_err());
+        // A relay-auth binding can't stand in for an admin binding, or the other way round.
+        assert!(verify_auth_key_binding(&device.public_key(), "phone", &admin, &sig).is_err());
+        let auth_sig = device.sign(&auth_key_binding("phone", &admin));
+        assert!(
+            verify_admin_key_binding(&device.public_key(), "phone", &admin, &auth_sig).is_err()
+        );
+        let ed = SoftwareKey::generate_ed25519().public_key();
+        let sig = device.sign(&admin_key_binding("phone", &ed));
+        assert!(verify_admin_key_binding(&device.public_key(), "phone", &ed, &sig).is_err());
     }
 }

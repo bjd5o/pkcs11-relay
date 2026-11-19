@@ -422,3 +422,49 @@ mod cbor_properties {
         assert_eq!(decode_map(&[0xa0]).unwrap(), BTreeMap::new());
     }
 }
+
+// --- Response from a device whose key is in the manifest's revoked_devices:
+//     discarded, logged loudly, CKR_DEVICE_ERROR ---
+
+#[test]
+fn row_response_from_revoked_device() {
+    let fx = load();
+    let mut json: serde_json::Value = serde_json::from_slice(fx.manifest.bytes()).unwrap();
+    json["revoked_devices"] = serde_json::json!([fx.device.public_key().fingerprint().as_str()]);
+    let revoked =
+        relay_core::Manifest::from_json_unverified(&serde_json::to_vec(&json).unwrap()).unwrap();
+    // An approval and a denial from the revoked device are both discarded.
+    let (req, reply, sig) = fx.sign_request(b"msg");
+    let resp = fx.approve(&req, &sig, &fx.attestation(), &fx.device);
+    let e = verify_response(&resp, req.bytes(), &revoked, NOW, SKEW, reply).unwrap_err();
+    assert_eq!(e, Error::DeviceRevoked);
+    assert_eq!(e.failure_row(), FailureRow::DeviceRevoked);
+    assert_eq!(e.ckr(), Some(ckr::DEVICE_ERROR));
+    assert!(e.is_tampering(), "logged loudly");
+    let (req, reply, _) = fx.sign_request(b"msg");
+    let resp = fx.deny(&req, Some(Reason::UserDenied));
+    assert_eq!(
+        verify_response(&resp, req.bytes(), &revoked, NOW, SKEW, reply).unwrap_err(),
+        Error::DeviceRevoked
+    );
+    // The same response from a device not on the list still verifies.
+    let (req, reply, sig) = fx.sign_request(b"msg");
+    let resp = fx.approve(&req, &sig, &fx.attestation(), &fx.device);
+    assert!(verify_response(&resp, req.bytes(), &fx.manifest, NOW, SKEW, reply).is_ok());
+}
+
+#[test]
+fn grant_reasons_are_denials() {
+    let fx = load();
+    for reason in [
+        Reason::ClientNotGranted,
+        Reason::ClientRevoked,
+        Reason::KeyNotGranted,
+    ] {
+        let (req, reply, _) = fx.sign_request(b"msg");
+        let resp = fx.deny(&req, Some(reason));
+        let out = verify_response(&resp, req.bytes(), &fx.manifest, NOW, SKEW, reply).unwrap();
+        assert_eq!(out, Outcome::Denied(Some(reason)));
+        assert_eq!(out.ckr(), ckr::FUNCTION_REJECTED);
+    }
+}

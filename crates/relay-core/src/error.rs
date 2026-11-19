@@ -30,6 +30,9 @@ pub enum FailureRow {
     /// Response signed by a key other than the attested device key, or not bound to this
     /// request: `CKR_DEVICE_ERROR`, logged as possible tampering.
     ResponseTampered,
+    /// Response from a device whose key is in the manifest's `revoked_devices`:
+    /// `CKR_DEVICE_ERROR`, logged loudly.
+    DeviceRevoked,
     /// No answer before `expires_at`: `CKR_FUNCTION_CANCELED`.
     Expired,
     /// A message rejected by the approver or relay before any operation (not a provider row).
@@ -73,6 +76,9 @@ pub enum Error {
     AttestationExpired,
     #[error("attestation window of {window} s exceeds the manifest's maximum of {max} s")]
     AttestationWindowTooLong { window: u64, max: u64 },
+
+    #[error("response from a device the manifest revokes")]
+    DeviceRevoked,
 
     // --- Response (row: CKR_DEVICE_ERROR, possible tampering) ---
     #[error("response signed by a key other than the attested device key")]
@@ -150,6 +156,7 @@ impl Error {
             | AttestationUnknownSigner
             | AttestationExpired
             | AttestationWindowTooLong { .. } => FailureRow::AttestationRejected,
+            DeviceRevoked => FailureRow::DeviceRevoked,
             ResponseSignerMismatch
             | ResponseSignatureInvalid
             | ResponseNotBound(_)
@@ -213,6 +220,7 @@ impl Error {
             AttestationUnknownSigner => "AttestationUnknownSigner",
             AttestationExpired => "AttestationExpired",
             AttestationWindowTooLong { .. } => "AttestationWindowTooLong",
+            DeviceRevoked => "DeviceRevoked",
             ResponseSignerMismatch => "ResponseSignerMismatch",
             ResponseSignatureInvalid => "ResponseSignatureInvalid",
             ResponseNotBound(_) => "ResponseNotBound",
@@ -239,9 +247,13 @@ impl Error {
         }
     }
 
-    /// Whether the provider should log this as possible tampering ("log loudly").
+    /// Whether the provider should log this loudly: possible tampering, or an answer from a
+    /// revoked device.
     pub fn is_tampering(&self) -> bool {
-        self.failure_row() == FailureRow::ResponseTampered
+        matches!(
+            self.failure_row(),
+            FailureRow::ResponseTampered | FailureRow::DeviceRevoked
+        )
     }
 }
 

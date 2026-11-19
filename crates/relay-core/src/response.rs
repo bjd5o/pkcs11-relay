@@ -44,6 +44,12 @@ impl Status {
 pub enum Reason {
     UserDenied,
     Policy,
+    /// No usable grant for the client: missing, or its attest key left the manifest.
+    ClientNotGranted,
+    /// A revocation, or the manifest's `revoked_clients`.
+    ClientRevoked,
+    /// The key is outside the client's grant.
+    KeyNotGranted,
     Expired,
     CardAbsent,
     WrongPin,
@@ -59,6 +65,9 @@ impl Reason {
         match self {
             Reason::UserDenied => "user_denied",
             Reason::Policy => "policy",
+            Reason::ClientNotGranted => "client_not_granted",
+            Reason::ClientRevoked => "client_revoked",
+            Reason::KeyNotGranted => "key_not_granted",
             Reason::Expired => "expired",
             Reason::CardAbsent => "card_absent",
             Reason::WrongPin => "wrong_pin",
@@ -71,6 +80,9 @@ impl Reason {
         Ok(match s {
             "user_denied" => Reason::UserDenied,
             "policy" => Reason::Policy,
+            "client_not_granted" => Reason::ClientNotGranted,
+            "client_revoked" => Reason::ClientRevoked,
+            "key_not_granted" => Reason::KeyNotGranted,
             "expired" => Reason::Expired,
             "card_absent" => Reason::CardAbsent,
             "wrong_pin" => Reason::WrongPin,
@@ -308,8 +320,12 @@ pub fn verify_response(
         .map_err(|e| Error::ResponseNotBound(format!("undecodable: {e}")))?;
     let r = &resp.fields;
 
-    // 1. Attestation signature against a manifest attest key.
+    // 1. Attestation signature against a manifest attest key, for a device key the manifest
+    //    hasn't revoked.
     let st = attestation::verify_signature(&r.attestation, manifest)?;
+    if manifest.device_revoked(st.fields.device_key.fingerprint()) {
+        return Err(Error::DeviceRevoked);
+    }
     // 2. Validity window, no longer than the manifest allows.
     attestation::check_window(&st, now, skew)?;
     attestation::check_window_length(&st, manifest)?;
