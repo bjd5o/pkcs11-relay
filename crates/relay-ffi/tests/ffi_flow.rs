@@ -275,7 +275,7 @@ fn the_app_surface_end_to_end() {
         (CLIENT_ID, "valid", true)
     );
     assert_eq!(c.key_labels, vec!["sign-ec"]);
-    assert_eq!(c.approved_by.as_deref(), Some("brian-iphone"));
+    assert_eq!(c.approved_by, "brian-iphone");
 
     let signer =
         ManifestSigner::from_bytes(&std::fs::read(dir.join("signer.asc")).unwrap()).unwrap();
@@ -429,7 +429,6 @@ fn the_app_surface_end_to_end() {
         saved.attestation.is_some()
             && saved.auth_binding.is_some()
             && saved.admin_binding.is_some()
-            && saved.clients.is_empty()
             && saved.grants.len() == 1
             && saved.grants[0].accepted
             && saved.keys.iter().any(|k| k.slot == 0x95)

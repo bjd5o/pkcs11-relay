@@ -98,13 +98,6 @@ impl GrantStore {
         Ok(true)
     }
 
-    /// Whether a held revocation names this client key at all.
-    pub fn is_revoked(&self, fp: &Fingerprint) -> bool {
-        self.revocations
-            .iter()
-            .any(|r| r.client_fingerprint() == fp)
-    }
-
     /// The newest grant held for a client id (a client id maps to one key; if two keys ever
     /// carried the same id, the newer grant wins).
     pub fn by_client_id(&self, client_id: &str) -> Option<Entry> {

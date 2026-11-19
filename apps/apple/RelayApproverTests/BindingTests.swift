@@ -20,7 +20,7 @@ final class BindingTests: XCTestCase {
                 config: config, deviceKey: bad, authKey: bad, adminKey: bad,
                 saved: SavedState(
                     manifest: nil, manifestSignature: nil, attestation: nil, authBinding: nil,
-                    adminBinding: nil, clients: [], grants: [], revocations: [], keys: [])))
+                    adminBinding: nil, grants: [], revocations: [], keys: [])))
     }
 
     /// The CryptoKit signature format is what Rust expects: raw r || s over SHA-256.

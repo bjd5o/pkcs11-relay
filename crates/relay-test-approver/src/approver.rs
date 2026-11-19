@@ -8,11 +8,11 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use futures_util::StreamExt;
-use relay_approver::{ApproverError, Checked, Engine, EngineConfig, PairedClient};
+use relay_approver::{ApproverError, Checked, Engine, EngineConfig};
 use relay_core::piv::{CardTransport, Slot};
 use relay_core::request::SignedRequest;
 use relay_core::signing::{DeviceSigner, SoftwareKey};
-use relay_core::{Fingerprint, ManifestSigner, PublicKey};
+use relay_core::{Fingerprint, ManifestSigner};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
@@ -61,7 +61,7 @@ fn default_skew() -> u64 {
     60
 }
 
-/// A paired client: in the apps this comes from pairing; here from config.
+/// A client this approver expects: the test stand-in for the person comparing pairing codes.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrustedClient {
@@ -173,20 +173,6 @@ impl Approver {
         )
         .await?;
         let device_key = Arc::new(load_or_create_device_key(&cfg.data_dir)?);
-        let b64 = base64::engine::general_purpose::STANDARD;
-        let mut clients = Vec::new();
-        for c in &cfg.trusted_clients {
-            let spki = b64.decode(&c.public_key).map_err(|e| e.to_string())?;
-            clients.push(PairedClient {
-                client_id: c.client_id.clone(),
-                public_key: PublicKey::from_spki(&spki).map_err(|e| e.to_string())?,
-                keys: c
-                    .keys
-                    .iter()
-                    .map(|k| Fingerprint::parse(k).map_err(|e| e.to_string()))
-                    .collect::<Result<_, _>>()?,
-            });
-        }
         let engine = Engine::new(
             EngineConfig {
                 device_id: cfg.device_id.clone(),
@@ -197,7 +183,6 @@ impl Approver {
             },
             manifest,
             device_key.clone() as Arc<dyn DeviceSigner>,
-            clients,
         );
         engine.discover(card.as_mut()).map_err(|e| e.to_string())?;
         let attest_slot = Slot::parse(&cfg.attest_slot).map_err(|e| e.to_string())?;
@@ -380,12 +365,8 @@ impl Approver {
         else {
             return;
         };
-        let known = self
-            .engine
-            .clients()
-            .into_iter()
-            .find(|c| c.client_id == view.client_id);
-        if known.is_none_or(|c| c.public_key != view.public_key) {
+        let b64 = base64::engine::general_purpose::STANDARD;
+        if b64.decode(&tc.public_key).ok().as_deref() != Some(view.public_key.spki()) {
             return;
         }
         let fp = view.public_key.fingerprint().as_str().to_string();

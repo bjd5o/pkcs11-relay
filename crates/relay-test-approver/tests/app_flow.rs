@@ -111,7 +111,6 @@ fn app_path_with_a_separate_auth_key() {
         },
         manifest.clone(),
         device.clone(),
-        Vec::new(),
     );
     engine.discover(&mut card).unwrap();
     assert_eq!(engine.attest_key().unwrap().0, Slot::new(0x95).unwrap());

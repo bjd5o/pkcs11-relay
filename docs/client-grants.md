@@ -158,8 +158,7 @@ saying yes to it.
 - **What counts as accepted.** Acceptance is per client key and stays on the device; it is never
   sent to the relay. A client is accepted on a device when the person approves a request with
   the notice there, approves the client's pairing there, or changes or renews its grant from
-  that device's Clients screen. Local pairing records from before grants count as accepted
-  (see "Migration").
+  that device's Clients screen.
 - **Later grants.** Once a client is accepted, grants with a higher `seq` for the same client key
   are followed without a new notice: they were signed by an `attest` key after a person
   approved them with the card. A revocation, in the manifest or signed, clears acceptance along
@@ -324,11 +323,9 @@ the size limit. A malformed list makes the manifest invalid, like any other sche
 
 ## Migration
 
-Today's pairings have no grant. Devices keep honouring their local pairing records until a grant
-replaces them, and count those clients as accepted, and the Clients screen marks those clients "no grant: renew to share with other
-approvers". Renewing signs a grant with `seq` 1. Once every client has a grant, the local
-pairing records are deleted (Brian, 2026-11-18); the device keeps only its cache of verified
-grants and revocations.
+None (Brian, 2026-11-19). This is a demo, so installs from before grants start clean: drop the
+relay database and the app's saved state, then enroll and pair again. Devices keep only their
+cache of verified grants and revocations; there are no local pairing records.
 
 ## Tests
 
@@ -360,7 +357,7 @@ grants and revocations.
 | Pairing with the card | Yes: pairing needs the YubiKey, PIN and any touch the attest key requires |
 | Grant window | Its own manifest maximum, `max_client_grant_window_secs`, with each client's window chosen at pairing |
 | Lapsed clients | An unused client lapses; its next request renews the last known grant during that approval, with a notice on the approval screen |
-| Local pairing list | Deleted after migration |
+| Local pairing list | Deleted after migration; superseded on 2026-11-19: no migration, start clean |
 | Clients on a new device | Accepted per device: the first request from a client on a device carries a notice, and approving it accepts the client; denying leaves it unaccepted. Replaces the one-time summary |
 | Revocation delivery | No acknowledgement: the relay sends every live revocation; a compromised relay is bounded by grant expiry and the person approving |
 | Manifest-level revocation | Yes: optional `revoked_clients` list in the manifest |

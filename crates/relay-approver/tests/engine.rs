@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use base64::Engine as _;
-use relay_approver::{ApproverError, Checked, Engine, EngineConfig, PairedClient, PendingRequest};
+use relay_approver::{ApproverError, Checked, Engine, EngineConfig, PairingView, PendingRequest};
 use relay_core::manifest::{DraftKey, ManifestDraft};
 use relay_core::piv::{PivError, Slot};
 use relay_core::request::{RequestContext, UnsignedRequest};
@@ -26,9 +26,16 @@ struct Fx {
     manifest: Manifest,
     client: SoftwareKey,
     engine: Engine,
+    /// pi5's grant, signed at pairing (seq 1, key `sign`).
+    grant: Vec<u8>,
 }
 
+/// An enrolled phone that paired pi5 for `sign` with a 7-day grant.
 fn fixture(window: u64) -> Fx {
+    fixture_with_grant(window, 7 * 86_400)
+}
+
+fn fixture_with_grant(window: u64, grant_window: u64) -> Fx {
     let mut card = SoftCard::new(PIN);
     let attest = card.generate(slot(0x95), Algorithm::P256);
     let sign = card.generate(slot(0x9c), Algorithm::P256);
@@ -65,11 +72,6 @@ fn fixture(window: u64) -> Fx {
         },
         manifest.clone(),
         Arc::new(SoftwareKey::generate_p256()),
-        vec![PairedClient {
-            client_id: "pi5".into(),
-            public_key: client.public_key(),
-            keys: vec![sign.fingerprint().clone()],
-        }],
     );
     let found = engine.discover(&mut card).unwrap();
     assert_eq!(
@@ -78,11 +80,30 @@ fn fixture(window: u64) -> Fx {
         "attest, sign and sign2 are on the card; `elsewhere` is not"
     );
     engine.attest(&mut card, PIN, NOW, NOW + window).unwrap();
+    let view = PairingView {
+        client_id: "pi5".into(),
+        host: "pi5".into(),
+        public_key: client.public_key(),
+        code: relay_core::pairing::pairing_code(client.public_key().spki()),
+    };
+    let post = engine
+        .pairing_approval(
+            &view,
+            &[sign.fingerprint().clone()],
+            grant_window,
+            &mut card,
+            PIN,
+            NOW,
+        )
+        .unwrap();
+    assert_eq!(post.path, "/v1/clients/pi5/approval");
+    let grant = grant_bytes(&post);
     Fx {
         card,
         manifest,
         client,
         engine,
+        grant,
     }
 }
 
@@ -189,14 +210,6 @@ fn denial_and_failed_checks_are_signed_denials() {
     assert!(matches!(
         f.outcome(&response, &req, NOW + 100, reply),
         Outcome::Denied(Some(Reason::Expired))
-    ));
-
-    // An unpaired client.
-    assert!(f.engine.remove_client("pi5"));
-    let (req, _) = f.request("sign", NOW + 5);
-    assert!(matches!(
-        f.engine.check_request(&req, NOW + 5).unwrap(),
-        Checked::Rejected(_)
     ));
 }
 
@@ -444,9 +457,10 @@ fn a_bad_device_signature_is_caught() {
         f.engine.config().clone(),
         f.manifest.clone(),
         Arc::new(Broken(SoftwareKey::generate_p256())),
-        f.engine.clients(),
     );
     broken.discover(&mut f.card).unwrap();
+    let b64 = base64::engine::general_purpose::STANDARD;
+    broken.ingest(&serde_json::json!({"grants": [b64.encode(&f.grant)]}), NOW);
     let (req, _) = f.request("sign", NOW + 5);
     let Checked::Show(p) = broken.check_request(&req, NOW + 5).unwrap() else {
         panic!()
@@ -507,7 +521,6 @@ fn discovery_reports_an_attest_key_attested_on_another_card() {
         },
         manifest,
         Arc::new(SoftwareKey::generate_p256()),
-        Vec::new(),
     );
     assert_eq!(engine.discover(&mut card).unwrap().len(), 1);
     let report = engine.last_discovery();
@@ -570,29 +583,29 @@ fn rejected(f: &Fx, bytes: &[u8], at: u64) -> (Reason, String) {
     }
 }
 
-/// Give pi5 (paired before grants) its first grant: the migration path.
+/// pi5 paired with a grant of `window` seconds.
 fn granted(window: u64) -> (Fx, Vec<u8>) {
-    let mut f = fixture(86_400);
-    let sign = fp(&f, "sign");
-    let post = f
-        .engine
-        .change_client("pi5", &[sign], window, &mut f.card, PIN, NOW)
-        .unwrap();
-    (f, grant_bytes(&post))
+    let f = fixture_with_grant(86_400, window);
+    let g = f.grant.clone();
+    (f, g)
 }
 
 #[test]
-fn a_local_pairing_migrates_to_a_grant() {
-    let f = fixture(86_400);
-    let before = f.engine.client_list(NOW);
-    assert_eq!(before.len(), 1);
-    assert_eq!(before[0].state, relay_approver::ClientState::NoGrant);
-    let (f, _) = granted(3_600);
-    assert!(f.engine.clients().is_empty(), "the local record is dropped");
+fn pairing_signs_a_grant_and_accepts_the_client() {
+    let (f, grant) = granted(3_600);
+    let g = relay_core::grant::ClientGrant::decode(&grant).unwrap();
+    assert_eq!(
+        (
+            g.fields.seq,
+            g.fields.window_secs,
+            g.fields.approved_by.as_str()
+        ),
+        (1, 3_600, "phone")
+    );
     let c = &f.engine.client_list(NOW)[0];
     assert_eq!(c.state, relay_approver::ClientState::Valid);
-    assert!(c.accepted);
-    assert_eq!(c.grant.as_ref().unwrap().seq, 1);
+    assert!(c.accepted, "the device that paired it has accepted it");
+    assert_eq!(c.grant.seq, 1);
     let (req, _) = f.request("sign", NOW + 1);
     assert!(f.show(&req, NOW + 1).notice.is_none());
 }
@@ -623,14 +636,7 @@ fn a_grant_renews_during_an_approval_at_75_percent() {
         f.outcome(&a.response, &req, NOW + 310, reply),
         Outcome::Approved(_)
     ));
-    assert_eq!(
-        f.engine.client_list(NOW + 310)[0]
-            .grant
-            .as_ref()
-            .unwrap()
-            .seq,
-        2
-    );
+    assert_eq!(f.engine.client_list(NOW + 310)[0].grant.seq, 2);
 }
 
 #[test]
@@ -670,7 +676,7 @@ fn a_lapsed_client_is_shown_with_a_notice_and_renewed_by_approving() {
 #[test]
 fn a_new_device_accepts_an_existing_client_with_its_first_approval() {
     let (mut f, grant) = granted(3_600);
-    // A second device: same manifest and card, no local pairing for pi5.
+    // A second device: same manifest and card; it has never seen pi5.
     let other = Engine::new(
         EngineConfig {
             device_id: "ipad".into(),
@@ -680,7 +686,6 @@ fn a_new_device_accepts_an_existing_client_with_its_first_approval() {
         },
         f.manifest.clone(),
         Arc::new(SoftwareKey::generate_p256()),
-        vec![],
     );
     other.discover(&mut f.card).unwrap();
     other.attest(&mut f.card, PIN, NOW, NOW + 86_400).unwrap();
@@ -746,7 +751,6 @@ fn a_new_device_accepts_an_existing_client_with_its_first_approval() {
         other.config().clone(),
         f.manifest.clone(),
         Arc::new(SoftwareKey::generate_p256()),
-        vec![],
     );
     again.restore_grants(&grants, &revs, NOW + 7);
     assert!(again.client_list(NOW + 7)[0].accepted);
@@ -777,19 +781,20 @@ fn sequence_numbers_never_go_back() {
         )
         .is_empty());
     let c = &f.engine.client_list(NOW + 2)[0];
-    assert_eq!((c.grant.as_ref().unwrap().seq, c.keys.len()), (2, 2));
-    // A different grant with the same seq is refused.
+    assert_eq!((c.grant.seq, c.keys.len()), (2, 2));
+    // Another device that holds only seq 1 signs its own seq 2: a conflict, refused.
     let other = Engine::new(
         f.engine.config().clone(),
         f.manifest.clone(),
         Arc::new(SoftwareKey::generate_p256()),
-        vec![PairedClient {
-            client_id: "pi5".into(),
-            public_key: f.client.public_key(),
-            keys: vec![sign.clone()],
-        }],
     );
     other.discover(&mut f.card).unwrap();
+    assert!(other
+        .ingest(
+            &serde_json::json!({"grants": [b64.encode(&first)]}),
+            NOW + 2
+        )
+        .is_empty());
     let twin = other
         .change_client("pi5", &[sign], 7_200, &mut f.card, PIN, NOW + 3)
         .unwrap();
@@ -797,7 +802,9 @@ fn sequence_numbers_never_go_back() {
         &serde_json::json!({"grants": [b64.encode(grant_bytes(&twin))]}),
         NOW + 3,
     );
-    assert_eq!(problems.len(), 0, "seq 1 < 2: ignored, not a conflict");
+    assert_eq!(problems.len(), 1, "same seq, different bytes: {problems:?}");
+    assert!(problems[0].contains("same sequence number"), "{problems:?}");
+    assert_eq!(f.engine.client_list(NOW + 3)[0].grant.window_secs, 3_600);
 }
 
 #[test]

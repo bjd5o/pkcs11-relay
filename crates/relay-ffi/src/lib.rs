@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex};
 
 use relay_approver::relay::RelayClient;
 use relay_approver::{
-    ApproverError, Checked, ClientState, Engine, EngineConfig, PairedClient, PairingView,
-    PendingRequest, Rejection,
+    ApproverError, Checked, ClientState, Engine, EngineConfig, PairingView, PendingRequest,
+    Rejection,
 };
 use relay_core::piv::{self, PivError};
 use relay_core::signing::DeviceSigner;
@@ -213,8 +213,6 @@ pub struct SavedState {
     pub auth_binding: Option<Vec<u8>>,
     /// The device key's signature binding the admin-auth key (wire-format §8.5).
     pub admin_binding: Option<Vec<u8>>,
-    /// Clients paired on this device before grants: honoured until a grant replaces them.
-    pub clients: Vec<SavedClient>,
     /// Verified client grants, with whether the person accepted each client on this device.
     pub grants: Vec<SavedGrant>,
     /// Verified client revocations, kept for good.
@@ -233,15 +231,6 @@ pub struct SavedGrant {
 pub struct SavedKey {
     pub fingerprint: String,
     pub slot: u8,
-}
-
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct SavedClient {
-    pub client_id: String,
-    /// DER SubjectPublicKeyInfo of the client identity key.
-    pub public_key: Vec<u8>,
-    /// Manifest key fingerprints the client may use.
-    pub keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -271,7 +260,6 @@ pub struct Status {
     pub max_client_grant_window_secs: u64,
     pub attestation: Option<AttestationStatus>,
     pub keys: Vec<KeyInfo>,
-    pub clients: Vec<SavedClient>,
     pub pin_failed: bool,
 }
 
@@ -334,13 +322,12 @@ pub struct ClientInfo {
     pub code: String,
     pub key_labels: Vec<String>,
     pub key_fingerprints: Vec<String>,
-    /// `None` for a client paired before grants.
-    pub approved_by: Option<String>,
-    pub issued_at: Option<u64>,
-    pub window_secs: Option<u64>,
-    pub expires_at: Option<u64>,
+    pub approved_by: String,
+    pub issued_at: u64,
+    pub window_secs: u64,
+    pub expires_at: u64,
     pub accepted: bool,
-    /// `valid`, `renews_soon`, `lapsed`, `cannot_verify`, `revoked_in_manifest` or `no_grant`.
+    /// `valid`, `renews_soon`, `lapsed`, `cannot_verify`, or `revoked_in_manifest`.
     pub state: String,
     /// From `GET /v1/clients` when synced: reported by the relay, not verified.
     pub host: Option<String>,
@@ -614,18 +601,6 @@ impl Approver {
         };
         let (manifest, sig) =
             fetch_manifest(&relay, &config, &signer, &policy, cached.as_ref(), t)?;
-        let mut clients = Vec::new();
-        for c in &saved.clients {
-            clients.push(PairedClient {
-                client_id: c.client_id.clone(),
-                public_key: PublicKey::from_spki(&c.public_key).map_err(invalid)?,
-                keys: c
-                    .keys
-                    .iter()
-                    .map(|k| Fingerprint::parse(k).map_err(invalid))
-                    .collect::<Result<_, _>>()?,
-            });
-        }
         let engine = Engine::new(
             EngineConfig {
                 device_id: config.device_id.clone(),
@@ -635,7 +610,6 @@ impl Approver {
             },
             manifest,
             device,
-            clients,
         );
         let mut key_map = Vec::new();
         for k in &saved.keys {
@@ -688,16 +662,6 @@ impl Approver {
             manifest_signature: Some(self.manifest_sig.lock().expect("lock").clone()),
             attestation: self.engine.attestation(),
             auth_binding: self.auth_binding.lock().expect("lock").clone(),
-            clients: self
-                .engine
-                .clients()
-                .into_iter()
-                .map(|c| SavedClient {
-                    client_id: c.client_id,
-                    public_key: c.public_key.spki().to_vec(),
-                    keys: c.keys.iter().map(|k| k.as_str().to_string()).collect(),
-                })
-                .collect(),
             keys: self
                 .engine
                 .key_map()
@@ -728,7 +692,6 @@ impl Approver {
                 .iter()
                 .map(|k| key_info(k, None))
                 .collect(),
-            clients: self.saved_state().clients,
             pin_failed: self.engine.pin_failed(),
         }
     }
@@ -806,18 +769,16 @@ impl Approver {
                 signature: b.clone().expect("set above"),
             }
         };
-        // The admin-key binding needs a device-key signature, so a biometric. A registration
-        // made in the background (a push token) goes without it until `enable_admin` or the
-        // next enrollment makes it.
+        // Like the relay-auth binding: signed once, at enrollment, and saved.
         let admin = match &self.admin {
             Some((_, key)) => {
                 let mut b = self.admin_binding.lock().expect("lock");
                 if b.is_none() {
-                    *b = self.engine.bind_admin_key(key).ok().map(|x| x.signature);
+                    *b = Some(self.engine.bind_admin_key(key)?.signature);
                 }
-                b.clone().map(|signature| relay_approver::AuthBinding {
+                Some(relay_approver::AuthBinding {
                     auth_key: key.clone(),
-                    signature,
+                    signature: b.clone().expect("set above"),
                 })
             }
             None => None,
@@ -1035,31 +996,7 @@ impl Approver {
         Ok(())
     }
 
-    /// Forget a client paired before grants, locally only.
-    pub fn remove_client(&self, client_id: String) -> bool {
-        self.engine.remove_client(&client_id)
-    }
-
-    /// Whether the relay knows this device's admin-auth key (the Clients and Approvers calls
-    /// need it).
-    pub fn admin_enabled(&self) -> bool {
-        self.admin.is_some() && self.admin_binding.lock().expect("lock").is_some()
-    }
-
-    /// Bind the admin-auth key with a device-key signature (call with the device key's
-    /// biometric context set) and register it with the relay. Needed once on a device enrolled
-    /// before admin keys.
-    pub fn enable_admin(&self) -> Result<(), RelayError> {
-        let (_, key) = self
-            .admin
-            .as_ref()
-            .ok_or_else(|| invalid("this device has no admin-auth key"))?;
-        let b = self.engine.bind_admin_key(key)?;
-        *self.admin_binding.lock().expect("lock") = Some(b.signature);
-        self.register()
-    }
-
-    /// Every client this device knows, from verified grants (and pairings from before grants).
+    /// Every client this device knows, from verified grants.
     /// Call `sync_clients` first for the full list and the relay's hints.
     pub fn clients(&self) -> Vec<ClientInfo> {
         let t = now();
@@ -1069,16 +1006,16 @@ impl Approver {
             .client_list(t)
             .into_iter()
             .map(|c| {
-                let g = c.grant.as_ref();
+                let g = &c.grant;
                 ClientInfo {
                     fingerprint: c.client_key.fingerprint().as_str().to_string(),
                     code: relay_core::pairing::pairing_code(c.client_key.spki()),
                     key_labels: labels(&m, &c.keys),
                     key_fingerprints: c.keys.iter().map(|k| k.as_str().to_string()).collect(),
-                    approved_by: g.map(|g| g.approved_by.clone()),
-                    issued_at: g.map(|g| g.issued_at),
-                    window_secs: g.map(|g| g.window_secs),
-                    expires_at: g.map(|g| g.not_after),
+                    approved_by: g.approved_by.clone(),
+                    issued_at: g.issued_at,
+                    window_secs: g.window_secs,
+                    expires_at: g.not_after,
                     accepted: c.accepted,
                     state: match c.state {
                         ClientState::Valid => "valid",
@@ -1086,7 +1023,6 @@ impl Approver {
                         ClientState::Lapsed => "lapsed",
                         ClientState::CannotVerify => "cannot_verify",
                         ClientState::RevokedInManifest => "revoked_in_manifest",
-                        ClientState::NoGrant => "no_grant",
                     }
                     .to_string(),
                     host: hints.get(&c.client_id).map(|h| h.0.clone()),
@@ -1120,8 +1056,7 @@ impl Approver {
         Ok(self.engine.ingest(&v, now()))
     }
 
-    /// Change a client's keys and window (or give a client paired before grants its first
-    /// grant): the card's attest key signs a new grant, posted with the admin key.
+    /// Change a client's keys and window: the card's attest key signs a new grant, posted with the admin key.
     pub fn change_client(
         &self,
         client_id: String,

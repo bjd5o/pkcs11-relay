@@ -137,7 +137,6 @@ fn setup_links_admit_devices_once_and_a_revoked_signer_stops_service() {
         },
         manifest,
         device,
-        Vec::new(),
     );
     engine.discover(&mut card).unwrap();
     engine

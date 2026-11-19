@@ -1130,7 +1130,7 @@ async fn approve_client(
         ));
     }
     let keys: Vec<String> = g.fields.keys.iter().map(|k| k.to_string()).collect();
-    let (fingerprint, grant) = (g.client_fingerprint().to_string(), Some(bytes));
+    let fingerprint = g.client_fingerprint().to_string();
     let p = {
         let mut inner = st.lock();
         let pos = inner
@@ -1154,8 +1154,8 @@ async fn approve_client(
         approved_keys: keys.clone(),
         approved_by: d.device_id.clone(),
         created_at: now() as i64,
-        grant_seq: u64::from(grant.is_some()),
-        grant,
+        grant: bytes,
+        grant_seq: 1,
         last_seen: 0,
     };
     db::insert_client(&st.db, &rec)
@@ -1478,7 +1478,7 @@ async fn pending_for_device(st: &AppState, d: &DeviceRecord) -> ApiResult<serde_
         if let Some(g) = db::client_by_id(&st.db, &id)
             .await
             .map_err(internal)?
-            .and_then(|c| c.grant)
+            .map(|c| c.grant)
         {
             grants.push(b64e(&g));
         }
@@ -1593,7 +1593,7 @@ async fn list_clients(
             json!({
                 "client_id": c.client_id,
                 "host": c.host,
-                "grant": c.grant.as_deref().map(b64e),
+                "grant": b64e(&c.grant),
                 "last_seen": c.last_seen,
             })
         })
@@ -1697,13 +1697,9 @@ async fn post_grant(
     }
     if !admin {
         // Without the admin key, only a renewal: the stored grant's keys and window, unchanged.
-        let same = c
-            .grant
-            .as_deref()
-            .and_then(|b| ClientGrant::decode(b).ok())
-            .is_some_and(|old| {
-                old.fields.keys == g.fields.keys && old.fields.window_secs == g.fields.window_secs
-            });
+        let same = ClientGrant::decode(&c.grant).is_ok_and(|old| {
+            old.fields.keys == g.fields.keys && old.fields.window_secs == g.fields.window_secs
+        });
         if !same {
             return Err(err(
                 StatusCode::FORBIDDEN,
@@ -1788,8 +1784,8 @@ async fn post_revocation(
     };
     let fp = r.client_fingerprint().to_string();
     let t = now();
-    // Served until the grant it cancels expires. Without a stored grant (an unknown client, or
-    // one paired before grants), as long as any grant could last.
+    // Served until the grant it cancels expires; for a client the relay doesn't know, as long
+    // as any grant could last.
     let mut live_until = t.saturating_add(max_window);
     if let Some(c) = db::client_by_id(&st.db, &client_id)
         .await
@@ -1812,7 +1808,7 @@ async fn post_revocation(
                 ),
             ));
         }
-        if let Some(g) = c.grant.as_deref().and_then(|b| ClientGrant::decode(b).ok()) {
+        if let Ok(g) = ClientGrant::decode(&c.grant) {
             live_until = g.fields.not_after;
         }
     }

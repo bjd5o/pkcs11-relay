@@ -296,17 +296,11 @@ final class AppModel: ObservableObject {
     /// The admin key's biometric context: evaluated when the screen needs it, reused for an
     /// hour, dropped when the app goes to the background.
     private func unlockAdmin() async throws {
-        guard let a = approver, let admin = adminKey, let device = deviceKey else { return }
+        guard let admin = adminKey else { return }
         if let at = adminUnlockedAt, Date().timeIntervalSince(at) < 3_600 { return }
         let ctx = try await evaluateBiometrics(reason: "Show and change your clients and approvers")
         admin.use(ctx)
         adminUnlockedAt = Date()
-        // A device enrolled before admin keys binds it once, with the device key.
-        if !a.adminEnabled() {
-            device.use(ctx)
-            defer { device.use(nil) }
-            try await Self.background { try a.enableAdmin() }
-        }
     }
 
     /// The app went to the background: the admin session ends.

@@ -279,3 +279,13 @@ Decision (Claude, for Brian's review):
 - **Revocation scope:** the app's Revoke cancels every grant up to the newest this device holds (at least seq 1, so a client paired before grants is covered too). The relay refuses a revocation below its stored grant's sequence (409 `RevocationStale`) and serves one until that grant's `not_after`, or for the manifest's maximum window when it holds no grant.
 - **Relay without a manifest:** a relay with no `manifest_file` checks only a grant's format; with an invalid manifest it refuses grant and revocation posts (503 `ManifestInvalid`). Devices verify everything themselves either way.
 - **The old pairing body:** the relay no longer accepts `{"fingerprint", "keys"}`; every approval carries a grant.
+
+## 2026-11-19: No backwards compatibility for client grants
+
+Context: the client-grant build carried paths for installs from before it: local pairing records honoured until a grant replaced them, a late admin-key binding (`enable_admin`), and the relay's column-by-column database migration.
+Decision (Brian): this is a demo app; drop databases and start clean rather than keep compatibility branches. This supersedes "Migration" in the 2026-11-18 entry and "Admin binding on older installs" and the pre-grant part of "Revocation scope" in the entry above.
+- The engine keeps no local pairing records: a client is known only through a verified grant, and every client on the Clients screen has one (no `no_grant` state).
+- The admin-key binding is made at enrollment, like the relay-auth binding, and saved; `register` fails if it can't be signed. `enable_admin` and `admin_enabled` are gone.
+- The relay creates its tables with every column and runs no migration; a stored client always has a grant. An older `relay.db` must be deleted.
+- The app's saved state has no `clients` list and requires `grants` and `revocations`; an older state file fails to load and the app starts unenrolled.
+- Revoke cancels up to the newest grant this device holds (no `max(1)`).

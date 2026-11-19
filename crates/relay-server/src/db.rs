@@ -18,7 +18,10 @@ const SCHEMA: &[&str] = &[
         host TEXT NOT NULL,
         approved_keys TEXT NOT NULL,
         approved_by TEXT NOT NULL,
-        created_at INTEGER NOT NULL)",
+        created_at INTEGER NOT NULL,
+        grant_bytes BLOB NOT NULL,
+        grant_seq INTEGER NOT NULL,
+        last_seen INTEGER NOT NULL)",
     "CREATE TABLE IF NOT EXISTS devices (
         device_id TEXT PRIMARY KEY,
         device_key BLOB NOT NULL,
@@ -28,8 +31,11 @@ const SCHEMA: &[&str] = &[
         push TEXT NOT NULL,
         last_seen INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
-        auth_key BLOB,
-        auth_fingerprint TEXT)",
+        auth_key BLOB NOT NULL,
+        auth_fingerprint TEXT NOT NULL UNIQUE,
+        setup_link_id TEXT,
+        admin_key BLOB,
+        admin_fingerprint TEXT UNIQUE)",
     "CREATE TABLE IF NOT EXISTS audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts INTEGER NOT NULL,
@@ -96,7 +102,6 @@ pub async fn open(data_dir: &Path) -> Result<Db, String> {
             .await
             .map_err(|e| e.to_string())?;
     }
-    migrate(&pool).await.map_err(|e| e.to_string())?;
     Ok(pool)
 }
 
@@ -110,11 +115,10 @@ pub struct ClientRecord {
     pub approved_keys: Vec<String>,
     pub approved_by: String,
     pub created_at: i64,
-    /// The latest client grant (wire-format §12.1), as the device signed it. `None` for a
-    /// client paired before grants.
+    /// The latest client grant (wire-format §12.1), as the device signed it.
     #[serde(skip)]
-    pub grant: Option<Vec<u8>>,
-    /// The grant's `seq`, 0 without one.
+    pub grant: Vec<u8>,
+    /// The grant's `seq`.
     pub grant_seq: u64,
     pub last_seen: i64,
 }
@@ -187,8 +191,8 @@ fn client_from_row(r: &sqlx::sqlite::SqliteRow) -> ClientRecord {
         approved_by: r.get("approved_by"),
         created_at: r.get("created_at"),
         grant: r.get("grant_bytes"),
-        grant_seq: r.get::<Option<i64>, _>("grant_seq").unwrap_or(0) as u64,
-        last_seen: r.get::<Option<i64>, _>("last_seen").unwrap_or(0),
+        grant_seq: r.get::<i64, _>("grant_seq") as u64,
+        last_seen: r.get("last_seen"),
     }
 }
 
@@ -262,7 +266,7 @@ pub async fn replace_grant(
 ) -> R<bool> {
     Ok(sqlx::query(
         "UPDATE clients SET grant_bytes = ?, grant_seq = ?, approved_keys = ?
-         WHERE client_id = ? AND COALESCE(grant_seq, 0) < ?",
+         WHERE client_id = ? AND grant_seq < ?",
     )
     .bind(grant)
     .bind(seq as i64)
@@ -664,64 +668,4 @@ pub async fn audit_since(db: &Db, since: i64) -> R<Vec<AuditEvent>> {
             response: r.get("response"),
         })
         .collect())
-}
-
-async fn add_columns(db: &Db, table: &str, wanted: &[(&str, &str)]) -> R<()> {
-    let cols: Vec<String> = sqlx::query(&format!("PRAGMA table_info({table})"))
-        .fetch_all(db)
-        .await?
-        .iter()
-        .map(|r| r.get::<String, _>("name"))
-        .collect();
-    for (col, ty) in wanted {
-        if !cols.iter().any(|c| c == col) {
-            sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {col} {ty}"))
-                .execute(db)
-                .await?;
-        }
-    }
-    Ok(())
-}
-
-/// Bring an older database up to date: relay-auth keys (devices registered without a separate
-/// key authenticate with their device key), setup links, admin-auth keys, and client grants.
-async fn migrate(db: &Db) -> R<()> {
-    add_columns(
-        db,
-        "devices",
-        &[
-            ("auth_key", "BLOB"),
-            ("auth_fingerprint", "TEXT"),
-            ("setup_link_id", "TEXT"),
-            ("admin_key", "BLOB"),
-            ("admin_fingerprint", "TEXT"),
-        ],
-    )
-    .await?;
-    add_columns(
-        db,
-        "clients",
-        &[
-            ("grant_bytes", "BLOB"),
-            ("grant_seq", "INTEGER"),
-            ("last_seen", "INTEGER"),
-        ],
-    )
-    .await?;
-    sqlx::query(
-        "CREATE UNIQUE INDEX IF NOT EXISTS devices_admin_fingerprint ON devices(admin_fingerprint)",
-    )
-    .execute(db)
-    .await?;
-    sqlx::query(
-        "UPDATE devices SET auth_key = device_key, auth_fingerprint = fingerprint WHERE auth_fingerprint IS NULL",
-    )
-    .execute(db)
-    .await?;
-    sqlx::query(
-        "CREATE UNIQUE INDEX IF NOT EXISTS devices_auth_fingerprint ON devices(auth_fingerprint)",
-    )
-    .execute(db)
-    .await?;
-    Ok(())
 }

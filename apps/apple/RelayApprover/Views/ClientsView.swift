@@ -116,15 +116,9 @@ struct ClientDetailView: View {
                 }
             }
             Section("Grant") {
-                if let by = client.approvedBy, let at = client.issuedAt {
-                    LabeledContent("Signed on", value: "\(by), \(date(at))")
-                }
-                if let w = client.windowSecs { LabeledContent("Window", value: duration(w)) }
-                if let e = client.expiresAt { LabeledContent("Expires", value: date(e)) }
-                if client.state == "no_grant" {
-                    Text("Paired before grants: other approvers can't answer this client until you give it a grant with Change keys.")
-                        .font(.footnote)
-                }
+                LabeledContent("Signed on", value: "\(client.approvedBy), \(date(client.issuedAt))")
+                LabeledContent("Window", value: duration(client.windowSecs))
+                LabeledContent("Expires", value: date(client.expiresAt))
             }
             Section("Keys") {
                 ForEach(model.approver?.manifestKeys() ?? [], id: \.fingerprint) { k in
@@ -150,7 +144,7 @@ struct ClientDetailView: View {
                 Button("Renew and tap YubiKey") {
                     act { await model.renewClient(client, pin: $0) }
                 }
-                .disabled(!ready || client.state == "no_grant")
+                .disabled(!ready)
                 Button("Revoke", role: .destructive) { confirmRevoke = true }
                     .disabled(!ready)
             } footer: {
@@ -160,7 +154,7 @@ struct ClientDetailView: View {
         .navigationTitle(client.clientId)
         .onAppear {
             chosen = Set(client.keyFingerprints)
-            if let w = client.windowSecs { window = w }
+            window = client.windowSecs
         }
         .confirmationDialog("Revoke \(client.clientId)?", isPresented: $confirmRevoke, titleVisibility: .visible) {
             Button("Revoke and tap YubiKey", role: .destructive) {
@@ -188,7 +182,6 @@ func stateText(_ s: String) -> String {
     case "lapsed": return "Lapsed (renews at its next approval)"
     case "cannot_verify": return "Can't verify (its attest key left the manifest)"
     case "revoked_in_manifest": return "Revoked in the manifest"
-    case "no_grant": return "No grant: renew to share with other approvers"
     default: return s
     }
 }
@@ -196,7 +189,7 @@ func stateText(_ s: String) -> String {
 func stateColor(_ s: String) -> Color {
     switch s {
     case "valid": return .green
-    case "renews_soon", "lapsed", "no_grant": return .orange
+    case "renews_soon", "lapsed": return .orange
     default: return .red
     }
 }
