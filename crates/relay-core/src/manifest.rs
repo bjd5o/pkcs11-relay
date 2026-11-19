@@ -27,6 +27,15 @@ pub const MIN_ATTESTATION_WINDOW: u64 = 60;
 pub const MAX_ATTESTATION_WINDOW: u64 = 365 * 86_400;
 pub const DEFAULT_MAX_ATTESTATION_WINDOW: u64 = 7 * 86_400;
 
+/// Bounds of `max_client_grant_window_secs` (wire-format §9.2): the same as the attestation
+/// window's. New manifests default to 30 days.
+pub const MIN_CLIENT_GRANT_WINDOW: u64 = MIN_ATTESTATION_WINDOW;
+pub const MAX_CLIENT_GRANT_WINDOW: u64 = MAX_ATTESTATION_WINDOW;
+pub const DEFAULT_MAX_CLIENT_GRANT_WINDOW: u64 = 30 * 86_400;
+
+/// Most entries in `revoked_clients` or `revoked_devices` (wire-format §9.2).
+pub const MAX_REVOKED: usize = 1_024;
+
 /// Whether `manifest_url` points at the relay's own `/v1/manifest` (same origin as
 /// `relay_url`). Fetchers then use the relay's trust anchors for TLS; the manifest's signature,
 /// not the transport, is what makes it trustworthy either way.
@@ -133,6 +142,11 @@ struct ManifestJson {
     valid_until: u64,
     require_hardware_attestation: bool,
     max_attestation_window_secs: u64,
+    max_client_grant_window_secs: u64,
+    #[serde(default)]
+    revoked_clients: Option<Vec<String>>,
+    #[serde(default)]
+    revoked_devices: Option<Vec<String>>,
     keys: Vec<KeyJson>,
 }
 
@@ -185,6 +199,12 @@ pub struct Manifest {
     pub require_hardware_attestation: bool,
     /// The longest attestation window clients accept (wire-format §5.1 step 5).
     pub max_attestation_window_secs: u64,
+    /// The longest client grant window approvers accept (wire-format §12.2).
+    pub max_client_grant_window_secs: u64,
+    /// Client identity-key fingerprints refused everywhere (wire-format §9.2). Sorted.
+    pub revoked_clients: Vec<Fingerprint>,
+    /// Device-key fingerprints refused everywhere (wire-format §9.2, §6.2 check 1). Sorted.
+    pub revoked_devices: Vec<Fingerprint>,
     pub keys: Vec<ManifestKey>,
     bytes: Vec<u8>,
 }
@@ -197,6 +217,16 @@ impl Manifest {
 
     pub fn key(&self, fp: &Fingerprint) -> Option<&ManifestKey> {
         self.keys.iter().find(|k| &k.fingerprint == fp)
+    }
+
+    /// Whether this client identity key is in `revoked_clients`.
+    pub fn client_revoked(&self, fp: &Fingerprint) -> bool {
+        self.revoked_clients.binary_search(fp).is_ok()
+    }
+
+    /// Whether this device key is in `revoked_devices`.
+    pub fn device_revoked(&self, fp: &Fingerprint) -> bool {
+        self.revoked_devices.binary_search(fp).is_ok()
     }
 
     /// Token names, sorted: slot order is stable across restarts.
@@ -318,6 +348,30 @@ fn malformed(m: impl Into<String>) -> Error {
     Error::ManifestMalformed(m.into())
 }
 
+/// A `revoked_clients` or `revoked_devices` list: valid fingerprints, sorted bytewise, no
+/// duplicates, at most [`MAX_REVOKED`]. Absent means empty.
+fn parse_revoked(field: &str, list: Option<Vec<String>>) -> Result<Vec<Fingerprint>> {
+    let list = list.unwrap_or_default();
+    if list.len() > MAX_REVOKED {
+        return Err(malformed(format!(
+            "{field} has more than {MAX_REVOKED} entries"
+        )));
+    }
+    let mut out: Vec<Fingerprint> = Vec::with_capacity(list.len());
+    for f in &list {
+        let fp = Fingerprint::parse(f).map_err(|e| malformed(format!("{field}: {e}")))?;
+        if let Some(prev) = out.last() {
+            if prev.as_str().as_bytes() >= fp.as_str().as_bytes() {
+                return Err(malformed(format!(
+                    "{field} must be sorted with no duplicates"
+                )));
+            }
+        }
+        out.push(fp);
+    }
+    Ok(out)
+}
+
 fn parse(bytes: &[u8]) -> Result<Manifest> {
     let j: ManifestJson =
         serde_json::from_slice(bytes).map_err(|e| malformed(format!("invalid JSON: {e}")))?;
@@ -335,6 +389,15 @@ fn parse(bytes: &[u8]) -> Result<Manifest> {
             "max_attestation_window_secs must be {MIN_ATTESTATION_WINDOW}-{MAX_ATTESTATION_WINDOW}"
         )));
     }
+    if !(MIN_CLIENT_GRANT_WINDOW..=MAX_CLIENT_GRANT_WINDOW)
+        .contains(&j.max_client_grant_window_secs)
+    {
+        return Err(malformed(format!(
+            "max_client_grant_window_secs must be {MIN_CLIENT_GRANT_WINDOW}-{MAX_CLIENT_GRANT_WINDOW}"
+        )));
+    }
+    let revoked_clients = parse_revoked("revoked_clients", j.revoked_clients)?;
+    let revoked_devices = parse_revoked("revoked_devices", j.revoked_devices)?;
     if j.keys.len() > MAX_KEYS {
         return Err(malformed("too many keys"));
     }
@@ -420,6 +483,9 @@ fn parse(bytes: &[u8]) -> Result<Manifest> {
         valid_until: j.valid_until,
         require_hardware_attestation: j.require_hardware_attestation,
         max_attestation_window_secs: j.max_attestation_window_secs,
+        max_client_grant_window_secs: j.max_client_grant_window_secs,
+        revoked_clients,
+        revoked_devices,
         keys,
         bytes: bytes.to_vec(),
     })
@@ -467,11 +533,16 @@ pub struct ManifestDraft {
     pub valid_until: u64,
     pub require_hardware_attestation: bool,
     pub max_attestation_window_secs: u64,
+    pub max_client_grant_window_secs: u64,
+    /// Written only when non-empty; sorted on output.
+    pub revoked_clients: Vec<Fingerprint>,
+    pub revoked_devices: Vec<Fingerprint>,
     pub keys: Vec<DraftKey>,
 }
 
 impl Default for ManifestDraft {
-    /// Hardware attestation required, a 7-day maximum window, no keys.
+    /// Hardware attestation required, a 7-day maximum attestation window, a 30-day maximum
+    /// client grant window, nothing revoked, no keys.
     fn default() -> Self {
         ManifestDraft {
             version: 0,
@@ -479,6 +550,9 @@ impl Default for ManifestDraft {
             valid_until: 0,
             require_hardware_attestation: true,
             max_attestation_window_secs: DEFAULT_MAX_ATTESTATION_WINDOW,
+            max_client_grant_window_secs: DEFAULT_MAX_CLIENT_GRANT_WINDOW,
+            revoked_clients: Vec::new(),
+            revoked_devices: Vec::new(),
             keys: Vec::new(),
         }
     }
@@ -504,6 +578,9 @@ impl ManifestDraft {
             valid_until: m.valid_until,
             require_hardware_attestation: m.require_hardware_attestation,
             max_attestation_window_secs: m.max_attestation_window_secs,
+            max_client_grant_window_secs: m.max_client_grant_window_secs,
+            revoked_clients: m.revoked_clients,
+            revoked_devices: m.revoked_devices,
             keys: m
                 .keys
                 .into_iter()
@@ -544,15 +621,28 @@ impl ManifestDraft {
                 v
             })
             .collect();
-        let doc = serde_json::json!({
+        let mut doc = serde_json::json!({
             "v": 1,
             "version": self.version,
             "issued_at": self.issued_at,
             "valid_until": self.valid_until,
             "require_hardware_attestation": self.require_hardware_attestation,
             "max_attestation_window_secs": self.max_attestation_window_secs,
+            "max_client_grant_window_secs": self.max_client_grant_window_secs,
             "keys": keys,
         });
+        fn sorted(l: &[Fingerprint]) -> Vec<&str> {
+            let mut v: Vec<&str> = l.iter().map(|f| f.as_str()).collect();
+            v.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            v.dedup();
+            v
+        }
+        if !self.revoked_clients.is_empty() {
+            doc["revoked_clients"] = serde_json::json!(sorted(&self.revoked_clients));
+        }
+        if !self.revoked_devices.is_empty() {
+            doc["revoked_devices"] = serde_json::json!(sorted(&self.revoked_devices));
+        }
         let mut out = serde_json::to_vec_pretty(&doc).map_err(|e| malformed(e.to_string()))?;
         out.push(b'\n');
         parse(&out)?;

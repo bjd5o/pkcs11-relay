@@ -215,7 +215,14 @@ fn device_policy_fields_are_required_and_bounded() {
     let (json, _) = fx.manifest(Some((2, 2)), true);
     let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
     assert_eq!(v["max_attestation_window_secs"], 7 * 86_400);
-    let cases: [(&str, Option<serde_json::Value>); 5] = [
+    assert_eq!(v["max_client_grant_window_secs"], 30 * 86_400);
+    let cases: [(&str, Option<serde_json::Value>); 8] = [
+        ("max_client_grant_window_secs", None),
+        ("max_client_grant_window_secs", Some(serde_json::json!(59))),
+        (
+            "max_client_grant_window_secs",
+            Some(serde_json::json!(365 * 86_400 + 1)),
+        ),
         ("require_hardware_attestation", None),
         ("max_attestation_window_secs", None),
         ("max_attestation_window_secs", Some(serde_json::json!(59))),
@@ -242,4 +249,71 @@ fn device_policy_fields_are_required_and_bounded() {
             verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(), None, now(), 60).unwrap_err();
         assert!(matches!(e, Error::ManifestMalformed(_)), "{field}: {e}");
     }
+}
+
+fn fp(n: u8) -> String {
+    format!("sha256:{}", hex::encode([n; 32]))
+}
+
+#[test]
+fn revocation_lists_are_sorted_bounded_fingerprints() {
+    let fx = Fx::new();
+    let (json, _) = fx.manifest(Some((2, 2)), true);
+    let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    let signed = |m: &serde_json::Value| {
+        let bytes = serde_json::to_vec(m).unwrap();
+        let sig = fx.pgp.sign_detached(&bytes).unwrap().into_bytes();
+        verify_manifest(&bytes, &sig, &fx.signer, &fx.policy(), None, now(), 60)
+    };
+    // Absent means empty.
+    let m = signed(&v).unwrap();
+    assert!(m.revoked_clients.is_empty() && m.revoked_devices.is_empty());
+    for field in ["revoked_clients", "revoked_devices"] {
+        let mut ok = v.clone();
+        ok[field] = serde_json::json!([fp(1), fp(2)]);
+        let m = signed(&ok).unwrap();
+        let first = relay_core::Fingerprint::parse(&fp(1)).unwrap();
+        let other = relay_core::Fingerprint::parse(&fp(3)).unwrap();
+        if field == "revoked_clients" {
+            assert!(m.client_revoked(&first) && !m.client_revoked(&other));
+            assert!(!m.device_revoked(&first));
+        } else {
+            assert!(m.device_revoked(&first) && !m.device_revoked(&other));
+            assert!(!m.client_revoked(&first));
+        }
+        let too_many: Vec<String> = (0..=1_024u32)
+            .map(|i| format!("sha256:{:064x}", i))
+            .collect();
+        let bad = [
+            serde_json::json!([fp(2), fp(1)]),
+            serde_json::json!([fp(1), fp(1)]),
+            serde_json::json!(["sha256:abc"]),
+            serde_json::json!([fp(1).to_uppercase()]),
+            serde_json::json!(too_many),
+            serde_json::json!("sha256:x"),
+        ];
+        for b in bad {
+            let mut m = v.clone();
+            m[field] = b;
+            let e = signed(&m).unwrap_err();
+            assert!(matches!(e, Error::ManifestMalformed(_)), "{field}: {e}");
+        }
+    }
+}
+
+#[test]
+fn drafts_write_revocation_lists_sorted_and_only_when_present() {
+    let fx = Fx::new();
+    let (json, _) = fx.manifest(Some((2, 2)), true);
+    let mut d = ManifestDraft::from_json(&json).unwrap();
+    assert!(!String::from_utf8_lossy(&d.to_json().unwrap()).contains("revoked_"));
+    let f = |n| relay_core::Fingerprint::parse(&fp(n)).unwrap();
+    d.revoked_clients = vec![f(9), f(3), f(9)];
+    d.revoked_devices = vec![f(4)];
+    let out = d.to_json().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["revoked_clients"], serde_json::json!([fp(3), fp(9)]));
+    assert_eq!(v["revoked_devices"], serde_json::json!([fp(4)]));
+    let back = ManifestDraft::from_json(&out).unwrap();
+    assert_eq!(back.revoked_clients, vec![f(3), f(9)]);
 }

@@ -75,6 +75,9 @@ fn draft(fx_keys: &[(Role, &str, u8, PublicKey)], version: u64) -> ManifestDraft
         // span ISSUED_AT..VALID_UNTIL (30 days).
         require_hardware_attestation: false,
         max_attestation_window_secs: 30 * 86_400,
+        max_client_grant_window_secs: 30 * 86_400,
+        revoked_clients: Vec::new(),
+        revoked_devices: Vec::new(),
     }
 }
 

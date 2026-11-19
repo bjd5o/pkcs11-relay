@@ -48,6 +48,7 @@
     }
   ],
   "max_attestation_window_secs": 2592000,
+  "max_client_grant_window_secs": 2592000,
   "require_hardware_attestation": false,
   "v": 1,
   "valid_until": 1797292800,

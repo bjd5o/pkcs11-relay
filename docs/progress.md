@@ -133,3 +133,13 @@ Found during the gates; out of scope for the MVP.
 - **Changing a paired client's keys** (Mac, 2026-11-18): the relay can't add a key to a client that is already paired; it has to be revoked and paired again. Add a re-pairing flow or an approver-side "change keys" action.
 - **Adding a device after clients are paired** (iPad, 2026-11-18): each approver only answers clients it approved itself (the relay isn't trusted to say which clients exist), so a new device rejects every request from existing clients as "unpaired client" until the client is revoked and paired again with the new device approving. Needs a way to bring a paired client to a new device without trusting the relay, for example a pairing approval signed by an existing device, or re-pairing that doesn't need a revoke; the app should also say why a request failed its checks.
 - **Client grants, Clients and Approvers screens:** design draft in `docs/client-grants.md` (covers the two items above and the rejection reasons).
+
+## Client grants (design `docs/client-grants.md`, approved 2026-11-18)
+
+- [x] Manifest: required `max_client_grant_window_secs` (60–31 536 000, default 30 days in new drafts), optional sorted `revoked_clients` and `revoked_devices` (at most 1 024 each); fixtures re-signed. Existing manifests without the new field no longer verify and must be re-signed (the `gate-m5` manifest included)
+- [ ] relay-core: client grants and revocations (`verify_client_grant`, `verify_client_grant_signer`, `verify_client_revocation`), byte-exact vectors
+- [ ] relay-core: `revoked_devices` in `verify_response` check 1, the admin-auth key binding, the new reason codes
+- [ ] Relay: grant and revocation storage, approval with a grant, `GET /v1/clients`, `GET /v1/devices`, grant and revocation posts, admin-auth key, manifest revocation lists
+- [ ] Engine and FFI: grant store, signing grants on the card at pairing, acceptance per device, renewal at 75% and after a lapse, migration from local pairings
+- [ ] App: Clients and Approvers screens, first-request and lapse notices, rejection reasons in the inbox
+- [ ] Test approver and docker gate; a test per new Failure handling row; hardware gate
