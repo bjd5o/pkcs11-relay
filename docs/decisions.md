@@ -263,3 +263,8 @@ Decision (Brian):
 
 Context: with client grants (`docs/client-grants.md`), a device enrolled after a client was paired verifies that client's grant without re-pairing. The draft had the device show a one-time, information-only summary of the clients that came with the setup.
 Decision (Brian): the person accepts each client on each device. The client's first request on a device carries a notice naming the client, the device that paired it, the date and its keys; approving the request also accepts the client, with no separate prompt. Denying leaves the client unaccepted, and the notice returns with its next request. Acceptance is per client key and stays local. Pairing, changing or renewing a client on the device also accepts it, and so do pre-grant local pairing records. Later grants for an accepted client are followed without a new notice; a revocation clears acceptance.
+
+## 2026-11-19: Text arrays in signed CBOR
+
+Context: the client grant (wire-format §12.1) lists its keys as an array of text strings, but §1.2 allowed no arrays in signed messages, and the decoder rejected them.
+Decision (Brian): allow definite-length arrays whose items are all text strings, at most 64 items, anywhere a field table says so. Other arrays stay rejected. Deterministic encoding is unchanged: items keep their order, and the grant requires `keys` sorted. The alternative, one comma-joined text field, was rejected because it needs its own list syntax checked by hand.

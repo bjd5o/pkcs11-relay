@@ -26,12 +26,12 @@ Every signed message is a CBOR map encoded with RFC 8949 core deterministic enco
 - definite lengths only;
 - map keys sorted by the bytewise order of their encoded form. Every key here is a text string under 24 bytes, so the order is **shorter keys first, then bytewise by UTF-8**. The field tables below list fields in that order.
 
-Only these CBOR types appear: unsigned integer (major type 0), byte string (2), text string (3) and map (5). Never negative integers, arrays, tags, floats, `null`, `undefined` or booleans. An optional field that has no value is **left out**, never encoded as `null`.
+Only these CBOR types appear: unsigned integer (major type 0), byte string (2), text string (3), map (5), and array (4) of text strings only, with at most 64 items (used by the client grant's `keys`, §12.1). Never negative integers, arrays holding anything but text strings, tags, floats, `null`, `undefined` or booleans. An optional field that has no value is **left out**, never encoded as `null`.
 
 Decoders are strict. They reject, with no partial result:
 
 - input that is not exactly one CBOR item (trailing bytes included);
-- any type outside the four above;
+- any type outside those above, including an array with an item that is not a text string, or with more than 64 items;
 - input that is not canonical. The check: decode, re-encode, and compare byte for byte with the input;
 - unknown keys, duplicate keys, missing required keys, or a field of the wrong type;
 - `v` other than `1`;

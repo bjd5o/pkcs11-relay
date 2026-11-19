@@ -1,4 +1,5 @@
-//! Deterministic CBOR (RFC 8949 §4.2.1) restricted to the four types the wire format uses.
+//! Deterministic CBOR (RFC 8949 §4.2.1) restricted to the types the wire format uses: unsigned
+//! integers, byte strings, text strings, maps, and arrays of text strings.
 //!
 //! Decoding goes through `ciborium`, then converts to [`Value`], rejecting anything outside
 //! the subset, then re-encodes and requires the result to equal the input byte for byte. That
@@ -12,6 +13,8 @@ use crate::error::{Error, Result};
 pub const MAX_MESSAGE_LEN: usize = 65_536;
 /// Deepest map nesting allowed (wire-format §1.2).
 pub const MAX_DEPTH: usize = 3;
+/// Most items in one array (wire-format §1.2).
+pub const MAX_ARRAY_LEN: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
@@ -19,6 +22,8 @@ pub enum Value {
     Bytes(Vec<u8>),
     Text(String),
     Map(BTreeMap<String, Value>),
+    /// An array whose items are all text strings; the only array the wire format allows.
+    TextArray(Vec<String>),
 }
 
 fn head(out: &mut Vec<u8>, major: u8, n: u64) {
@@ -52,6 +57,12 @@ fn encode_into(out: &mut Vec<u8>, v: &Value) {
             out.extend_from_slice(b);
         }
         Value::Text(s) => encode_text(out, s),
+        Value::TextArray(items) => {
+            head(out, 4, items.len() as u64);
+            for t in items {
+                encode_text(out, t);
+            }
+        }
         Value::Map(m) => {
             // Sort by the encoded key bytes (RFC 8949 §4.2.1), not by string order.
             let mut entries: Vec<(Vec<u8>, &Value)> = m
@@ -110,7 +121,21 @@ fn convert(v: ciborium::Value, depth: usize) -> Result<Value> {
         C::Tag(..) => return Err(Error::Decode("CBOR tags are not allowed".into())),
         C::Float(_) => return Err(Error::Decode("floats are not allowed".into())),
         C::Bool(_) | C::Null => return Err(Error::Decode("simple values are not allowed".into())),
-        C::Array(_) => return Err(Error::Decode("arrays are not allowed".into())),
+        C::Array(items) => {
+            if items.len() > MAX_ARRAY_LEN {
+                return Err(Error::Decode(format!(
+                    "arrays hold at most {MAX_ARRAY_LEN} items"
+                )));
+            }
+            let items = items
+                .into_iter()
+                .map(|i| match i {
+                    C::Text(t) => Ok(t),
+                    _ => Err(Error::Decode("array items must be text strings".into())),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Value::TextArray(items)
+        }
         _ => return Err(Error::Decode("unsupported CBOR item".into())),
     })
 }
@@ -186,6 +211,15 @@ impl Fields {
         }
     }
 
+    pub fn text_array(&mut self, key: &str) -> Result<Vec<String>> {
+        match self.take(key)? {
+            Value::TextArray(a) => Ok(a),
+            _ => Err(Error::Decode(format!(
+                "field `{key}` is not an array of text strings"
+            ))),
+        }
+    }
+
     pub fn map(&mut self, key: &str) -> Result<Fields> {
         match self.take(key)? {
             Value::Map(m) => Ok(Fields::new(m)),
@@ -246,6 +280,10 @@ impl MapBuilder {
         self.0.insert(k.into(), Value::Text(v.into()));
         self
     }
+    pub fn text_array(mut self, k: &str, v: &[String]) -> Self {
+        self.0.insert(k.into(), Value::TextArray(v.to_vec()));
+        self
+    }
     pub fn map(mut self, k: &str, v: MapBuilder) -> Self {
         self.0.insert(k.into(), Value::Map(v.0));
         self
@@ -292,6 +330,29 @@ mod tests {
     }
 
     #[test]
+    fn text_arrays_only() {
+        // {"k": ["a", "b"]}
+        let ok = hex::decode("a1616b8261616162").unwrap();
+        let mut f = Fields::new(decode_map(&ok).unwrap());
+        assert_eq!(f.text_array("k").unwrap(), vec!["a", "b"]);
+        assert_eq!(
+            MapBuilder::new()
+                .text_array("k", &["a".into(), "b".into()])
+                .encode(),
+            ok
+        );
+        // An empty array, an array of integers, a nested array, an indefinite-length array.
+        assert!(decode_map(&hex::decode("a1616b80").unwrap()).is_ok());
+        for bad in ["a1616b820102", "a1616b81816161", "a1616b9f6161ff"] {
+            assert!(decode_map(&hex::decode(bad).unwrap()).is_err(), "{bad}");
+        }
+        // More than 64 items.
+        let mut long = hex::decode("a1616b9841").unwrap();
+        long.extend(std::iter::repeat_n([0x61, 0x61], 65).flatten());
+        assert!(decode_map(&long).is_err());
+    }
+
+    #[test]
     fn rejects_non_shortest_integer() {
         // {"v": 1} with 1 encoded as 0x18 0x01
         let bad = hex::decode("a161761801").unwrap();
@@ -312,13 +373,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicates_tags_floats_bools_arrays_trailing() {
+    fn rejects_duplicates_tags_floats_bools_int_arrays_trailing() {
         for h in [
             "a26176016176 02", // duplicate key
             "a16176c101",      // tag
             "a16176f93c00",    // float16
             "a16176f5",        // true
-            "a1617680",        // array
+            "a161768101",      // array of integers
             "a161760100",      // trailing byte
             "a1617620",        // negative int
         ] {
