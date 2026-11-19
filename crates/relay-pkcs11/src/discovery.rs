@@ -33,6 +33,8 @@ pub struct Discovery {
     manifest_checked_at: u64,
     keys: Option<(Vec<Fingerprint>, u64)>,
     pairing_logged: bool,
+    /// Whether "this client is revoked in the manifest" was logged (once per process).
+    revoked_logged: bool,
     /// Stable object handles for the life of the process: (fingerprint, is_public) -> handle.
     handles: HashMap<(Fingerprint, bool), u64>,
 }
@@ -96,6 +98,7 @@ impl Discovery {
             manifest_checked_at: 0,
             keys,
             pairing_logged: false,
+            revoked_logged: false,
             handles: HashMap::new(),
         }
     }
@@ -247,8 +250,21 @@ impl Discovery {
     ) -> Vec<SlotView> {
         let t = now();
         self.refresh_manifest(cfg, signer, t);
-        if self.manifest.is_none() {
+        let Some(m) = self.manifest.as_ref() else {
             return Vec::new();
+        };
+        // Failure handling: "This client's own key is in the manifest's revoked_clients": the
+        // slots stay, with no keys in them, and the relay isn't asked.
+        let own = relay.key().public_key();
+        if m.client_revoked(own.fingerprint()) {
+            if !self.revoked_logged {
+                log::warn(&format!(
+                    "this client's key {} is in the manifest's revoked_clients: no keys are offered",
+                    own.fingerprint()
+                ));
+                self.revoked_logged = true;
+            }
+            return visible_slots(m, own.fingerprint(), &[]);
         }
         self.refresh_keys(cfg, relay, t);
         let reachable: &[Fingerprint] =
@@ -256,22 +272,7 @@ impl Discovery {
         let Some(m) = self.manifest.as_ref() else {
             return Vec::new();
         };
-        m.tokens()
-            .into_iter()
-            .map(|token| SlotView {
-                keys: m
-                    .keys
-                    .iter()
-                    .filter(|k| {
-                        k.token == token
-                            && k.role != Role::Attest
-                            && reachable.contains(&k.fingerprint)
-                    })
-                    .cloned()
-                    .collect(),
-                token,
-            })
-            .collect()
+        visible_slots(m, own.fingerprint(), reachable)
     }
 
     /// The handle for a key's private (`false`) or public (`true`) object.
@@ -279,6 +280,29 @@ impl Discovery {
         let next = self.handles.len() as u64 + 1;
         *self.handles.entry((fp.clone(), public)).or_insert(next)
     }
+}
+
+/// One slot per manifest token, holding the manifest's non-attest keys the relay says are
+/// reachable; none at all when the manifest revokes this client's key (`own`).
+fn visible_slots(m: &Manifest, own: &Fingerprint, reachable: &[Fingerprint]) -> Vec<SlotView> {
+    let revoked = m.client_revoked(own);
+    m.tokens()
+        .into_iter()
+        .map(|token| SlotView {
+            keys: m
+                .keys
+                .iter()
+                .filter(|k| {
+                    !revoked
+                        && k.token == token
+                        && k.role != Role::Attest
+                        && reachable.contains(&k.fingerprint)
+                })
+                .cloned()
+                .collect(),
+            token,
+        })
+        .collect()
 }
 
 pub fn host_name(cfg: &Config) -> String {
@@ -294,4 +318,53 @@ pub fn host_name(cfg: &Config) -> String {
         }
     }
     std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use relay_core::manifest::{DraftKey, ManifestDraft};
+    use relay_core::signing::SoftwareKey;
+
+    /// Failure handling: "This client's own key is in the manifest's revoked_clients" → slots
+    /// without keys.
+    #[test]
+    fn a_client_revoked_in_the_manifest_sees_slots_without_keys() {
+        let sign = SoftwareKey::generate_p256().public_key();
+        let me = SoftwareKey::generate_ed25519().public_key();
+        let draft = |revoked: Vec<Fingerprint>| ManifestDraft {
+            version: 1,
+            issued_at: 1,
+            valid_until: 2,
+            require_hardware_attestation: false,
+            keys: vec![DraftKey {
+                role: Role::Sign,
+                label: "sign".into(),
+                id: vec![1],
+                token: "yk".into(),
+                public_key: sign.clone(),
+                hardware_attestation: None,
+            }],
+            revoked_clients: revoked,
+            ..Default::default()
+        };
+        let m = |d: ManifestDraft| Manifest::from_json_unverified(&d.to_json().unwrap()).unwrap();
+        let reachable = vec![sign.fingerprint().clone()];
+        let ok = visible_slots(&m(draft(vec![])), me.fingerprint(), &reachable);
+        assert_eq!((ok.len(), ok[0].keys.len()), (1, 1));
+        let other = SoftwareKey::generate_ed25519().public_key();
+        let not_me = visible_slots(
+            &m(draft(vec![other.fingerprint().clone()])),
+            me.fingerprint(),
+            &reachable,
+        );
+        assert_eq!(not_me[0].keys.len(), 1, "someone else's revocation");
+        let revoked = visible_slots(
+            &m(draft(vec![me.fingerprint().clone()])),
+            me.fingerprint(),
+            &reachable,
+        );
+        assert_eq!(revoked.len(), 1, "the slot stays");
+        assert!(revoked[0].keys.is_empty(), "with no keys in it");
+    }
 }

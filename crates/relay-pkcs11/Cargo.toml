@@ -23,6 +23,8 @@ hex.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+# The core's test helpers (Manifest::from_json_unverified) for unit tests.
+relay-core = { workspace = true, features = ["test-util"] }
 relay-server.workspace = true
 relay-softcard.workspace = true
 relay-test-approver = { path = "../relay-test-approver" }
