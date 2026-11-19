@@ -266,6 +266,30 @@ enum ManifestCmd {
         /// The longest attestation window clients accept, e.g. `7d`, `12h`, `30m`.
         #[arg(long, value_parser = util::parse_duration)]
         max_attestation_window: Option<u64>,
+        /// The longest client grant window approvers accept, e.g. `30d`.
+        #[arg(long, value_parser = util::parse_duration)]
+        max_client_grant_window: Option<u64>,
+    },
+    /// List a client identity key in `revoked_clients`: the relay and every approver refuse
+    /// it (an emergency stop; sign and publish the manifest afterwards).
+    RevokeClient {
+        #[arg(long)]
+        manifest: PathBuf,
+        /// The client key's fingerprint (`sha256:…`), as the Clients screen shows it.
+        fingerprint: String,
+        /// Take it off the list instead (the client then needs a new grant).
+        #[arg(long)]
+        remove: bool,
+    },
+    /// List a device key in `revoked_devices`: the relay refuses the device and providers
+    /// reject its responses (an emergency stop; sign and publish the manifest afterwards).
+    RevokeDevice {
+        #[arg(long)]
+        manifest: PathBuf,
+        /// The device key's fingerprint (`sha256:…`), as the Approvers screen shows it.
+        fingerprint: String,
+        #[arg(long)]
+        remove: bool,
     },
     /// Remove keys by fingerprint or label.
     Remove {
@@ -521,9 +545,43 @@ fn run(cli: Cli) -> Result<(), String> {
                 manifest: m,
                 require_hardware_attestation,
                 max_attestation_window,
+                max_client_grant_window,
             } => {
-                manifest::set(&m, require_hardware_attestation, max_attestation_window)?;
+                manifest::set(
+                    &m,
+                    require_hardware_attestation,
+                    max_attestation_window,
+                    max_client_grant_window,
+                )?;
                 print!("{}", manifest::show(&m, &hw::Anchors::load(None)?)?);
+                Ok(())
+            }
+            ManifestCmd::RevokeClient {
+                manifest: m,
+                fingerprint,
+                remove,
+            } => {
+                let changed =
+                    manifest::revoke(&m, manifest::Revoked::Clients, &fingerprint, remove)?;
+                println!(
+                    "{} {fingerprint} {} revoked_clients; sign and publish the manifest",
+                    if changed { "listed" } else { "already" },
+                    if remove { "off" } else { "in" }
+                );
+                Ok(())
+            }
+            ManifestCmd::RevokeDevice {
+                manifest: m,
+                fingerprint,
+                remove,
+            } => {
+                let changed =
+                    manifest::revoke(&m, manifest::Revoked::Devices, &fingerprint, remove)?;
+                println!(
+                    "{} {fingerprint} {} revoked_devices; sign and publish the manifest",
+                    if changed { "listed" } else { "already" },
+                    if remove { "off" } else { "in" }
+                );
                 Ok(())
             }
             ManifestCmd::Remove {

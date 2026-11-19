@@ -304,10 +304,30 @@ fn gpg_signing() {
     let m = dir.join("manifest.json");
     manifest::init(&m).unwrap();
     // This attest key has no hardware attestation; the manifest says it needn't.
-    manifest::set(&m, Some(false), None).unwrap();
+    manifest::set(&m, Some(false), None, Some(14 * 86_400)).unwrap();
     assert!(manifest::show(&m, &hw::Anchors::load(None).unwrap())
         .unwrap()
         .contains("hardware attestation not required; attestation window at most 7d"));
+    // The emergency lists: sorted, no duplicates, and removable.
+    let a = format!("sha256:{}", "a".repeat(64));
+    let b = format!("sha256:{}", "b".repeat(64));
+    assert!(manifest::revoke(&m, manifest::Revoked::Clients, &b, false).unwrap());
+    assert!(manifest::revoke(&m, manifest::Revoked::Clients, &a, false).unwrap());
+    assert!(!manifest::revoke(&m, manifest::Revoked::Clients, &a, false).unwrap());
+    assert!(manifest::revoke(&m, manifest::Revoked::Devices, &a, false).unwrap());
+    assert!(manifest::revoke(&m, manifest::Revoked::Clients, "sha256:nope", false).is_err());
+    let d = relay_core::ManifestDraft::from_json(&std::fs::read(&m).unwrap()).unwrap();
+    assert_eq!(d.max_client_grant_window_secs, 14 * 86_400);
+    assert_eq!(
+        d.revoked_clients
+            .iter()
+            .map(|f| f.as_str())
+            .collect::<Vec<_>>(),
+        vec![a.as_str(), b.as_str()]
+    );
+    assert!(manifest::revoke(&m, manifest::Revoked::Clients, &a, true).unwrap());
+    assert!(manifest::revoke(&m, manifest::Revoked::Clients, &b, true).unwrap());
+    assert!(manifest::revoke(&m, manifest::Revoked::Devices, &a, true).unwrap());
     let mut yk = SoftCard::new(b"123456");
     manifest::add(
         &m,

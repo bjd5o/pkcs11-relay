@@ -73,6 +73,7 @@ pub fn set(
     path: &Path,
     require_hardware_attestation: Option<bool>,
     max_attestation_window_secs: Option<u64>,
+    max_client_grant_window_secs: Option<u64>,
 ) -> Result<(), String> {
     let mut d = load(path)?;
     if let Some(r) = require_hardware_attestation {
@@ -81,7 +82,37 @@ pub fn set(
     if let Some(w) = max_attestation_window_secs {
         d.max_attestation_window_secs = w;
     }
+    if let Some(w) = max_client_grant_window_secs {
+        d.max_client_grant_window_secs = w;
+    }
     save(path, &d)
+}
+
+/// Which revocation list of the manifest (wire-format §9.2).
+pub enum Revoked {
+    Clients,
+    Devices,
+}
+
+/// Add a fingerprint to `revoked_clients` or `revoked_devices`, or take it off with `remove`.
+/// Returns whether the list changed.
+pub fn revoke(path: &Path, list: Revoked, fingerprint: &str, remove: bool) -> Result<bool, String> {
+    let fp = relay_core::Fingerprint::parse(fingerprint).map_err(|e| e.to_string())?;
+    let mut d = load(path)?;
+    let l = match list {
+        Revoked::Clients => &mut d.revoked_clients,
+        Revoked::Devices => &mut d.revoked_devices,
+    };
+    let had = l.contains(&fp);
+    if remove {
+        l.retain(|x| x != &fp);
+    } else if !had {
+        l.push(fp);
+        l.sort();
+    }
+    let changed = had == remove;
+    save(path, &d)?;
+    Ok(changed)
 }
 
 /// Remove keys by fingerprint, or by label (optionally within one token). Returns how many.
@@ -132,6 +163,18 @@ pub fn show(path: &Path, anchors: &crate::hw::Anchors) -> Result<String, String>
         },
         crate::util::duration(d.max_attestation_window_secs)
     ));
+    out.push_str(&format!(
+        "client grant window at most {}\n",
+        crate::util::duration(d.max_client_grant_window_secs)
+    ));
+    for (what, list) in [
+        ("revoked client", &d.revoked_clients),
+        ("revoked device", &d.revoked_devices),
+    ] {
+        for fp in list {
+            out.push_str(&format!("{what}: {fp}\n"));
+        }
+    }
     for k in &d.keys {
         out.push_str(&format!(
             "  {:<8} {:<9} {:<18} id={:<4} token={:<16} {}\n",
