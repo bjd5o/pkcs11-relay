@@ -76,6 +76,8 @@ impl Reply {
 pub struct PendingItems {
     pub requests: Vec<Vec<u8>>,
     pub pairings: Vec<serde_json::Value>,
+    /// The whole reply, for `Engine::ingest` (its `grants` and `revocations`).
+    pub raw: serde_json::Value,
 }
 
 pub struct RelayClient {
@@ -173,7 +175,28 @@ impl RelayClient {
                 .filter_map(|r| r.as_str().and_then(|s| b64.decode(s).ok()))
                 .collect(),
             pairings: v["pairings"].as_array().cloned().unwrap_or_default(),
+            raw: v,
         })
+    }
+
+    /// `GET` a JSON resource (the Clients and Approvers listings).
+    pub fn get_json(&self, path: &str, what: &str) -> Result<serde_json::Value> {
+        Ok(self
+            .call("GET", path, b"", "application/octet-stream")?
+            .check(what)?
+            .json())
+    }
+
+    /// `POST` a JSON body (grants and revocations), expecting success.
+    pub fn post_json(&self, path: &str, body: &serde_json::Value, what: &str) -> Result<()> {
+        self.call(
+            "POST",
+            path,
+            body.to_string().as_bytes(),
+            "application/json",
+        )?
+        .check(what)
+        .map(|_| ())
     }
 
     pub fn post_response(&self, req_id: [u8; 16], response: &[u8]) -> Result<()> {

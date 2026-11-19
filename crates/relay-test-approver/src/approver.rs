@@ -41,6 +41,9 @@ pub struct Config {
     pub attestation_window_secs: u64,
     #[serde(default = "default_skew")]
     pub skew_secs: u64,
+    /// The window of the grants this approver signs when it approves a pairing.
+    #[serde(default = "default_window")]
+    pub grant_window_secs: u64,
     #[serde(default)]
     pub trusted_clients: Vec<TrustedClient>,
     #[serde(default)]
@@ -328,6 +331,10 @@ impl Approver {
             ));
         }
         let v = r.json();
+        // Grants and revocations first, so the requests below are checked against them.
+        for problem in self.engine.ingest(&v, now()) {
+            tracing::warn!(problem, "from the relay; ignored");
+        }
         let mut new_work = false;
         for p in v["pairings"].as_array().into_iter().flatten() {
             self.handle_pairing(p).await;
@@ -392,13 +399,26 @@ impl Approver {
                 return;
             }
         };
-        let (path, body, _client) = match self.engine.pairing_approval(&view, &keys) {
+        // Approving a pairing signs the client's grant with the card's attest key.
+        let post = {
+            let mut card = self.card.lock().expect("lock");
+            self.engine.pairing_approval(
+                &view,
+                &keys,
+                self.cfg.grant_window_secs,
+                card.as_mut(),
+                &self.pin,
+                now(),
+            )
+        };
+        let post = match post {
             Ok(x) => x,
             Err(e) => {
                 tracing::warn!(error = %e, "pairing approval refused");
                 return;
             }
         };
+        let (path, body) = (post.path, post.body);
         match self.relay.post_json(&path, &body).await {
             Ok(r) if r.status.is_success() => {
                 tracing::info!(
@@ -424,7 +444,7 @@ impl Approver {
         }
         let me = self.clone();
         let out = tokio::task::spawn_blocking(move || me.decide(&bytes)).await;
-        let Ok(Some((req_id, resp, renewed))) = out else {
+        let Ok(Some((req_id, resp, renewed, grant))) = out else {
             return;
         };
         match self
@@ -450,11 +470,24 @@ impl Approver {
                 tracing::warn!(error = e, "re-registering the renewed attestation failed");
             }
         }
+        if let Some((client_id, g)) = grant {
+            let post = self.engine.grant_post(&client_id, &g);
+            match self.relay.post_json(&post.path, &post.body).await {
+                Ok(r) if r.status.is_success() => {
+                    tracing::info!(client_id, "client grant renewed during an approval")
+                }
+                Ok(r) => {
+                    tracing::warn!(client_id, status = %r.status, error = r.error_kind(), "renewed grant not accepted")
+                }
+                Err(e) => tracing::warn!(client_id, error = e, "posting the renewed grant failed"),
+            }
+        }
     }
 
     /// The engine checks the request, then approves (or denies with `--deny`). Returns the
-    /// signed response and whether the attestation was renewed.
-    fn decide(&self, bytes: &[u8]) -> Option<([u8; 16], Vec<u8>, bool)> {
+    /// signed response, whether the attestation was renewed, and a renewed client grant.
+    #[allow(clippy::type_complexity)]
+    fn decide(&self, bytes: &[u8]) -> Option<([u8; 16], Vec<u8>, bool, Option<(String, Vec<u8>)>)> {
         let t = now();
         let p = match self.engine.check_request(bytes, t) {
             Ok(Checked::Show(p)) => p,
@@ -465,7 +498,7 @@ impl Approver {
                     "request failed checks; denied"
                 );
                 return match self.engine.sign_rejection(&r, t) {
-                    Ok(response) => Some((r.req_id, response, false)),
+                    Ok(response) => Some((r.req_id, response, false, None)),
                     Err(e) => {
                         tracing::error!(error = %e, "signing the denial failed");
                         None
@@ -490,7 +523,7 @@ impl Approver {
         );
         if self.behavior.deny {
             return match self.engine.deny(&p, t) {
-                Ok(r) => Some((p.req_id(), r, false)),
+                Ok(r) => Some((p.req_id(), r, false, None)),
                 Err(e) => {
                     tracing::error!(error = %e, "signing the denial failed");
                     None
@@ -516,7 +549,14 @@ impl Approver {
                     let _ = std::fs::write(self.cfg.data_dir.join("attestation.cbor"), st);
                     tracing::info!("attestation renewed during an approval");
                 }
-                Some((a.req_id, a.response, a.renewed_attestation.is_some()))
+                if let Some(e) = &a.grant_renewal_error {
+                    tracing::warn!(error = e, "client grant renewal failed");
+                }
+                let grant = a
+                    .renewed_grant
+                    .clone()
+                    .map(|g| (p.request.fields.client_id.clone(), g));
+                Some((a.req_id, a.response, a.renewed_attestation.is_some(), grant))
             }
             Err(e) => {
                 tracing::error!(error = %e, "approval failed before a response could be signed");

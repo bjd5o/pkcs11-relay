@@ -1080,16 +1080,10 @@ async fn client_self(
 }
 
 #[derive(Deserialize)]
-#[serde(untagged, deny_unknown_fields)]
-enum ApprovalBody {
+#[serde(deny_unknown_fields)]
+struct ApprovalBody {
     /// A client grant signed by an attest key (wire-format §12.1), base64 CBOR.
-    Grant { grant: String },
-    /// Before grants: the fingerprint of the client key whose code the approver compared, and
-    /// the keys chosen. Accepted until every approver signs grants.
-    Legacy {
-        fingerprint: String,
-        keys: Vec<String>,
-    },
+    grant: String,
 }
 
 /// `POST /v1/clients/{id}/approval`: an approver device approves a pending client for keys it
@@ -1117,39 +1111,26 @@ async fn approve_client(
     let d = authenticate_device(&st, &h, &m, &uri, &body, &d.device_id).await?;
     let b: ApprovalBody = serde_json::from_slice(&body)
         .map_err(|e| err(StatusCode::BAD_REQUEST, "BadJson", e.to_string()))?;
-    let (fingerprint, keys, grant) = match b {
-        ApprovalBody::Grant { grant } => {
-            let bytes = b64d(&grant, "grant")?;
-            let g = check_grant(&st, &bytes)?;
-            if g.fields.client_id != client_id {
-                return Err(err(
-                    StatusCode::BAD_REQUEST,
-                    "GrantInvalid",
-                    "the grant names a different client id",
-                ));
-            }
-            if g.fields.seq != 1 {
-                return Err(err(
-                    StatusCode::BAD_REQUEST,
-                    "GrantInvalid",
-                    "a pairing's grant has seq 1",
-                ));
-            }
-            let keys = g.fields.keys.iter().map(|k| k.to_string()).collect();
-            (g.client_fingerprint().to_string(), keys, Some(bytes))
-        }
-        ApprovalBody::Legacy { fingerprint, keys } => {
-            // The person approving chooses keys from the manifest; they need not all be on
-            // this device.
-            if keys.is_empty() || keys.len() > 64 {
-                return Err(err(StatusCode::BAD_REQUEST, "BadKeys", "approve 1-64 keys"));
-            }
-            for k in &keys {
-                Fingerprint::parse(k)?;
-            }
-            (fingerprint, keys, None)
-        }
-    };
+    // The grant's client key must be the pending client's whose code the person compared;
+    // the keys it lists need not all be on this device.
+    let bytes = b64d(&b.grant, "grant")?;
+    let g = check_grant(&st, &bytes)?;
+    if g.fields.client_id != client_id {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "GrantInvalid",
+            "the grant names a different client id",
+        ));
+    }
+    if g.fields.seq != 1 {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "GrantInvalid",
+            "a pairing's grant has seq 1",
+        ));
+    }
+    let keys: Vec<String> = g.fields.keys.iter().map(|k| k.to_string()).collect();
+    let (fingerprint, grant) = (g.client_fingerprint().to_string(), Some(bytes));
     let p = {
         let mut inner = st.lock();
         let pos = inner

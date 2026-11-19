@@ -177,6 +177,7 @@ fn the_app_surface_end_to_end() {
     };
     let device: Arc<dyn DeviceKey> = Arc::new(EnclaveKey(SoftwareKey::generate_p256()));
     let auth: Arc<dyn DeviceKey> = Arc::new(EnclaveKey(SoftwareKey::generate_p256()));
+    let admin: Arc<dyn DeviceKey> = Arc::new(EnclaveKey(SoftwareKey::generate_p256()));
     let nfc = Arc::new(Nfc {
         card: Mutex::new(SoftCard::load_dir(&dir.join("softcard-a"), PIN).unwrap()),
         sessions: Mutex::new(0),
@@ -188,6 +189,7 @@ fn the_app_surface_end_to_end() {
             config.clone(),
             device.clone(),
             auth.clone(),
+            Some(admin.clone()),
             SavedState::default(),
         ) {
             Ok(a) => break a,
@@ -256,8 +258,24 @@ fn the_app_surface_end_to_end() {
         .into_iter()
         .find(|k| k.label == "sign-ec")
         .unwrap();
-    app.approve_pairing(CLIENT_ID.into(), vec![sign_ec.fingerprint.clone()])
-        .unwrap();
+    // Approving a pairing signs the client's grant on the card: one more session, one PIN.
+    let sessions = *nfc.sessions.lock().unwrap();
+    app.approve_pairing(
+        CLIENT_ID.into(),
+        vec![sign_ec.fingerprint.clone()],
+        3_600,
+        nfc.clone(),
+        PIN.to_vec(),
+    )
+    .unwrap();
+    assert_eq!(*nfc.sessions.lock().unwrap(), sessions + 1);
+    let c = &app.clients()[0];
+    assert_eq!(
+        (c.client_id.as_str(), c.state.as_str(), c.accepted),
+        (CLIENT_ID, "valid", true)
+    );
+    assert_eq!(c.key_labels, vec!["sign-ec"]);
+    assert_eq!(c.approved_by.as_deref(), Some("brian-iphone"));
 
     let signer =
         ManifestSigner::from_bytes(&std::fs::read(dir.join("signer.asc")).unwrap()).unwrap();
@@ -275,12 +293,46 @@ fn the_app_surface_end_to_end() {
         60,
     )
     .unwrap();
-    let key = manifest
-        .keys
-        .iter()
-        .find(|k| k.label == "sign-ec")
-        .unwrap()
-        .clone();
+    let key_by = |label: &str| {
+        manifest
+            .keys
+            .iter()
+            .find(|k| k.label == label)
+            .unwrap()
+            .clone()
+    };
+    let submit_with = |label: &str, msg: &[u8]| {
+        let key = key_by(label);
+        let reply = ReplyKey::generate();
+        let t = now();
+        let u = UnsignedRequest::new(
+            CLIENT_ID,
+            &key,
+            Op::Sign,
+            if label == "sign-rsa" {
+                Mechanism::Sha256RsaPkcs
+            } else {
+                Mechanism::EcdsaSha256
+            },
+            msg.to_vec(),
+            RequestContext {
+                host: "pi5.test".into(),
+                purpose: "ffi".into(),
+                consumer: "test".into(),
+            },
+            reply.public_bytes(),
+            t,
+            t + 60,
+        )
+        .unwrap();
+        let req = u.clone().with_signature(client_key.sign(&u.to_be_signed()));
+        let status = client
+            .call("POST", "/v1/requests", req.bytes(), "application/cbor")
+            .unwrap()
+            .status;
+        (req, reply, status)
+    };
+    let key = key_by("sign-ec");
     let submit = |msg: &[u8]| {
         let reply = ReplyKey::generate();
         let t = now();
@@ -370,21 +422,238 @@ fn the_app_surface_end_to_end() {
     assert_eq!(nfc.card.lock().unwrap().pin_retries(), retries - 1);
     app.clear_pin_failure();
 
-    // Restart from saved state: still enrolled and paired, and the auth key still works.
+    // Restart from saved state: still enrolled, the client's grant kept (accepted), and the
+    // auth key still works.
     let saved = app.saved_state();
     assert!(
         saved.attestation.is_some()
             && saved.auth_binding.is_some()
-            && saved.clients.len() == 1
+            && saved.admin_binding.is_some()
+            && saved.clients.is_empty()
+            && saved.grants.len() == 1
+            && saved.grants[0].accepted
             && saved.keys.iter().any(|k| k.slot == 0x95)
     );
     drop(app);
-    let app = Approver::new(config, device, auth, saved).unwrap();
+    let app = Approver::new(config.clone(), device, auth, Some(admin), saved).unwrap();
     assert!(app.status().attestation.is_some());
     let (req, reply) = submit(b"release v4");
     let id = app.poll(5).unwrap().requests[0].request_id.clone();
     assert!(app.approve(id, nfc.clone(), PIN.to_vec()).unwrap().approved);
     assert!(matches!(result(&req, reply), Outcome::Approved(_)));
+
+    // ---------- client grants: a second approver ----------
+    // An iPad set up after the client was paired, with an interchangeable copy of the card.
+    let ipad_link =
+        relay_test_approver::fixtures::setup_link(&dir, &url, "brian-ipad", now()).unwrap();
+    let ipad_cfg = ApproverConfig {
+        device_id: "brian-ipad".into(),
+        setup_link: Some(ipad_link),
+        ..config.clone()
+    };
+    let ipad_auth = SoftwareKey::generate_p256();
+    let ipad_auth_pem = ipad_auth.to_pkcs8_pem().unwrap();
+    let ipad_admin = SoftwareKey::generate_p256();
+    let ipad_admin_pem = ipad_admin.to_pkcs8_pem().unwrap();
+    let ipad = Approver::new(
+        ipad_cfg,
+        Arc::new(EnclaveKey(SoftwareKey::generate_p256())),
+        Arc::new(EnclaveKey(ipad_auth)),
+        Some(Arc::new(EnclaveKey(ipad_admin))),
+        SavedState::default(),
+    )
+    .unwrap();
+    let ipad_card = Arc::new(Nfc {
+        card: Mutex::new(SoftCard::load_dir(&dir.join("softcard-a"), PIN).unwrap()),
+        sessions: Mutex::new(0),
+    });
+    ipad.enroll(ipad_card.clone(), PIN.to_vec()).unwrap();
+    // Phone stays quiet from here on unless it is the one being tested; requests reach both.
+    let ipad_request = |msg: &[u8]| {
+        let (req, reply) = submit(msg);
+        let inbox = ipad.poll(5).unwrap();
+        assert!(inbox.rejections.is_empty(), "{:?}", inbox.rejections);
+        let v = inbox
+            .requests
+            .into_iter()
+            .find(|r| r.request_id == hex::encode(req.fields.req_id))
+            .expect("shown on the iPad");
+        (req, reply, v)
+    };
+
+    // The client's first request on the iPad: verified from its grant alone, shown with the
+    // first-request notice. Denying leaves it unaccepted.
+    let (req, reply, v) = ipad_request(b"ipad 1");
+    let n = v.notice.clone().expect("first-request notice");
+    assert!(n.first_on_device && n.lapsed_since.is_none());
+    assert_eq!(
+        (n.approved_by.as_str(), n.key_labels.clone()),
+        ("brian-iphone", vec!["sign-ec".to_string()])
+    );
+    ipad.deny(v.request_id).unwrap();
+    assert!(matches!(
+        result(&req, reply),
+        Outcome::Denied(Some(Reason::UserDenied))
+    ));
+    // Still not accepted: the next request carries the notice again; approving accepts it.
+    let (req, reply, v) = ipad_request(b"ipad 2");
+    assert!(v.notice.as_ref().is_some_and(|n| n.first_on_device));
+    assert!(
+        ipad.approve(v.request_id, ipad_card.clone(), PIN.to_vec())
+            .unwrap()
+            .approved
+    );
+    assert!(matches!(result(&req, reply), Outcome::Approved(_)));
+    let (req, reply, v) = ipad_request(b"ipad 3");
+    assert!(v.notice.is_none(), "accepted: no notice");
+    assert!(
+        ipad.approve(v.request_id, ipad_card.clone(), PIN.to_vec())
+            .unwrap()
+            .approved
+    );
+    assert!(matches!(result(&req, reply), Outcome::Approved(_)));
+    let _ = app.poll(1); // drain the phone's copies
+
+    // The Clients and Approvers screens (admin key).
+    assert!(ipad.sync_clients().unwrap().is_empty());
+    let c = ipad
+        .clients()
+        .into_iter()
+        .find(|c| c.client_id == CLIENT_ID)
+        .unwrap();
+    assert!(c.accepted && c.state == "valid");
+    assert_eq!(c.host.as_deref(), Some("pi5.test"));
+    let approvers = ipad.approvers().unwrap();
+    assert_eq!(
+        approvers
+            .iter()
+            .map(|a| (
+                a.device_id.as_str(),
+                a.this_device,
+                a.attestation_state.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("brian-ipad", true, "valid"),
+            ("brian-iphone", false, "valid")
+        ]
+    );
+    // The listings refuse the relay-auth key (403 AdminKeyRequired) and clients.
+    let by_auth_key = relay_approver::relay::RelayClient::new(
+        &url,
+        Some(&std::fs::read(dir.join("relay-ca.pem")).unwrap()),
+        Arc::new(SoftwareKey::from_pkcs8_pem(&ipad_auth_pem).unwrap()),
+    )
+    .unwrap();
+    for path in ["/v1/clients", "/v1/devices"] {
+        let r = by_auth_key.call("GET", path, b"", "x").unwrap();
+        assert_eq!(r.status, 403, "{path}");
+        assert_eq!(r.json()["error"], "AdminKeyRequired", "{path}");
+        let r = client.call("GET", path, b"", "x").unwrap();
+        assert_eq!(r.status, 401, "{path}: a client key is no device's");
+    }
+
+    // The relay checks posted grants: a forged one is refused, an old one is stale, and the
+    // relay-auth key may post only a plain renewal (so it gets as far as the staleness check).
+    let by_admin_key = relay_approver::relay::RelayClient::new(
+        &url,
+        Some(&std::fs::read(dir.join("relay-ca.pem")).unwrap()),
+        Arc::new(SoftwareKey::from_pkcs8_pem(&ipad_admin_pem).unwrap()),
+    )
+    .unwrap();
+    let listed = by_admin_key
+        .call("GET", "/v1/clients", b"", "x")
+        .unwrap()
+        .json();
+    let current = listed["clients"][0]["grant"].as_str().unwrap().to_string();
+    let mut forged = b64.decode(&current).unwrap();
+    let n = forged.len();
+    forged[n - 1] ^= 1; // inside the signature
+    let path = format!("/v1/clients/{CLIENT_ID}/grant");
+    let post = |c: &relay_approver::relay::RelayClient, g: &str| {
+        let body = serde_json::json!({"grant": g});
+        let r = c
+            .call(
+                "POST",
+                &path,
+                body.to_string().as_bytes(),
+                "application/json",
+            )
+            .unwrap();
+        (
+            r.status,
+            r.json()["error"].as_str().unwrap_or("").to_string(),
+        )
+    };
+    assert_eq!(
+        post(&by_admin_key, &b64.encode(&forged)),
+        (400, "GrantInvalid".into())
+    );
+    assert_eq!(post(&by_admin_key, &current), (409, "GrantStale".into()));
+    assert_eq!(post(&by_auth_key, &current), (409, "GrantStale".into()));
+
+    // Change keys on the iPad: a grant with seq 2; the phone follows it with the next request.
+    let sign_rsa = app
+        .manifest_keys()
+        .into_iter()
+        .find(|k| k.label == "sign-rsa")
+        .unwrap();
+    ipad.change_client(
+        CLIENT_ID.into(),
+        vec![sign_ec.fingerprint.clone(), sign_rsa.fingerprint.clone()],
+        3_600,
+        ipad_card.clone(),
+        PIN.to_vec(),
+    )
+    .unwrap();
+    let (req, reply, status) = submit_with("sign-rsa", b"rsa after the change");
+    assert_eq!(status, 202, "the relay routes the newly granted key");
+    let inbox = app.poll(5).unwrap();
+    let v = inbox
+        .requests
+        .iter()
+        .find(|r| r.request_id == hex::encode(req.fields.req_id))
+        .expect("the phone follows the new grant");
+    assert!(
+        v.notice.is_none(),
+        "the phone accepted this client at pairing"
+    );
+    assert!(
+        app.approve(v.request_id.clone(), nfc.clone(), PIN.to_vec())
+            .unwrap()
+            .approved
+    );
+    assert!(matches!(result(&req, reply), Outcome::Approved(_)));
+    let phone_view = app
+        .clients()
+        .into_iter()
+        .find(|c| c.client_id == CLIENT_ID)
+        .unwrap();
+    assert_eq!(phone_view.key_labels.len(), 2);
+    let _ = ipad.poll(1);
+
+    // Revoke on the iPad: the relay refuses the client at once, and the phone drops it on
+    // its next poll.
+    ipad.revoke_client(CLIENT_ID.into(), ipad_card.clone(), PIN.to_vec())
+        .unwrap();
+    assert!(ipad.clients().iter().all(|c| c.client_id != CLIENT_ID));
+    let (_, _, status) = submit_with("sign-ec", b"after the revocation");
+    assert_eq!(status, 403);
+    let _ = app.poll(1);
+    assert!(app.clients().iter().all(|c| c.client_id != CLIENT_ID));
+    // Pairing the same key again is refused while the revocation is live.
+    assert_eq!(
+        client
+            .call(
+                "POST",
+                "/v1/clients/pending",
+                body.to_string().as_bytes(),
+                "application/json"
+            )
+            .unwrap()
+            .status,
+        403
+    );
 
     drop(rt);
     let _ = std::fs::remove_dir_all(&dir);

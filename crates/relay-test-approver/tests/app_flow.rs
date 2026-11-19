@@ -176,11 +176,18 @@ fn app_path_with_a_separate_auth_key() {
         .find(|k| k.label == "sign-ec")
         .unwrap()
         .clone();
-    let (path, body, paired) = engine
-        .pairing_approval(&view, std::slice::from_ref(&sign_ec.fingerprint))
+    // Approving signs the client's grant with the card's attest key.
+    let post = engine
+        .pairing_approval(
+            &view,
+            std::slice::from_ref(&sign_ec.fingerprint),
+            3_600,
+            &mut card,
+            PIN,
+            now(),
+        )
         .unwrap();
-    rc.approve_pairing(&path, &body).unwrap();
-    engine.add_client(paired);
+    rc.approve_pairing(&post.path, &post.body).unwrap();
 
     // One request: the client submits, the app checks, approves with the PIN, posts; the client
     // verifies the response exactly as the provider does.

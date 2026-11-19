@@ -12,6 +12,7 @@
 //! plaintext result never leaves [`Engine::approve`] except sealed to the client.
 #![forbid(unsafe_code)]
 
+pub mod grants;
 pub mod relay;
 pub mod setup;
 
@@ -22,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use base64::Engine as _;
 use relay_core::attestation::{AttestationStatement, UnsignedAttestation};
 use relay_core::content::{approval_view, ApprovalView};
+use relay_core::grant::{ClientGrant, UnsignedGrant, UnsignedRevocation};
 use relay_core::piv::{self, CardTransport, PivError, Slot};
 use relay_core::request::{ApproverPolicy, ReplayCache, SignedRequest};
 use relay_core::response::{Reason, UnsignedResponse};
@@ -120,14 +122,35 @@ impl AttestationInfo {
     }
 }
 
+/// What the approval screen says about the client when this device hasn't accepted it yet, or
+/// its grant has lapsed (docs/client-grants.md). Approving accepts the client and, if lapsed,
+/// renews its grant in the same card session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientNotice {
+    /// The client's first request on this device: approving also accepts the client here.
+    pub first_on_device: bool,
+    /// When the grant lapsed (`not_after`), if it has: approving renews it.
+    pub lapsed_since: Option<u64>,
+    pub client_id: String,
+    /// The device that signed the grant: display only, the grant doesn't vouch for it.
+    pub approved_by: String,
+    pub issued_at: u64,
+    pub window_secs: u64,
+    pub keys: Vec<Fingerprint>,
+}
+
 /// A request that passed every check, waiting for the person's decision.
 #[derive(Debug, Clone)]
 pub struct PendingRequest {
     pub request: SignedRequest,
     /// What the approval screen shows (computed by the core from the request itself).
     pub view: ApprovalView,
+    /// Shown with the request when set.
+    pub notice: Option<ClientNotice>,
     slot: Slot,
     alg: Algorithm,
+    /// The client's grant, when it has one (a client paired before grants doesn't).
+    grant: Option<ClientGrant>,
 }
 
 impl PendingRequest {
@@ -145,6 +168,21 @@ pub struct Rejection {
     reason: Reason,
     /// For the local log.
     pub why: String,
+}
+
+impl Rejection {
+    /// The reason code the signed denial will carry.
+    pub fn reason(&self) -> Reason {
+        self.reason
+    }
+
+    pub fn client_id(&self) -> &str {
+        &self.request.fields.client_id
+    }
+
+    pub fn expires_at(&self) -> u64 {
+        self.request.fields.expires_at
+    }
 }
 
 /// The outcome of [`Engine::check_request`]. Checking signs nothing.
@@ -169,6 +207,58 @@ pub struct Approval {
     pub renewed_attestation: Option<Vec<u8>>,
     /// Why a due renewal did not happen (the response carries the old attestation).
     pub renewal_error: Option<String>,
+    /// The client's grant renewed in the same card session: post it with
+    /// [`Engine::grant_post`] (the relay-auth key may sign that call).
+    pub renewed_grant: Option<Vec<u8>>,
+    /// Why a due grant renewal did not happen.
+    pub grant_renewal_error: Option<String>,
+}
+
+/// A grant or revocation to post to the relay: `POST path` with `body`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Post {
+    pub path: String,
+    pub body: serde_json::Value,
+}
+
+/// One client on the Clients screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientStatus {
+    pub client_id: String,
+    pub client_key: PublicKey,
+    pub keys: Vec<Fingerprint>,
+    /// `None` for a client paired before grants (it has no grant to share yet).
+    pub grant: Option<GrantSummary>,
+    pub accepted: bool,
+    pub state: ClientState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantSummary {
+    pub seq: u64,
+    pub window_secs: u64,
+    pub issued_at: u64,
+    pub not_after: u64,
+    pub renew_at: u64,
+    pub approved_by: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientState {
+    Valid,
+    RenewsSoon,
+    /// Unused for a whole window: renewed at its next approved request.
+    Lapsed,
+    /// Its grant no longer verifies (its attest key left the manifest).
+    CannotVerify,
+    /// In the manifest's `revoked_clients`.
+    RevokedInManifest,
+    /// Paired before grants: honoured on this device only until it is renewed.
+    NoGrant,
+}
+
+fn renew_at(g: &ClientGrant) -> u64 {
+    g.fields.issued_at + g.fields.window_secs * 3 / 4
 }
 
 /// The device key's signature letting a separate key authenticate this device's relay calls
@@ -194,7 +284,10 @@ pub struct Engine {
     cfg: EngineConfig,
     manifest: Mutex<Manifest>,
     signer: Arc<dyn DeviceSigner>,
+    /// Clients paired on this device before grants (local pairing records). Honoured, as
+    /// accepted, until a grant for the same key replaces them.
     clients: Mutex<HashMap<String, PairedClient>>,
+    grants: Mutex<grants::GrantStore>,
     /// Manifest key fingerprint -> slot and algorithm on the card (spec: "Key map").
     key_map: Mutex<HashMap<Fingerprint, (Slot, Algorithm)>>,
     attestation: Mutex<Option<AttestationStatement>>,
@@ -222,6 +315,7 @@ impl Engine {
                     .map(|c| (c.client_id.clone(), c))
                     .collect(),
             ),
+            grants: Mutex::new(grants::GrantStore::default()),
             key_map: Mutex::new(HashMap::new()),
             attestation: Mutex::new(None),
             replay: Mutex::new(ReplayCache::new(REPLAY_TTL_SECS)),
@@ -526,13 +620,37 @@ impl Engine {
         })
     }
 
+    /// Have the device key vouch for `admin_key` as this device's admin-auth key (wire-format
+    /// §8.5): one device-key signature, at enrollment. Pass it to every
+    /// [`registration`](Self::registration).
+    pub fn bind_admin_key(&self, admin_key: &PublicKey) -> Result<AuthBinding> {
+        let msg = relay_core::relay_auth::admin_key_binding(&self.cfg.device_id, admin_key);
+        let sig = sign_checked(self.signer.as_ref(), &msg)
+            .map_err(|e| ApproverError::Signer(e.to_string()))?;
+        Ok(AuthBinding {
+            auth_key: admin_key.clone(),
+            signature: sig.to_vec(),
+        })
+    }
+
     /// The body of `POST /v1/devices`: device key, attestation, the keys this device operates,
-    /// the push registration (`{"kind": "none"}` when there is none), and the relay-auth key
-    /// binding when the device uses one (the call must then be signed by that key).
+    /// the push registration (`{"kind": "none"}` when there is none), the relay-auth key binding
+    /// when the device uses one (the call must then be signed by that key), and the admin-auth
+    /// key binding.
     pub fn registration(
         &self,
         push: serde_json::Value,
         auth: Option<&AuthBinding>,
+        setup_link: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        self.registration_with_admin(push, auth, None, setup_link)
+    }
+
+    pub fn registration_with_admin(
+        &self,
+        push: serde_json::Value,
+        auth: Option<&AuthBinding>,
+        admin: Option<&AuthBinding>,
         setup_link: Option<&str>,
     ) -> Result<serde_json::Value> {
         let b64 = base64::engine::general_purpose::STANDARD;
@@ -552,6 +670,10 @@ impl Engine {
         if let Some(a) = auth {
             body["auth_key"] = b64.encode(a.auth_key.spki()).into();
             body["auth_key_sig"] = b64.encode(&a.signature).into();
+        }
+        if let Some(a) = admin {
+            body["admin_key"] = b64.encode(a.auth_key.spki()).into();
+            body["admin_key_sig"] = b64.encode(&a.signature).into();
         }
         // Only a device id the relay doesn't hold needs it; sending it again is harmless.
         if let Some(l) = setup_link {
@@ -588,17 +710,82 @@ impl Engine {
                 why,
             })))
         };
-        let Some(client) = self
-            .clients
-            .lock()
-            .expect("lock")
-            .get(&req.fields.client_id)
-            .cloned()
-        else {
-            return deny(
-                Reason::Policy,
-                format!("unpaired client {}", req.fields.client_id),
-            );
+        let manifest = self.manifest();
+        let client_id = req.fields.client_id.clone();
+        // The client: its newest verified grant, or else a local pairing from before grants.
+        let entry = self.grants.lock().expect("lock").by_client_id(&client_id);
+        let legacy = self.clients.lock().expect("lock").get(&client_id).cloned();
+        let (client, grant, notice) = match entry {
+            Some(e) => {
+                let v = match relay_core::verify_client_grant(
+                    e.grant.bytes(),
+                    &manifest,
+                    now,
+                    self.cfg.skew_secs,
+                ) {
+                    Ok(v) => v,
+                    Err(Error::ClientRevoked) => {
+                        return deny(
+                            Reason::ClientRevoked,
+                            format!("client {client_id} is revoked in the manifest"),
+                        )
+                    }
+                    Err(err) => {
+                        return deny(
+                            Reason::ClientNotGranted,
+                            format!("client {client_id}'s grant no longer verifies: {err}"),
+                        )
+                    }
+                };
+                let f = &e.grant.fields;
+                // A client this device already knew from a local pairing counts as accepted.
+                let accepted = e.accepted
+                    || legacy
+                        .as_ref()
+                        .is_some_and(|c| c.public_key == f.client_key);
+                let notice = (!accepted || v.lapsed).then(|| ClientNotice {
+                    first_on_device: !accepted,
+                    lapsed_since: v.lapsed.then_some(f.not_after),
+                    client_id: f.client_id.clone(),
+                    approved_by: f.approved_by.clone(),
+                    issued_at: f.issued_at,
+                    window_secs: f.window_secs,
+                    keys: f.keys.clone(),
+                });
+                let client = PairedClient {
+                    client_id: f.client_id.clone(),
+                    public_key: f.client_key.clone(),
+                    keys: f.keys.clone(),
+                };
+                (client, Some(e.grant), notice)
+            }
+            None => match legacy {
+                Some(c) if manifest.client_revoked(c.public_key.fingerprint()) => {
+                    return deny(
+                        Reason::ClientRevoked,
+                        format!("client {client_id} is revoked in the manifest"),
+                    )
+                }
+                Some(c)
+                    if self
+                        .grants
+                        .lock()
+                        .expect("lock")
+                        .is_revoked(c.public_key.fingerprint()) =>
+                {
+                    return deny(
+                        Reason::ClientRevoked,
+                        format!("client {client_id} is revoked"),
+                    )
+                }
+                Some(c) => (c, None, None),
+                None => {
+                    return deny(
+                        Reason::ClientNotGranted,
+                        format!("no grant for client {client_id}"),
+                    )
+                }
+            },
         };
         let key_map = self.key_map.lock().expect("lock").clone();
         let operable: Vec<Fingerprint> = key_map.keys().cloned().collect();
@@ -608,7 +795,6 @@ impl Engine {
             approved_keys: &client.keys,
             operable_keys: &operable,
         };
-        let manifest = self.manifest();
         let verified = {
             let mut replay = self.replay.lock().expect("lock");
             verify_request(
@@ -623,10 +809,14 @@ impl Engine {
         let v = match verified {
             Ok(v) => v,
             Err(e) => {
-                let reason = if e == Error::RequestExpired {
-                    Reason::Expired
-                } else {
-                    Reason::Policy
+                // The key is outside the grant only if this device operates it; a key it doesn't
+                // operate is a routing problem, not the client's.
+                let outside_grant = !client.keys.contains(&req.fields.key_fingerprint)
+                    && operable.contains(&req.fields.key_fingerprint);
+                let reason = match e {
+                    Error::RequestExpired => Reason::Expired,
+                    Error::KeyNotApproved if outside_grant => Reason::KeyNotGranted,
+                    _ => Reason::Policy,
                 };
                 return deny(reason, e.kind().to_string());
             }
@@ -635,8 +825,10 @@ impl Engine {
         Ok(Checked::Show(Box::new(PendingRequest {
             view: approval_view(&v, now),
             request: v.request,
+            notice,
             slot,
             alg,
+            grant,
         })))
     }
 
@@ -683,6 +875,8 @@ impl Engine {
             card_error: None,
             renewed_attestation: None,
             renewal_error: None,
+            renewed_grant: None,
+            grant_renewal_error: None,
         };
         if self.pin_failed() {
             out.card_error = Some(PivError::WrongPin { retries: 0 });
@@ -705,6 +899,17 @@ impl Engine {
         } else {
             None
         };
+        // The client's grant renews at 75% of its window, or after a lapse, in the same session.
+        let grant_renewal = match &p.grant {
+            Some(g) if now >= renew_at(g) => match self.renewed_grant(g, now) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    out.grant_renewal_error = Some(e.to_string());
+                    None
+                }
+            },
+            _ => None,
+        };
         let ran = piv::in_session(card, |c| {
             piv::select(c)?;
             if let Err(e) = piv::verify_pin(c, pin) {
@@ -713,10 +918,28 @@ impl Engine {
             }
             let result = piv::perform(c, p.slot, p.alg, &req.fields.mechanism, &req.fields.input)?;
             let renewed = renewal.map(|(slot, st)| piv::sign_attestation(c, slot, st));
-            Ok((result, renewed))
+            let grant = grant_renewal
+                .clone()
+                .map(|(slot, g)| piv::sign_grant(c, slot, g));
+            Ok((result, renewed, grant))
         });
         match ran {
-            Ok((result, renewed)) => {
+            Ok((result, renewed, grant)) => {
+                // Approving accepts the client on this device.
+                if let Some(g) = &p.grant {
+                    self.grants
+                        .lock()
+                        .expect("lock")
+                        .accept(g.client_fingerprint());
+                }
+                match grant {
+                    Some(Ok(g)) => match self.take_grant(g.bytes(), now) {
+                        Ok(()) => out.renewed_grant = Some(g.bytes().to_vec()),
+                        Err(e) => out.grant_renewal_error = Some(e.to_string()),
+                    },
+                    Some(Err(e)) => out.grant_renewal_error = Some(e.to_string()),
+                    None => {}
+                }
                 match renewed {
                     Some(Ok(st)) => match self.accept_attestation(st) {
                         Ok(bytes) => {
@@ -778,13 +1001,267 @@ impl Engine {
         })
     }
 
-    /// The call that approves a pairing for `keys` (manifest keys other than attest keys):
-    /// `(path, body)` for `POST`. After the relay accepts it, [`add_client`](Self::add_client).
+    /// Approve a pairing: the card's attest key signs a grant (seq 1) for `keys` with a window
+    /// of `window_secs`, in one card session (`SELECT`, one `VERIFY`, the signature). The grant
+    /// is kept, the client accepted on this device, and the call to post returned.
     pub fn pairing_approval(
         &self,
         v: &PairingView,
         keys: &[Fingerprint],
-    ) -> Result<(String, serde_json::Value, PairedClient)> {
+        window_secs: u64,
+        card: &mut dyn CardTransport,
+        pin: &[u8],
+        now: u64,
+    ) -> Result<Post> {
+        let (slot, attest) = self.grant_signer()?;
+        let g = UnsignedGrant::new(
+            &v.client_id,
+            v.public_key.clone(),
+            self.check_grant_keys(keys)?,
+            1,
+            self.check_grant_window(window_secs)?,
+            now,
+            &self.cfg.device_id,
+            attest,
+        )
+        .map_err(invalid)?;
+        let signed = self.on_card(card, pin, |c| piv::sign_grant(c, slot, g))?;
+        self.take_grant(signed.bytes(), now)?;
+        self.grants
+            .lock()
+            .expect("lock")
+            .accept(signed.client_fingerprint());
+        Ok(Post {
+            path: format!("/v1/clients/{}/approval", v.client_id),
+            body: json!({"grant": b64(signed.bytes())}),
+        })
+    }
+
+    /// Change a client's keys or window from the Clients screen: a new grant with `seq + 1`.
+    /// For a client paired before grants, this is its first grant (`seq` 1). Post the result
+    /// with the admin-auth key.
+    pub fn change_client(
+        &self,
+        client_id: &str,
+        keys: &[Fingerprint],
+        window_secs: u64,
+        card: &mut dyn CardTransport,
+        pin: &[u8],
+        now: u64,
+    ) -> Result<Post> {
+        let (slot, attest) = self.grant_signer()?;
+        let (key, seq) = self.client_key_and_next_seq(client_id)?;
+        let g = UnsignedGrant::new(
+            client_id,
+            key,
+            self.check_grant_keys(keys)?,
+            seq,
+            self.check_grant_window(window_secs)?,
+            now,
+            &self.cfg.device_id,
+            attest,
+        )
+        .map_err(invalid)?;
+        let signed = self.on_card(card, pin, |c| piv::sign_grant(c, slot, g))?;
+        self.take_grant(signed.bytes(), now)?;
+        self.grants
+            .lock()
+            .expect("lock")
+            .accept(signed.client_fingerprint());
+        Ok(self.grant_post(client_id, signed.bytes()))
+    }
+
+    /// Renew a client's grant from the Clients screen: same keys and window, `seq + 1`.
+    pub fn renew_client(
+        &self,
+        client_id: &str,
+        card: &mut dyn CardTransport,
+        pin: &[u8],
+        now: u64,
+    ) -> Result<Post> {
+        let s = self
+            .client_list(now)
+            .into_iter()
+            .find(|c| c.client_id == client_id)
+            .ok_or_else(|| invalid(format!("no client {client_id}")))?;
+        let window = match &s.grant {
+            Some(g) => g.window_secs,
+            None => {
+                return Err(invalid(
+                    "this client was paired before grants: choose its window with Change keys",
+                ))
+            }
+        };
+        self.change_client(client_id, &s.keys, window, card, pin, now)
+    }
+
+    /// Revoke a client from the Clients screen: the attest key signs a revocation of every
+    /// grant up to the newest this device holds. It takes effect here at once; post the result
+    /// with the admin-auth key.
+    pub fn revoke_client(
+        &self,
+        client_id: &str,
+        card: &mut dyn CardTransport,
+        pin: &[u8],
+        now: u64,
+    ) -> Result<Post> {
+        let (slot, attest) = self.grant_signer()?;
+        let (key, next) = self.client_key_and_next_seq(client_id)?;
+        // Cancel at least seq 1, so a pre-grant client's first grant is cancelled too.
+        let r = UnsignedRevocation::new(key, (next - 1).max(1), now, attest).map_err(invalid)?;
+        let signed = self.on_card(card, pin, |c| piv::sign_revocation(c, slot, r))?;
+        self.grants
+            .lock()
+            .expect("lock")
+            .revoke(signed.bytes(), &self.manifest())
+            .map_err(invalid)?;
+        self.clients.lock().expect("lock").remove(client_id);
+        Ok(Post {
+            path: format!("/v1/clients/{client_id}/revocation"),
+            body: json!({"revocation": b64(signed.bytes())}),
+        })
+    }
+
+    /// The call that stores a changed or renewed grant at the relay.
+    pub fn grant_post(&self, client_id: &str, grant: &[u8]) -> Post {
+        Post {
+            path: format!("/v1/clients/{client_id}/grant"),
+            body: json!({"grant": b64(grant)}),
+        }
+    }
+
+    /// Take in what the relay sent: `grants` and `revocations` from `/pending` or
+    /// `GET /v1/clients` (base64 CBOR). Each is verified; ones that fail are skipped and
+    /// reported, never trusted.
+    pub fn ingest(&self, v: &serde_json::Value, now: u64) -> Vec<String> {
+        let mut problems = Vec::new();
+        let manifest = self.manifest();
+        let list = |k: &str| -> Vec<Vec<u8>> {
+            v[k].as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|x| x.as_str())
+                .filter_map(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
+                .collect()
+        };
+        let mut store = self.grants.lock().expect("lock");
+        for r in list("revocations") {
+            if let Err(e) = store.revoke(&r, &manifest) {
+                problems.push(format!("revocation refused: {e}"));
+            }
+        }
+        let mut grants = list("grants");
+        for c in v["clients"].as_array().into_iter().flatten() {
+            if let Some(g) = c["grant"]
+                .as_str()
+                .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
+            {
+                grants.push(g);
+            }
+        }
+        for g in grants {
+            if let Err(e) = store.ingest(&g, &manifest, now, self.cfg.skew_secs) {
+                problems.push(format!("grant refused: {e}"));
+            }
+        }
+        drop(store);
+        self.drop_superseded_pairings();
+        problems
+    }
+
+    /// Every client this device knows, for the Clients screen.
+    pub fn client_list(&self, now: u64) -> Vec<ClientStatus> {
+        let manifest = self.manifest();
+        let store = self.grants.lock().expect("lock");
+        let mut out: Vec<ClientStatus> = store
+            .all()
+            .into_iter()
+            .map(|e| {
+                let f = &e.grant.fields;
+                let state = match relay_core::verify_client_grant(
+                    e.grant.bytes(),
+                    &manifest,
+                    now,
+                    self.cfg.skew_secs,
+                ) {
+                    Err(Error::ClientRevoked) => ClientState::RevokedInManifest,
+                    Err(_) => ClientState::CannotVerify,
+                    Ok(v) if v.lapsed => ClientState::Lapsed,
+                    Ok(_) if now >= renew_at(&e.grant) => ClientState::RenewsSoon,
+                    Ok(_) => ClientState::Valid,
+                };
+                ClientStatus {
+                    client_id: f.client_id.clone(),
+                    client_key: f.client_key.clone(),
+                    keys: f.keys.clone(),
+                    grant: Some(GrantSummary {
+                        seq: f.seq,
+                        window_secs: f.window_secs,
+                        issued_at: f.issued_at,
+                        not_after: f.not_after,
+                        renew_at: renew_at(&e.grant),
+                        approved_by: f.approved_by.clone(),
+                    }),
+                    accepted: e.accepted,
+                    state,
+                }
+            })
+            .collect();
+        for c in self.clients.lock().expect("lock").values() {
+            if store.by_key(c.public_key.fingerprint()).is_some() {
+                continue;
+            }
+            out.push(ClientStatus {
+                client_id: c.client_id.clone(),
+                client_key: c.public_key.clone(),
+                keys: c.keys.clone(),
+                grant: None,
+                accepted: true,
+                state: if manifest.client_revoked(c.public_key.fingerprint()) {
+                    ClientState::RevokedInManifest
+                } else {
+                    ClientState::NoGrant
+                },
+            });
+        }
+        out.sort_by(|a, b| a.client_id.cmp(&b.client_id));
+        out
+    }
+
+    /// What to persist about grants: `(grant bytes, accepted)` and revocation bytes.
+    pub fn grant_state(&self) -> grants::Exported {
+        self.grants.lock().expect("lock").export()
+    }
+
+    /// Restore what [`grant_state`](Self::grant_state) saved, against the current manifest.
+    pub fn restore_grants(&self, grants: &[(Vec<u8>, bool)], revocations: &[Vec<u8>], now: u64) {
+        let manifest = self.manifest();
+        self.grants.lock().expect("lock").restore(
+            grants,
+            revocations,
+            &manifest,
+            now,
+            self.cfg.skew_secs,
+        );
+        self.drop_superseded_pairings();
+    }
+
+    /// Local pairing records whose client now has a grant are no longer needed (migration).
+    fn drop_superseded_pairings(&self) {
+        let store = self.grants.lock().expect("lock");
+        self.clients
+            .lock()
+            .expect("lock")
+            .retain(|_, c| store.by_key(c.public_key.fingerprint()).is_none());
+    }
+
+    fn grant_signer(&self) -> Result<(Slot, Fingerprint)> {
+        self.attest_key().ok_or_else(|| {
+            ApproverError::NoAttestKey(self.last_discovery.lock().expect("lock").clone())
+        })
+    }
+
+    fn check_grant_keys(&self, keys: &[Fingerprint]) -> Result<Vec<Fingerprint>> {
         let m = self.manifest();
         if keys.is_empty() {
             return Err(invalid("choose at least one key"));
@@ -795,16 +1272,81 @@ impl Engine {
                 _ => return Err(invalid(format!("{k} is not a usable manifest key"))),
             }
         }
-        let fp = v.public_key.fingerprint().as_str().to_string();
-        let keys_s: Vec<&str> = keys.iter().map(|k| k.as_str()).collect();
-        Ok((
-            format!("/v1/clients/{}/approval", v.client_id),
-            json!({"fingerprint": fp, "keys": keys_s}),
-            PairedClient {
-                client_id: v.client_id.clone(),
-                public_key: v.public_key.clone(),
-                keys: keys.to_vec(),
-            },
-        ))
+        let mut v = keys.to_vec();
+        v.sort();
+        v.dedup();
+        Ok(v)
     }
+
+    fn check_grant_window(&self, window_secs: u64) -> Result<u64> {
+        let max = self.manifest().max_client_grant_window_secs;
+        if !(relay_core::manifest::MIN_CLIENT_GRANT_WINDOW..=max).contains(&window_secs) {
+            return Err(invalid(format!(
+                "a grant window must be {}-{max} s",
+                relay_core::manifest::MIN_CLIENT_GRANT_WINDOW
+            )));
+        }
+        Ok(window_secs)
+    }
+
+    /// The client's identity key and the next grant sequence number.
+    fn client_key_and_next_seq(&self, client_id: &str) -> Result<(PublicKey, u64)> {
+        if let Some(e) = self.grants.lock().expect("lock").by_client_id(client_id) {
+            return Ok((e.grant.fields.client_key.clone(), e.grant.fields.seq + 1));
+        }
+        self.clients
+            .lock()
+            .expect("lock")
+            .get(client_id)
+            .map(|c| (c.public_key.clone(), 1))
+            .ok_or_else(|| invalid(format!("no client {client_id}")))
+    }
+
+    /// The client's grant renewed at `now`: same keys and window, `seq + 1`, signed by this
+    /// card's attest key.
+    fn renewed_grant(&self, g: &ClientGrant, now: u64) -> Result<(Slot, UnsignedGrant)> {
+        let (slot, attest) = self.grant_signer()?;
+        let r = g
+            .fields
+            .renewed(now, &self.cfg.device_id, attest)
+            .map_err(invalid)?;
+        Ok((slot, r))
+    }
+
+    /// Keep a grant this device just signed (it must verify like any other).
+    fn take_grant(&self, bytes: &[u8], now: u64) -> Result<()> {
+        let manifest = self.manifest();
+        self.grants
+            .lock()
+            .expect("lock")
+            .ingest(bytes, &manifest, now, self.cfg.skew_secs)
+            .map_err(|e| invalid(format!("the signed grant was refused: {e}")))?;
+        self.drop_superseded_pairings();
+        Ok(())
+    }
+
+    /// One card session: `SELECT`, one `VERIFY`, then `f`.
+    fn on_card<T>(
+        &self,
+        card: &mut dyn CardTransport,
+        pin: &[u8],
+        f: impl FnOnce(&mut dyn CardTransport) -> std::result::Result<T, PivError>,
+    ) -> Result<T> {
+        if self.pin_failed() {
+            return Err(ApproverError::PinRejected { retries: 0 });
+        }
+        let mut f = Some(f);
+        Ok(piv::in_session(card, |c| {
+            piv::select(c)?;
+            if let Err(e) = piv::verify_pin(c, pin) {
+                self.note_pin(&e);
+                return Err(e);
+            }
+            (f.take().expect("called once"))(c)
+        })?)
+    }
+}
+
+fn b64(b: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(b)
 }

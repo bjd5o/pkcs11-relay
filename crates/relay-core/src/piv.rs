@@ -602,6 +602,28 @@ pub fn sign_attestation(
     Ok(statement.with_signature(sig))
 }
 
+/// Sign a client grant with the attest key in `slot` (wire-format §12.1), like an attestation.
+pub fn sign_grant(
+    t: &mut dyn CardTransport,
+    slot: Slot,
+    grant: crate::grant::UnsignedGrant,
+) -> Result<crate::grant::ClientGrant> {
+    let digest = Sha256::digest(grant.to_be_signed());
+    let sig = sign_ecdsa_p256(t, slot, &digest)?;
+    Ok(grant.with_signature(sig))
+}
+
+/// Sign a client revocation with the attest key in `slot` (wire-format §12.3).
+pub fn sign_revocation(
+    t: &mut dyn CardTransport,
+    slot: Slot,
+    revocation: crate::grant::UnsignedRevocation,
+) -> Result<crate::grant::ClientRevocation> {
+    let digest = Sha256::digest(revocation.to_be_signed());
+    let sig = sign_ecdsa_p256(t, slot, &digest)?;
+    Ok(revocation.with_signature(sig))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
