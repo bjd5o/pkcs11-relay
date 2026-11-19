@@ -146,8 +146,11 @@ impl View {
 /// and key. Its window is not checked: an expired device keeps receiving requests so it can
 /// renew during an approval, and clients reject its responses until then.
 pub fn device_attested(d: &DeviceRecord, m: &Manifest) -> bool {
-    verify_attestation_signer(&d.attestation, m)
-        .is_ok_and(|a| a.device_key.spki() == d.device_key.as_slice() && a.device_id == d.device_id)
+    verify_attestation_signer(&d.attestation, m).is_ok_and(|a| {
+        a.device_key.spki() == d.device_key.as_slice()
+            && a.device_id == d.device_id
+            && !m.device_revoked(a.device_key.fingerprint())
+    })
 }
 
 #[cfg(test)]
@@ -272,6 +275,8 @@ mod tests {
                 fingerprint: dk.fingerprint().to_string(),
                 auth_key: dk.spki().to_vec(),
                 auth_fingerprint: dk.fingerprint().to_string(),
+                admin_key: None,
+                admin_fingerprint: None,
                 attestation: st.with_signature(sig).bytes().to_vec(),
                 keys: keys
                     .iter()

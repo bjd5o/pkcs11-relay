@@ -64,6 +64,15 @@ const SCHEMA: &[&str] = &[
         revoked_at INTEGER NOT NULL,
         reason TEXT NOT NULL,
         seen_at INTEGER NOT NULL)",
+    // Client revocations signed by an attest key (wire-format §12.3), served until `live_until`
+    // (the end of the last grant they cancel). Keyed by the exact bytes' hash.
+    "CREATE TABLE IF NOT EXISTS client_revocations (
+        id TEXT PRIMARY KEY,
+        client_fingerprint TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        revocation BLOB NOT NULL,
+        live_until INTEGER NOT NULL,
+        created_at INTEGER NOT NULL)",
 ];
 
 pub async fn open(data_dir: &Path) -> Result<Db, String> {
@@ -101,6 +110,13 @@ pub struct ClientRecord {
     pub approved_keys: Vec<String>,
     pub approved_by: String,
     pub created_at: i64,
+    /// The latest client grant (wire-format §12.1), as the device signed it. `None` for a
+    /// client paired before grants.
+    #[serde(skip)]
+    pub grant: Option<Vec<u8>>,
+    /// The grant's `seq`, 0 without one.
+    pub grant_seq: u64,
+    pub last_seen: i64,
 }
 
 /// A hardware key a device says it can operate. Untrusted: a hint for discovery.
@@ -140,6 +156,11 @@ pub struct DeviceRecord {
     #[serde(skip)]
     pub auth_key: Vec<u8>,
     pub auth_fingerprint: String,
+    /// The biometric-gated key that signs this device's admin calls (wire-format §8.5), if it
+    /// registered one.
+    #[serde(skip)]
+    pub admin_key: Option<Vec<u8>>,
+    pub admin_fingerprint: Option<String>,
     #[serde(skip)]
     pub attestation: Vec<u8>,
     pub keys: Vec<AdvertisedKey>,
@@ -165,6 +186,9 @@ fn client_from_row(r: &sqlx::sqlite::SqliteRow) -> ClientRecord {
         approved_keys: serde_json::from_str(r.get::<&str, _>("approved_keys")).unwrap_or_default(),
         approved_by: r.get("approved_by"),
         created_at: r.get("created_at"),
+        grant: r.get("grant_bytes"),
+        grant_seq: r.get::<Option<i64>, _>("grant_seq").unwrap_or(0) as u64,
+        last_seen: r.get::<Option<i64>, _>("last_seen").unwrap_or(0),
     }
 }
 
@@ -175,6 +199,8 @@ fn device_from_row(r: &sqlx::sqlite::SqliteRow) -> DeviceRecord {
         fingerprint: r.get("fingerprint"),
         auth_key: r.get("auth_key"),
         auth_fingerprint: r.get("auth_fingerprint"),
+        admin_key: r.get("admin_key"),
+        admin_fingerprint: r.get("admin_fingerprint"),
         attestation: r.get("attestation"),
         keys: serde_json::from_str(r.get::<&str, _>("keys")).unwrap_or_default(),
         push: serde_json::from_str(r.get::<&str, _>("push")).unwrap_or_default(),
@@ -206,8 +232,9 @@ pub async fn client_by_id(db: &Db, id: &str) -> R<Option<ClientRecord>> {
 
 pub async fn insert_client(db: &Db, c: &ClientRecord) -> R<()> {
     sqlx::query(
-        "INSERT INTO clients (client_id, public_key, fingerprint, host, approved_keys, approved_by, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO clients (client_id, public_key, fingerprint, host, approved_keys, approved_by, created_at,
+           grant_bytes, grant_seq, last_seen)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&c.client_id)
     .bind(&c.public_key)
@@ -216,9 +243,120 @@ pub async fn insert_client(db: &Db, c: &ClientRecord) -> R<()> {
     .bind(serde_json::to_string(&c.approved_keys).expect("json"))
     .bind(&c.approved_by)
     .bind(c.created_at)
+    .bind(&c.grant)
+    .bind(c.grant_seq as i64)
+    .bind(c.last_seen)
     .execute(db)
     .await?;
     Ok(())
+}
+
+/// Replace a client's grant and routable keys, only if `seq` is above the stored one. Returns
+/// whether it replaced.
+pub async fn replace_grant(
+    db: &Db,
+    client_id: &str,
+    grant: &[u8],
+    seq: u64,
+    keys: &[String],
+) -> R<bool> {
+    Ok(sqlx::query(
+        "UPDATE clients SET grant_bytes = ?, grant_seq = ?, approved_keys = ?
+         WHERE client_id = ? AND COALESCE(grant_seq, 0) < ?",
+    )
+    .bind(grant)
+    .bind(seq as i64)
+    .bind(serde_json::to_string(keys).expect("json"))
+    .bind(client_id)
+    .bind(seq as i64)
+    .execute(db)
+    .await?
+    .rows_affected()
+        > 0)
+}
+
+pub async fn touch_client(db: &Db, id: &str, now: i64) -> R<()> {
+    sqlx::query("UPDATE clients SET last_seen = ? WHERE client_id = ?")
+        .bind(now)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// A stored client revocation.
+#[derive(Debug, Clone)]
+pub struct RevocationRecord {
+    pub client_fingerprint: String,
+    pub seq: u64,
+    pub revocation: Vec<u8>,
+    pub live_until: u64,
+}
+
+/// Store a revocation and delete the client it names, in one transaction.
+pub async fn revoke_client(db: &Db, r: &RevocationRecord, now: u64) -> R<()> {
+    use sha2::Digest as _;
+    let id = hex::encode(sha2::Sha256::digest(&r.revocation));
+    let mut tx = db.begin().await?;
+    sqlx::query(
+        "INSERT INTO client_revocations (id, client_fingerprint, seq, revocation, live_until, created_at)
+         VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+    )
+    .bind(&id)
+    .bind(&r.client_fingerprint)
+    .bind(r.seq as i64)
+    .bind(&r.revocation)
+    .bind(r.live_until as i64)
+    .bind(now as i64)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM clients WHERE fingerprint = ?")
+        .bind(&r.client_fingerprint)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Revocations still live at `now` (wire-format §12.3), oldest first.
+pub async fn live_revocations(db: &Db, now: u64) -> R<Vec<RevocationRecord>> {
+    Ok(sqlx::query(
+        "SELECT * FROM client_revocations WHERE live_until >= ? ORDER BY created_at, id",
+    )
+    .bind(now as i64)
+    .fetch_all(db)
+    .await?
+    .iter()
+    .map(|r| RevocationRecord {
+        client_fingerprint: r.get("client_fingerprint"),
+        seq: r.get::<i64, _>("seq") as u64,
+        revocation: r.get("revocation"),
+        live_until: r.get::<i64, _>("live_until") as u64,
+    })
+    .collect())
+}
+
+/// Whether a live revocation names this client key.
+pub async fn client_key_revoked(db: &Db, fingerprint: &str, now: u64) -> R<bool> {
+    let r: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM client_revocations WHERE client_fingerprint = ? AND live_until >= ? LIMIT 1",
+    )
+    .bind(fingerprint)
+    .bind(now as i64)
+    .fetch_optional(db)
+    .await?;
+    Ok(r.is_some())
+}
+
+/// Forget revocations whose cancelled grants have all expired.
+pub async fn prune_revocations(db: &Db, before: u64) -> R<u64> {
+    Ok(
+        sqlx::query("DELETE FROM client_revocations WHERE live_until < ?")
+            .bind(before as i64)
+            .execute(db)
+            .await?
+            .rows_affected(),
+    )
 }
 
 pub async fn list_clients(db: &Db) -> R<Vec<ClientRecord>> {
@@ -251,6 +389,18 @@ pub async fn device_by_auth_fingerprint(db: &Db, fp: &str) -> R<Option<DeviceRec
     )
 }
 
+/// The device whose admin-auth key has this fingerprint.
+pub async fn device_by_admin_fingerprint(db: &Db, fp: &str) -> R<Option<DeviceRecord>> {
+    Ok(
+        sqlx::query("SELECT * FROM devices WHERE admin_fingerprint = ?")
+            .bind(fp)
+            .fetch_optional(db)
+            .await?
+            .as_ref()
+            .map(device_from_row),
+    )
+}
+
 pub async fn device_by_id(db: &Db, id: &str) -> R<Option<DeviceRecord>> {
     Ok(sqlx::query("SELECT * FROM devices WHERE device_id = ?")
         .bind(id)
@@ -262,17 +412,21 @@ pub async fn device_by_id(db: &Db, id: &str) -> R<Option<DeviceRecord>> {
 
 pub async fn upsert_device(db: &Db, d: &DeviceRecord) -> R<()> {
     sqlx::query(
-        "INSERT INTO devices (device_id, device_key, fingerprint, auth_key, auth_fingerprint, attestation, keys, push, last_seen, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO devices (device_id, device_key, fingerprint, auth_key, auth_fingerprint, admin_key, admin_fingerprint,
+           attestation, keys, push, last_seen, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(device_id) DO UPDATE SET attestation = excluded.attestation, keys = excluded.keys,
            push = excluded.push, last_seen = excluded.last_seen,
-           auth_key = excluded.auth_key, auth_fingerprint = excluded.auth_fingerprint",
+           auth_key = excluded.auth_key, auth_fingerprint = excluded.auth_fingerprint,
+           admin_key = excluded.admin_key, admin_fingerprint = excluded.admin_fingerprint",
     )
     .bind(&d.device_id)
     .bind(&d.device_key)
     .bind(&d.fingerprint)
     .bind(&d.auth_key)
     .bind(&d.auth_fingerprint)
+    .bind(&d.admin_key)
+    .bind(&d.admin_fingerprint)
     .bind(&d.attestation)
     .bind(serde_json::to_string(&d.keys).expect("json"))
     .bind(serde_json::to_string(&d.push).expect("json"))
@@ -323,14 +477,17 @@ pub async fn admit_device(db: &Db, d: &DeviceRecord, link_exp: u64) -> R<Result<
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "INSERT INTO devices (device_id, device_key, fingerprint, auth_key, auth_fingerprint, attestation, keys, push, last_seen, created_at, setup_link_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO devices (device_id, device_key, fingerprint, auth_key, auth_fingerprint, admin_key, admin_fingerprint,
+           attestation, keys, push, last_seen, created_at, setup_link_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&d.device_id)
     .bind(&d.device_key)
     .bind(&d.fingerprint)
     .bind(&d.auth_key)
     .bind(&d.auth_fingerprint)
+    .bind(&d.admin_key)
+    .bind(&d.admin_fingerprint)
     .bind(&d.attestation)
     .bind(serde_json::to_string(&d.keys).expect("json"))
     .bind(serde_json::to_string(&d.push).expect("json"))
@@ -509,26 +666,53 @@ pub async fn audit_since(db: &Db, since: i64) -> R<Vec<AuditEvent>> {
         .collect())
 }
 
-/// Bring a database made before relay-auth keys up to date: add the columns, and let devices
-/// registered without a separate key authenticate with their device key.
-async fn migrate(db: &Db) -> R<()> {
-    let cols: Vec<String> = sqlx::query("PRAGMA table_info(devices)")
+async fn add_columns(db: &Db, table: &str, wanted: &[(&str, &str)]) -> R<()> {
+    let cols: Vec<String> = sqlx::query(&format!("PRAGMA table_info({table})"))
         .fetch_all(db)
         .await?
         .iter()
         .map(|r| r.get::<String, _>("name"))
         .collect();
-    for (col, ty) in [
-        ("auth_key", "BLOB"),
-        ("auth_fingerprint", "TEXT"),
-        ("setup_link_id", "TEXT"),
-    ] {
+    for (col, ty) in wanted {
         if !cols.iter().any(|c| c == col) {
-            sqlx::query(&format!("ALTER TABLE devices ADD COLUMN {col} {ty}"))
+            sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {col} {ty}"))
                 .execute(db)
                 .await?;
         }
     }
+    Ok(())
+}
+
+/// Bring an older database up to date: relay-auth keys (devices registered without a separate
+/// key authenticate with their device key), setup links, admin-auth keys, and client grants.
+async fn migrate(db: &Db) -> R<()> {
+    add_columns(
+        db,
+        "devices",
+        &[
+            ("auth_key", "BLOB"),
+            ("auth_fingerprint", "TEXT"),
+            ("setup_link_id", "TEXT"),
+            ("admin_key", "BLOB"),
+            ("admin_fingerprint", "TEXT"),
+        ],
+    )
+    .await?;
+    add_columns(
+        db,
+        "clients",
+        &[
+            ("grant_bytes", "BLOB"),
+            ("grant_seq", "INTEGER"),
+            ("last_seen", "INTEGER"),
+        ],
+    )
+    .await?;
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS devices_admin_fingerprint ON devices(admin_fingerprint)",
+    )
+    .execute(db)
+    .await?;
     sqlx::query(
         "UPDATE devices SET auth_key = device_key, auth_fingerprint = fingerprint WHERE auth_fingerprint IS NULL",
     )

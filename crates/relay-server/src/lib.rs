@@ -109,6 +109,9 @@ pub fn spawn_signer_watch(st: Arc<AppState>) {
                 {
                     tracing::warn!(error = %e, "pruning used setup links");
                 }
+                if let Err(e) = db::prune_revocations(&st.db, now()).await {
+                    tracing::warn!(error = %e, "pruning client revocations");
+                }
             }
             on_signer_change(&st, st.signer_watch.recompute(&st.db, now()).await);
         }
