@@ -31,7 +31,7 @@ deploy/macos/
   notarize.sh              # zip, notarytool submit --wait, check the result; Brian runs it locally
 apps/apple/
   build-provider-xcframework.sh   # librelay_pkcs11.a for ios and ios-sim, headers, xcodebuild -create-xcframework
-  Provider/include/        # OASIS PKCS#11 3.1 headers and a module map for Swift
+  Provider/include/        # OASIS PKCS#11 3.2 headers and a module map for Swift
   SampleSigner/            # iPad sample app (a second target in project.yml)
 tests/
   lib.sh                   # check helpers shared by m3-gate.sh and macos-gate.sh
@@ -130,7 +130,7 @@ Only the macOS release archive needs this, and only for browser downloads. Brian
 | x86_64 slice | Built in CI; run once by hand under Rosetta during the gate, if an x86_64 `pkcs11-tool` is at hand | No Intel Mac; GitHub's Intel runners are being retired |
 | Library validation | Documented, not worked around: apps with library validation (most Apple-signed GUI apps) refuse the module; command-line tools, OpenSSL 3 with `pkcs11-provider` and Nix's OpenSSH load it. Apple's `/usr/bin/ssh` is checked during the gate and the result written down | Spec: "Apps that enforce library validation will not load any third-party module" |
 | iPadOS library | `librelay_pkcs11.a` for `aarch64-apple-ios` and `aarch64-apple-ios-sim`, in `RelayPKCS11.xcframework` with the PKCS#11 headers and a module map, so Swift calls `C_GetFunctionList` directly | The spec's "standard PKCS#11 C API"; the simulator slice lets the sample app run in CI |
-| PKCS#11 headers | The OASIS PKCS#11 3.1 headers (`pkcs11.h`, `pkcs11t.h`, `pkcs11f.h`), vendored into `apps/apple/Provider/include` | Every integrator wants the real header; OASIS publishes them for redistribution |
+| PKCS#11 headers | The OASIS PKCS#11 3.2 headers (`pkcs11.h`, `pkcs11t.h`, `pkcs11f.h`), vendored into `apps/apple/Provider/include`, pinned to a commit (3.1 in the first plan; Brian chose 3.2 on 2026-11-20) | Every integrator wants the real header; OASIS publishes them for redistribution |
 | Config on iPadOS | The sample app writes `provider.toml` to `Library/Application Support/relay-pkcs11/` in its container, with absolute paths there; no environment variable | Uses the default lookup, so it's tested on the device too |
 | Getting the config onto the iPad | The sample app imports a folder from Files: `provider.toml`, `signer.asc`, `relay-ca.pem`. It rewrites the paths in `provider.toml` to its container | No new format to design or sign. A setup link for clients would need its own wire format; that's post-MVP |
 | Client identity key on iPadOS | A software key file in the app container, created by the provider on first run, as on Linux, with complete file protection | A Secure Enclave client key would need a new signer interface in the provider (post-MVP) |
@@ -189,7 +189,7 @@ Manual, on Brian's hardware, against the `gate-m5` relay:
 ## Dependencies (approved 2026-11-19)
 
 - **`gethostname`** (Rust crate) as a direct dependency of `relay-pkcs11`, pinned in `[workspace.dependencies]`.
-- **OASIS PKCS#11 3.1 headers**, vendored into `apps/apple/Provider/include`.
+- **OASIS PKCS#11 3.2 headers** (3.1 when approved; switched 2026-11-20), vendored into `apps/apple/Provider/include`.
 - **Flox catalog packages** for the project environment: `opensc`, `openssl`, `pkcs11-provider`, `openssh`.
 - **nixpkgs**, pinned in `flake.lock`, as the flake's only input.
 
