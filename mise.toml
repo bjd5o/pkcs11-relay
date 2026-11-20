@@ -6,7 +6,8 @@
 # Pinned stable toolchain, installed through rustup by mise's built-in rust backend.
 # Linux targets are added in milestone 3, when the provider builds for glibc and musl.
 # iOS device and simulator targets for the approver app's XCFramework (milestone 5).
-rust = { version = "1.93.0", components = "rustfmt,clippy", targets = "aarch64-apple-ios,aarch64-apple-ios-sim" }
+# x86_64-apple-darwin: the Intel slice of the universal provider dylib (milestone 7).
+rust = { version = "1.93.0", components = "rustfmt,clippy", targets = "aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-darwin" }
 # Fuzzing (fuzz/run.sh adds the pinned nightly toolchain it needs through rustup).
 "cargo:cargo-fuzz" = "0.13.2"
 # Generates apps/apple/RelayApprover.xcodeproj from project.yml (milestone 5).
