@@ -1,14 +1,16 @@
 // The provider's simulator test, run by tests/sim-provider.sh: a real relay and an auto-approving
 // relay-test-approver on the host, the sample app in the simulator. The test imports the
-// fixture config, waits until the pairing is approved and the keys are listed, signs a message
-// with sign-ec and checks that the app verified the signature.
+// fixture config (without a client key, so the provider creates one in the container), reads
+// the pairing code the app shows and hands it to the host, where the test approver compares it
+// as a person would and approves. Then it signs a message with sign-ec and checks that the app
+// verified the signature.
 
 import XCTest
 
 final class SimProvider: XCTestCase {
     func testImportPairSignAndVerify() throws {
         let env = ProcessInfo.processInfo.environment
-        guard let dir = env["SAMPLE_SIGNER_IMPORT"] else {
+        guard let dir = env["SAMPLE_SIGNER_IMPORT"], let codeFile = env["SAMPLE_SIGNER_CODE_FILE"] else {
             throw XCTSkip("run by tests/sim-provider.sh")
         }
         continueAfterFailure = false
@@ -16,8 +18,15 @@ final class SimProvider: XCTestCase {
         app.launchEnvironment["SAMPLE_SIGNER_IMPORT"] = dir
         app.launch()
 
-        // The first listing registers the client and logs the pairing code; the test approver
-        // approves the pairing, and a refresh then lists the keys.
+        // The first listing creates the client key, registers the client and logs the pairing
+        // code, which the app shows. The test approver starts once it has the code.
+        let code = app.staticTexts["pairing-code"]
+        XCTAssertTrue(code.waitForExistence(timeout: 60), "the app shows a pairing code:\n\(app.debugDescription)")
+        XCTAssertNotNil(code.label.range(of: #"^[a-z]+(-[a-z]+)+$"#, options: .regularExpression),
+                        "a pairing code alone, not '\(code.label)'")
+        try code.label.write(toFile: codeFile, atomically: true, encoding: .utf8)
+
+        // The test approver approves the pairing; a refresh then lists the keys.
         let key = app.buttons["key-softcard-a-sign-ec"]
         let refresh = app.buttons["refresh"]
         let deadline = Date().addingTimeInterval(180)

@@ -5,9 +5,10 @@
 // The folder holds provider.toml and the files it names: the manifest signer (signer.asc), the
 // relay CA (relay-ca.pem) and, with hardware attestation, its roots file. Each of those is
 // copied next to provider.toml and its path rewritten to the copy. The provider's own state
-// (manifest cache, client key, log) moves into the container too. A client key file is copied
-// only if the folder has one (test fixtures do); otherwise the provider creates the key on its
-// first run and the client pairs.
+// (manifest cache, client key, log) moves into the container too. Normally the folder has no
+// client key: the provider creates one on its first run, the app shows the pairing code, and a
+// person compares it in an approver app. A key file in the folder (moving an existing identity)
+// is copied; an existing key in the container is kept when re-importing without one.
 
 import Foundation
 

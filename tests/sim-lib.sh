@@ -1,22 +1,17 @@
 # Shared by the simulator tests (tests/sim-e2e.sh, tests/sim-provider.sh); source it after
 # setting W (work directory) and PORT. Needs Xcode, python3 and curl.
 
-# pick_simulator PREFIX [NAME]: sets DEST (an xcodebuild destination) and SIM (a description).
-# Target the simulator by id: a name alone means "that name on the newest runtime", and fails
-# when the device exists only on an older one (iPhone 17 Pro on iOS 26 next to iOS 27). Without
-# a name, take the first device whose name starts with PREFIX on the newest iOS runtime this
-# Xcode's SDK covers.
+# pick_simulator PREFIX [NAME]: sets UDID, DEST (an xcodebuild destination) and SIM (a
+# description). Target the simulator by id: a name alone means "that name on the newest
+# runtime", and fails when the device exists only on an older one (iPhone 17 Pro on iOS 26 next
+# to iOS 27). Take the device called NAME, or else the first whose name starts with PREFIX, on
+# the newest iOS runtime this Xcode's SDK covers.
 pick_simulator() {
-  if [ -n "${2:-}" ]; then
-    DEST="platform=iOS Simulator,name=$2"
-    SIM=$2
-    return
-  fi
   SDK=$(xcrun --sdk iphonesimulator --show-sdk-version)
   PICK=$(xcrun simctl list devices available -j | python3 -I -c '
 import json, sys
 sdk = tuple(int(x) for x in sys.argv[1].split("."))
-prefix = sys.argv[2]
+prefix, exact = sys.argv[2], sys.argv[3]
 best = None
 for rt, devs in json.load(sys.stdin)["devices"].items():
     name = rt.rsplit(".", 1)[-1]
@@ -26,18 +21,19 @@ for rt, devs in json.load(sys.stdin)["devices"].items():
     if not all(p.isdigit() for p in parts):
         continue  # device-specific runtimes such as iOS-27-2-iPhone19-4
     ver = tuple(int(p) for p in parts)
-    found = [d for d in devs if d["name"].startswith(prefix)]
+    found = [d for d in devs if (d["name"] == exact if exact else d["name"].startswith(prefix))]
     if found and ver <= sdk and (best is None or ver > best[0]):
         best = (ver, found[0])
 if best:
     print(best[1]["udid"], best[1]["name"], "(iOS " + ".".join(map(str, best[0])) + ")")
-' "$SDK" "$1")
+' "$SDK" "$1" "${2:-}")
   if [ -z "$PICK" ]; then
-    echo "no available $1 simulator for the iOS $SDK SDK; available devices:"
+    echo "no available ${2:-$1} simulator for the iOS $SDK SDK; available devices:"
     xcrun simctl list devices available | tail -30
     exit 1
   fi
-  DEST="platform=iOS Simulator,id=${PICK%% *}"
+  UDID=${PICK%% *}
+  DEST="platform=iOS Simulator,id=$UDID"
   SIM=${PICK#* }
 }
 

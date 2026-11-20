@@ -114,9 +114,14 @@ struct SignerView: View {
                         .accessibilityIdentifier("import-config")
                     Text(model.status).accessibilityIdentifier("status")
                     if let code = model.pairingCode {
-                        LabeledContent("Pairing code", value: code)
-                            .font(.title3.monospaced())
-                            .accessibilityIdentifier("pairing-code")
+                        // Two texts, not LabeledContent, which reads as one combined element.
+                        VStack(alignment: .leading) {
+                            Text("Pairing code").font(.caption).foregroundStyle(.secondary)
+                            Text(code)
+                                .font(.title3.monospaced())
+                                .textSelection(.enabled)
+                                .accessibilityIdentifier("pairing-code")
+                        }
                     }
                     Button("Refresh keys") { Task { await model.refresh() } }
                         .accessibilityIdentifier("refresh")
