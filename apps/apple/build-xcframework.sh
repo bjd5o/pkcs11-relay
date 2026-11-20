@@ -13,7 +13,8 @@ FEATURE_ARGS=""
 [ -n "${FEATURES:-}" ] && FEATURE_ARGS="--features $FEATURES"
 OUT=apps/apple/Generated
 # Never leave an older framework (for example a test-card build) behind if this build fails.
-rm -rf "$OUT"
+# RelayPKCS11.xcframework (build-provider-xcframework.sh) stays.
+rm -rf "$OUT/RelayFFI.xcframework" "$OUT/bindings" "$OUT/headers"
 
 # Host-side proc macros first, without the deployment-target variables: with them set,
 # release builds of proc-macro dylibs came out malformed ("mis-aligned LINKEDIT").

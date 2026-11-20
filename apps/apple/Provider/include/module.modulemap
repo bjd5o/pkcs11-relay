@@ -1,0 +1,5 @@
+module RelayPKCS11 {
+    umbrella header "RelayPKCS11.h"
+    link "relay_pkcs11"
+    export *
+}
