@@ -151,3 +151,8 @@ Found during the gates; out of scope for the MVP.
   - The iPad changed the client's keys (dropped hw-auth; seq 2). The provider stopped offering hw-auth, and the phone, after answering its next request, listed only hw-sign and hw-unseal.
   - The Mac revoked the client (up to seq 2). The relay refuses it with 403 `ClientRevoked`, so the provider lists no keys and no request reaches a device. Device-side denial of a revoked client is covered by the engine and FFI tests; the gate couldn't reach it past the relay.
   - One request to the phone expired: the push arrived but wasn't answered in time (Brian). The resent one was approved.
+
+## Milestone 7: provider on macOS and iPadOS (plan: `docs/milestone-7.md`)
+
+- [x] Part 0, host name: `discovery::host_name` asks the system first through the `gethostname` crate, then `/proc`, `/etc/hostname` and `$HOSTNAME`; the config's `host` still wins
+- [x] Part 0, config lookup: `config::locate` reads `$RELAY_PKCS11_CONFIG`, else the first of `$XDG_CONFIG_HOME/relay-pkcs11/provider.toml` (`~/.config` when unset, empty or relative) and, on Apple platforms, `~/Library/Application Support/relay-pkcs11/provider.toml`; no merging. A variable naming a missing file is an error; no file found lists every path tried; a hidden file is logged as a warning after the logger starts
