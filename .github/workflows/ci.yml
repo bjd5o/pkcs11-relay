@@ -69,8 +69,8 @@ jobs:
       - run: brew install xcodegen
       - run: tests/sim-e2e.sh
   provider-macos:
-    # Milestone 7, part A: the universal dylib, the milestone 3 checks natively on a Mac
-    # (tests/macos-gate.sh) against the arm64 slice, and the Nix flake. Unsigned: signing and
+    # Milestone 7, part A: the Apple silicon dylib, the milestone 3 checks natively on a Mac
+    # (tests/macos-gate.sh) against it, and the Nix flake. No Intel Macs. Unsigned: signing and
     # notarization stay with Brian (deploy/macos/notarize.sh).
     needs: rust
     runs-on: macos-15
@@ -79,16 +79,11 @@ jobs:
       # The Rust version comes from mise.toml, which follows the flake's nixpkgs (sync-rust).
       - run: echo "RUST=$(sed -n 's/^rust = { version = \"\([^\"]*\)\".*/\1/p' mise.toml)" >> "$GITHUB_ENV"
       - run: |
-          rustup toolchain install "$RUST" --profile minimal --target x86_64-apple-darwin
+          rustup toolchain install "$RUST" --profile minimal
           rustup default "$RUST"
       # Flox for the gate's callers (.flox/env); its installer also brings Nix for the flake.
       - uses: flox/install-flox-action@v2
       - run: deploy/macos/build-provider.sh
-      - name: both slices present
-        run: |
-          archs=$(lipo -archs dist/librelay_pkcs11-macos-universal.dylib)
-          echo "$archs"
-          for a in arm64 x86_64; do echo "$archs" | grep -qw "$a"; done
       - run: MOD=dist/librelay_pkcs11-aarch64-apple-darwin.dylib flox activate -- tests/macos-gate.sh
       - run: nix flake check
       - uses: actions/upload-artifact@v4

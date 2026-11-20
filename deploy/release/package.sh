@@ -4,7 +4,7 @@
 #   deploy/release/package.sh v0.7.0 <dir>
 # <dir> holds the builds under the names CI and deploy/macos/build-provider.sh give them:
 #   librelay_pkcs11-{x86_64,aarch64}-{gnu,musl}.so            (CI `provider` job artifacts)
-#   librelay_pkcs11-{aarch64,x86_64}-apple-darwin.dylib       (signed and notarized)
+#   librelay_pkcs11-aarch64-apple-darwin.dylib                (signed and notarized; no Intel Macs)
 # Output in dist/release/<version>/: one relay-pkcs11-<version>-<target>.tar.gz per build,
 # each holding lib/librelay_pkcs11.{so,dylib}, plus SHA256SUMS. mise picks the archive by
 # the OS and CPU in its name. Missing builds are skipped with a warning; a macOS dylib that
@@ -27,7 +27,6 @@ pairs=(
   "librelay_pkcs11-x86_64-musl.so x86_64-unknown-linux-musl"
   "librelay_pkcs11-aarch64-musl.so aarch64-unknown-linux-musl"
   "librelay_pkcs11-aarch64-apple-darwin.dylib aarch64-apple-darwin"
-  "librelay_pkcs11-x86_64-apple-darwin.dylib x86_64-apple-darwin"
 )
 made=0
 for pair in "${pairs[@]}"; do

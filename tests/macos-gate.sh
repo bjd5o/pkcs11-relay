@@ -14,7 +14,8 @@ PORT=${PORT:-18443}
 W=$(mktemp -d "${TMPDIR:-/tmp}/macos-gate.XXXXXX")
 PIDS=()
 cleanup() {
-  for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
+  # ${PIDS[@]+…}: an empty array is "unbound" under set -u in macOS's bash 3.2.
+  for p in ${PIDS[@]+"${PIDS[@]}"}; do kill "$p" 2>/dev/null || true; done
   wait 2>/dev/null || true
   if [ -n "${KEEP:-}" ]; then echo "kept $W"; else rm -rf "$W"; fi
 }
@@ -31,7 +32,7 @@ if [ -z "${MOD:-}" ]; then
   MOD=target/debug/librelay_pkcs11.dylib
 fi
 MOD="$(cd "$(dirname "$MOD")" && pwd)/$(basename "$MOD")"
-echo "module: $MOD ($(lipo -archs "$MOD"))"
+echo "module: $MOD"
 
 # OpenSSL finds pkcs11-provider through OPENSSL_MODULES; Flox puts it under $FLOX_ENV.
 if [ -z "${OPENSSL_MODULES:-}" ] && [ -n "${FLOX_ENV:-}" ] && [ -d "$FLOX_ENV/lib/ossl-modules" ]; then

@@ -294,3 +294,8 @@ Decision (Brian): this is a demo app; drop databases and start clean rather than
 
 Context: GUI apps on macOS don't inherit shell environment variables, so a config named only by `RELAY_PKCS11_CONFIG` is awkward there. The spec named no default path.
 Decision (Brian): when `RELAY_PKCS11_CONFIG` is unset, the provider reads `$XDG_CONFIG_HOME/relay-pkcs11/provider.toml` (`~/.config` when the variable is unset, empty or relative), then, on Apple platforms, `~/Library/Application Support/relay-pkcs11/provider.toml`. The paths follow Ghostty's. Unlike Ghostty, which loads every file it finds and merges them, the first file found is the whole config: the file names the manifest signer and the trust anchors, and a merge could combine them from different files. A `RELAY_PKCS11_CONFIG` that names a missing file is an error, not a fall-through. Shadowed files are logged as a warning. The spec's Configuration paragraph and milestone 2 item were updated with Brian's approval; details are in `docs/milestone-7.md`, "Config file lookup".
+
+## 2026-11-20: No Intel Macs
+
+Context: the milestone 7 plan built a universal (arm64 + x86_64) macOS dylib and an `x86_64-darwin` flake package, with the Intel slice tested only under Rosetta.
+Decision (Brian): Intel Macs aren't supported. The provider ships for Apple silicon only: `deploy/macos/build-provider.sh` builds `aarch64-apple-darwin`, the flake and the Flox environment drop `x86_64-darwin`, and the release has no Intel archive.

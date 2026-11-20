@@ -1,6 +1,6 @@
 # The provider on macOS
 
-`librelay_pkcs11.dylib` is the PKCS#11 module that callers such as `pkcs11-tool`, OpenSSL and OpenSSH load. It holds no private keys: each sign or decrypt goes through the relay to an approver app, where you approve it and the YubiKey does the operation. This page covers installing it on a Mac, where its config goes, and which programs will and won't load it. The design is in `docs/spec.md`; the milestone plan is `docs/milestone-7.md`.
+`librelay_pkcs11.dylib` is the PKCS#11 module that callers such as `pkcs11-tool`, OpenSSL and OpenSSH load. It holds no private keys: each sign or decrypt goes through the relay to an approver app, where you approve it and the YubiKey does the operation. This page covers installing it on an Apple silicon Mac (Intel Macs aren't supported), where its config goes, and which programs will and won't load it. The design is in `docs/spec.md`; the milestone plan is `docs/milestone-7.md`.
 
 ## Install
 
@@ -29,7 +29,7 @@ mise use -g github:bjd5o/pkcs11-relay@0.7.0
 # module: "$(mise where github:bjd5o/pkcs11-relay)/lib/librelay_pkcs11.dylib"
 ```
 
-**By hand:** download `relay-pkcs11-v0.7.0-aarch64-apple-darwin.tar.gz` (or `x86_64` for an Intel Mac) and `SHA256SUMS` from the GitHub release, check it with `shasum -a 256 -c SHA256SUMS --ignore-missing`, and unpack it anywhere. The dylib is notarized, so a browser download loads without a Gatekeeper prompt (macOS checks the ticket online the first time).
+**By hand:** download `relay-pkcs11-v0.7.0-aarch64-apple-darwin.tar.gz` and `SHA256SUMS` from the GitHub release, check it with `shasum -a 256 -c SHA256SUMS --ignore-missing`, and unpack it anywhere. The dylib is notarized, so a browser download loads without a Gatekeeper prompt (macOS checks the ticket online the first time).
 
 The Nix and Flox build needs macOS 14 or newer; the release build needs macOS 13 or newer.
 
@@ -86,7 +86,7 @@ Making the keys visible to every app would need a CryptoTokenKit extension, whic
 
    ```sh
    CODESIGN_IDENTITY="Developer ID Application: …" deploy/macos/build-provider.sh
-   deploy/macos/notarize.sh dist/librelay_pkcs11-aarch64-apple-darwin.dylib dist/librelay_pkcs11-x86_64-apple-darwin.dylib
+   deploy/macos/notarize.sh dist/librelay_pkcs11-aarch64-apple-darwin.dylib
    ```
 
 3. Put the CI `.so` files next to those in `dist/`, then `deploy/release/package.sh v0.7.0 dist` and `gh release create v0.7.0 dist/release/v0.7.0/*`.

@@ -2,7 +2,7 @@
 
 Status: **second draft, with Brian's answers from 2026-11-19.** Nothing here is built yet.
 
-This phase ships `relay-pkcs11` for Apple platforms: a universal `.dylib` for macOS, distributed through a Nix flake (for Flox and Nix) and as GitHub release assets (for mise), and a static library in an XCFramework for iPadOS, with a small iPad sample app. `docs/spec.md` remains the source of truth: "PKCS#11 provider (`relay-pkcs11`)", "Per platform" and "Milestones" item 7. This file turns those into tasks, sets defaults for what the spec leaves open, and defines the gate.
+This phase ships `relay-pkcs11` for Apple platforms: a `.dylib` for Apple silicon Macs (Intel Macs aren't supported; Brian, 2026-11-20), distributed through a Nix flake (for Flox and Nix) and as GitHub release assets (for mise), and a static library in an XCFramework for iPadOS, with a small iPad sample app. `docs/spec.md` remains the source of truth: "PKCS#11 provider (`relay-pkcs11`)", "Per platform" and "Milestones" item 7. This file turns those into tasks, sets defaults for what the spec leaves open, and defines the gate.
 
 **Spec gate:** `pkcs11-tool` signs on macOS; the sample app signs on an iPad.
 
@@ -12,7 +12,7 @@ The provider is one crate with `crate-type = ["cdylib", "staticlib", "rlib"]`, s
 
 - **Host name.** `discovery::host_name` reads `/proc/sys/kernel/hostname` or `/etc/hostname`, then `$HOSTNAME`. None of those exists for a typical macOS or iPadOS process, so requests claim `unknown`.
 - **Config without an environment variable.** GUI apps on macOS don't see shell variables, so `RELAY_PKCS11_CONFIG` alone is awkward there.
-- **Packaging.** No universal build, no Nix flake, no release assets, no signing or notarization, no XCFramework for the provider, no PKCS#11 header for Swift callers.
+- **Packaging.** No macOS release build, no Nix flake, no release assets, no signing or notarization, no XCFramework for the provider, no PKCS#11 header for Swift callers.
 - **macOS in CI.** CI builds the provider only for Linux, and runs the third-party callers (`pkcs11-tool`, OpenSSL, `ssh`) only in the Linux container.
 - **A caller on iPadOS.** No app links the provider; the approver app must not, since it already links its own Rust static library (`RelayFFI`).
 
@@ -27,7 +27,7 @@ flake.nix, flake.lock      # packages.<system>.relay-pkcs11 for the four systems
 deploy/release/
   package.sh               # per-platform release archives, named for mise's github: backend, plus SHA256SUMS
 deploy/macos/
-  build-provider.sh        # cargo for aarch64- and x86_64-apple-darwin, lipo, codesign (when an identity is given)
+  build-provider.sh        # cargo for aarch64-apple-darwin, install name, codesign (when an identity is given)
   notarize.sh              # zip, notarytool submit --wait, check the result; Brian runs it locally
 apps/apple/
   build-provider-xcframework.sh   # librelay_pkcs11.a for ios and ios-sim, headers, xcodebuild -create-xcframework
@@ -75,7 +75,7 @@ Brian approved the change. `docs/spec.md` now names the default paths in its "Co
 Brian splits his time between macOS and Linux and doesn't use Homebrew, so the provider ships through tools that work on both: a Nix flake (installed with Flox or Nix) and per-platform GitHub release assets (installed with mise). Both are free and public. Flox's own catalog was considered and dropped: a personal catalog installs only for its owner, and sharing needs a paid Flox organization.
 
 **Nix flake (the main path).**
-- `flake.nix` at the repo root exposes `packages.<system>.relay-pkcs11` for `aarch64-darwin`, `x86_64-darwin`, `aarch64-linux` and `x86_64-linux`. It builds from source with nixpkgs' `rustPlatform.buildRustPackage`, using `Cargo.lock`, and installs only `$out/lib/librelay_pkcs11.dylib` (`.so` on Linux).
+- `flake.nix` at the repo root exposes `packages.<system>.relay-pkcs11` for `aarch64-darwin`, `aarch64-linux` and `x86_64-linux` (no Intel Macs). It builds from source with nixpkgs' `rustPlatform.buildRustPackage`, using `Cargo.lock`, and installs only `$out/lib/librelay_pkcs11.dylib` (`.so` on Linux).
 - Flox installs it straight from GitHub, pinned to a tag: `flox install github:<owner>/pkcs11-relay/v0.7.0#relay-pkcs11`, or `relay-pkcs11.flake = "github:<owner>/pkcs11-relay/v0.7.0"` under `[install]` in a manifest. The library is then at `$FLOX_ENV/lib/`. Plain Nix users run `nix profile install` or add the flake as an input.
 - It builds on the user's machine, which takes a minute or two for one crate and its dependencies. No binary cache for the MVP.
 - The flake pins `nixos-26.05` (rustc 1.95.0 on 2026-11-20; `nixpkgs-unstable` had 1.99.1), so Rust bumps come in steps of a stable release. On macOS the Nix package targets nixpkgs' deployment target, 14.0, which nixpkgs itself requires (`darwinMinVersionHook` can only raise it); the release build targets 13.0.
@@ -92,7 +92,7 @@ Brian splits his time between macOS and Linux and doesn't use Homebrew, so the p
 
 
 **Release assets (for mise).**
-- Each GitHub release carries one archive per platform, named so mise's `github:` backend picks the right one by OS and CPU: `relay-pkcs11-v0.7.0-aarch64-apple-darwin.tar.gz`, `…-x86_64-apple-darwin.tar.gz`, `…-aarch64-unknown-linux-gnu.tar.gz`, `…-x86_64-unknown-linux-gnu.tar.gz` (and the musl builds from milestone 3), plus `SHA256SUMS`. Each archive holds `lib/librelay_pkcs11.{dylib,so}`.
+- Each GitHub release carries one archive per platform, named so mise's `github:` backend picks the right one by OS and CPU: `relay-pkcs11-v0.7.0-aarch64-apple-darwin.tar.gz`, `…-aarch64-unknown-linux-gnu.tar.gz`, `…-x86_64-unknown-linux-gnu.tar.gz` (and the musl builds from milestone 3), plus `SHA256SUMS`. Each archive holds `lib/librelay_pkcs11.{dylib,so}`.
 - Install with `mise use github:<owner>/pkcs11-relay@0.7.0`. The library path for `--module` is `$(mise where github:<owner>/pkcs11-relay)/lib/librelay_pkcs11.dylib`. mise is built for executables on `PATH`, so this is a little clumsier than the flake; docs show it once.
 - aqua works with the same assets but needs a registry entry; mise's `github:` backend gives the same result without one, so no aqua-specific work.
 - The assets come from CI (the Linux `provider` job and the new `provider-macos` job) and are attached to the release by `deploy/release/package.sh`.
@@ -110,7 +110,7 @@ The only code-signing identity in Brian's keychain is **Apple Development**, not
 1. **Create the certificate.** Xcode → Settings → Accounts → the team → Manage Certificates → + → **Developer ID Application**. Only the team's Account Holder can create one. On a personal team, that's Brian. The private key stays in the login keychain; export a `.p12` backup to somewhere safe.
 2. **Create a notarization credential.** Either an app-specific password (account.apple.com → Sign-In and Security → App-Specific Passwords) or an App Store Connect API key (Users and Access → Integrations, role Developer). The API key is easier to revoke; either works.
 3. **Save it in the keychain:** `xcrun notarytool store-credentials relay-notary --apple-id <id> --team-id <team> --password <app-specific password>` (or `--key`, `--key-id`, `--issuer` for an API key). The profile name `relay-notary` is the only thing scripts refer to; the team id and credentials never enter the repo.
-4. **Per release:** `CODESIGN_IDENTITY="Developer ID Application: …" deploy/macos/build-provider.sh`, then `deploy/macos/notarize.sh dist/librelay_pkcs11-macos-universal.dylib`. The script zips the dylib, runs `notarytool submit --keychain-profile relay-notary --wait`, prints the log, and fails unless the status is `Accepted`. Expect a few minutes per submission.
+4. **Per release:** `CODESIGN_IDENTITY="Developer ID Application: …" deploy/macos/build-provider.sh`, then `deploy/macos/notarize.sh dist/librelay_pkcs11-aarch64-apple-darwin.dylib`. The script zips the dylib, runs `notarytool submit --keychain-profile relay-notary --wait`, prints the log, and fails unless the status is `Accepted`. Expect a few minutes per submission.
 5. **Check:** `codesign -dv --verbose=4` shows the Developer ID authority and `flags=0x10000(runtime)`. `spctl -a -t open --context context:primary-signature -v` on the dylib reports `accepted` with source `Notarized Developer ID`.
 
 Only the macOS release archive needs this, and only for browser downloads. Brian chose to do it in this milestone (2026-11-19); steps 1 to 3 come first, before task 8.
@@ -122,13 +122,13 @@ Only the macOS release archive needs this, and only for browser downloads. Brian
 | Host name | The `gethostname` crate, called from `discovery::host_name` before the `/proc` and `/etc` fallbacks; the config's `host` still wins | Brian's choice: the crate's name says why it's there, where `libc` could be for anything. It's a safe wrapper, so no `unsafe` is added. On iPadOS it returns the device's local name, which is what the approval screen should show |
 | Config location | The lookup in "Config file lookup" | Brian's choice, after Ghostty, with first-found-wins |
 | macOS file name and location | `librelay_pkcs11.dylib`; `$FLOX_ENV/lib/` through Flox, `lib/` under `mise where` through mise | Same stem as the Linux `.so` |
-| Minimum macOS | 13.0 (`MACOSX_DEPLOYMENT_TARGET=13.0`) for both slices | Covers every Mac Apple still updates; the approver app needs 14, but the provider doesn't use anything newer than 13 |
+| Minimum macOS | 13.0 (`MACOSX_DEPLOYMENT_TARGET=13.0`) for the release build | Covers every Mac Apple still updates; the approver app needs 14, but the provider doesn't use anything newer than 13 |
 | Install name | `@rpath/librelay_pkcs11.dylib` | Callers load it by path through `dlopen`, so the install name only matters for tools that link it |
 | Signing | Flake and mise installs: the linker's ad-hoc signature. macOS release archive: Developer ID Application, hardened runtime (`codesign --options runtime --timestamp`), identity from Brian's keychain | See "Distribution" |
 | Notarization | macOS release archive only, local, through the `relay-notary` keychain profile; not in CI | CI would need Apple credentials as secrets, which isn't worth it for the MVP |
-| CI artifact | An unsigned universal dylib from a `macos-15` job, plus `lipo -info` and the native gate script | Proves both slices build and the arm64 slice works with third-party callers |
+| CI artifact | An unsigned Apple silicon dylib from a `macos-15` job, plus the native gate script | Proves it builds and works with third-party callers |
 | CI tools on macOS | The project Flox environment (`flox activate -- tests/macos-gate.sh`), installed on the runner with Flox's GitHub action | The same tools Brian uses locally; no Homebrew anywhere |
-| x86_64 slice | Built in CI; run once by hand under Rosetta during the gate, if an x86_64 `pkcs11-tool` is at hand | No Intel Mac; GitHub's Intel runners are being retired |
+| Intel Macs | Not supported: no x86_64 slice, no `x86_64-darwin` flake package | Brian's call (2026-11-20); no Intel Mac to test on, and GitHub's Intel runners are being retired |
 | Library validation | Documented, not worked around: apps with library validation (most Apple-signed GUI apps) refuse the module; command-line tools, OpenSSL 3 with `pkcs11-provider` and Nix's OpenSSH load it. Apple's `/usr/bin/ssh` is checked during the gate and the result written down | Spec: "Apps that enforce library validation will not load any third-party module" |
 | iPadOS library | `librelay_pkcs11.a` for `aarch64-apple-ios` and `aarch64-apple-ios-sim`, in `RelayPKCS11.xcframework` with the PKCS#11 headers and a module map, so Swift calls `C_GetFunctionList` directly | The spec's "standard PKCS#11 C API"; the simulator slice lets the sample app run in CI |
 | PKCS#11 headers | The OASIS PKCS#11 3.1 headers (`pkcs11.h`, `pkcs11t.h`, `pkcs11f.h`), vendored into `apps/apple/Provider/include` | Every integrator wants the real header; OASIS publishes them for redistribution |
@@ -151,10 +151,10 @@ Brian wants Parts A and B in parallel. Part 0 changes the provider, which both p
 
 ### Part A: macOS dylib (the first half of the gate)
 
-3. **Universal build.** `deploy/macos/build-provider.sh`: release builds for both Darwin targets with the deployment target set, `lipo -create`, `install_name_tool -id`, and `codesign` when `CODESIGN_IDENTITY` is set. Output `dist/librelay_pkcs11-macos-universal.dylib`. Adds `x86_64-apple-darwin` to the targets in `mise.toml`.
+3. **macOS build.** `deploy/macos/build-provider.sh`: a release build for `aarch64-apple-darwin` with the deployment target set, `install_name_tool -id`, and `codesign` when `CODESIGN_IDENTITY` is set. Output `dist/librelay_pkcs11-aarch64-apple-darwin.dylib`.
 4. **Nix flake and project environment.** `flake.nix` with `packages.<system>.relay-pkcs11` for the four systems; `nix build .#relay-pkcs11` gives `result/lib/librelay_pkcs11.dylib`, checked with `codesign -dv` and `pkcs11-tool --module … -I`. `.flox/env/manifest.toml` with `opensc`, `openssl`, `pkcs11-provider` and `openssh` for the gate. CI runs `nix flake check` on Linux and macOS. The `sync-rust` task and its `enter` and `watch_files` hooks go into `mise.toml`, with the flake's version check; the first sync and any clippy fixes it needs are their own commit.
 5. **Native gate script.** `tests/macos-gate.sh` runs the existing `relay-server` and `relay-test-approver` binaries on the Mac with the fixtures `relay-test-approver gen-fixtures` already writes, then the same checks as `tests/m3-gate.sh` that don't need Linux: `pkcs11-tool` list, sign (EC and RSA), decrypt, denial and expiry return codes, OpenSSL 3 through `pkcs11-provider`, `ssh-keygen -D`. Built: rather than shared helpers in a `tests/lib.sh`, `tests/m3-gate.sh` takes the module, fixtures directory and sshd host as variables and `tests/macos-gate.sh` runs it unchanged, so the two can't drift. Run as `flox activate -- tests/macos-gate.sh`.
-6. **CI job `provider-macos`** on `macos-15`: install Flox, build the universal dylib, `lipo -info` shows both slices, run `tests/macos-gate.sh` against the arm64 slice inside the project environment, build the flake, upload the per-slice archives.
+6. **CI job `provider-macos`** on `macos-15`: install Flox, build the dylib, run `tests/macos-gate.sh` against it inside the project environment, check the flake, upload the dylib.
 7. **Release assets.** `deploy/release/package.sh` turns the CI builds into the per-platform archives and `SHA256SUMS`; a tag attaches them to a GitHub release. Check `mise use github:<owner>/pkcs11-relay` picks the right archive on macOS and Linux.
 8. **Signing and notarization.** `deploy/macos/notarize.sh` as in "Signing and notarization". Brian creates the certificate and keychain profile; I write the script and the release checklist.
 9. **Docs.** A macOS section in the user docs: install through Flox or Nix (flake), or mise (release assets), where the config goes, `pkcs11-tool`, OpenSSL, OpenSSH, what refuses to load it and why.
@@ -169,11 +169,12 @@ Brian wants Parts A and B in parallel. Part 0 changes the provider, which both p
 ## Gate (manual, plus CI)
 
 CI, on every change:
-- `provider-macos`: the universal dylib builds, both slices are present, and `tests/macos-gate.sh` passes against the arm64 slice.
+- `provider-macos`: the dylib builds, `tests/macos-gate.sh` passes against it, and `nix flake check` passes.
+- `flake-linux`: `nix flake check` passes on Linux.
 - `apple`: the sample app signs in the simulator, and the signature verifies.
 
 Manual, on Brian's hardware, against the `gate-m5` relay:
-1. **macOS:** the provider installed with `flox install github:<owner>/pkcs11-relay/<tag>#relay-pkcs11` into an environment. With `provider.toml` in `~/.config/relay-pkcs11/` and no `RELAY_PKCS11_CONFIG`, run `pkcs11-tool --module "$FLOX_ENV/lib/librelay_pkcs11.dylib" --sign -m ECDSA-SHA256 --id 03` with `hw-sign`. Approve it in the Mac approver app with the YubiKey. The signature verifies with OpenSSL against the public key read through the provider. Also once with the mise install. Also once with the notarized archive, downloaded through a browser so it's quarantined. Also once under `arch -x86_64`, if an x86_64 `pkcs11-tool` is available.
+1. **macOS:** the provider installed with `flox install github:<owner>/pkcs11-relay/<tag>#relay-pkcs11` into an environment. With `provider.toml` in `~/.config/relay-pkcs11/` and no `RELAY_PKCS11_CONFIG`, run `pkcs11-tool --module "$FLOX_ENV/lib/librelay_pkcs11.dylib" --sign -m ECDSA-SHA256 --id 03` with `hw-sign`. Approve it in the Mac approver app with the YubiKey. The signature verifies with OpenSSL against the public key read through the provider. Also once with the mise install. Also once with the notarized archive, downloaded through a browser so it's quarantined.
 2. **macOS callers:** note whether OpenSSL 3 with `pkcs11-provider`, Nix's `ssh` and Apple's `/usr/bin/ssh` load the module. Write the result down; not a pass or fail.
 3. **iPadOS:** the sample app on the iPad imports a client config, pairs (code compared in an approver app, grant signed with the YubiKey), signs a message with `hw-sign` after an approval on the Mac, and verifies the signature.
 
@@ -182,7 +183,7 @@ Manual, on Brian's hardware, against the `gate-m5` relay:
 | Part | Size |
 | --- | --- |
 | Host name, config lookup | Small |
-| Universal build, flake, release assets, native gate script, CI job | Small to medium; most of it is shell and CI |
+| macOS build, flake, release assets, native gate script, CI job | Small to medium; most of it is shell and CI |
 | Signing, notarization | Small for me; needs Brian's new certificate and keychain profile |
 | XCFramework, headers, sample app, simulator test | Medium; the simulator test reuses most of `tests/sim-e2e.sh` |
 | Gate | One sitting with the Mac and the iPad |
