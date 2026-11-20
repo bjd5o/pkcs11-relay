@@ -14,3 +14,7 @@ gate-m5/
 
 # APNs auth keys (developer account); never committed
 *.p8
+
+# CryptoTokenKit prototype: generated project and throwaway test identity
+prototypes/ctk/CTKProto.xcodeproj/
+prototypes/ctk/App/Resources/

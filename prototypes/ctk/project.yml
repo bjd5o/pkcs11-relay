@@ -1,0 +1,71 @@
+# CryptoTokenKit prototype (docs/cryptotokenkit.md, "Prototype first"). Throwaway: software keys
+# stand in for the YubiKey, results are written in README.md. Not built by CI.
+#
+#   cd prototypes/ctk && ./make-test-identity.sh && xcodegen && open CTKProto.xcodeproj
+#
+# Team and bundle-id prefix come from apps/apple/Config/Local.xcconfig (git-ignored).
+name: CTKProto
+options:
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: ../../apps/apple/Config/Base.xcconfig
+  Release: ../../apps/apple/Config/Base.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    PROTO_GROUP: group.$(BUNDLE_ID_PREFIX).ctk-proto
+    PROTO_KEYCHAIN_GROUP: $(AppIdentifierPrefix)$(BUNDLE_ID_PREFIX).ctk-proto
+    PROTO_CLASS_ID: $(BUNDLE_ID_PREFIX).ctk-proto.token
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  CTKProto:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - App
+      - Shared
+      - path: App/Resources
+        optional: true
+        buildPhase: resources
+    dependencies:
+      - target: CTKProtoToken
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).ctk-proto
+        INFOPLIST_FILE: App/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": App/iOS.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": App/iOS.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": App/macOS.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+  CTKProtoToken:
+    type: app-extension
+    supportedDestinations: [iOS, macOS]
+    sources: [Token, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).ctk-proto.token
+        INFOPLIST_FILE: Token/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Token/iOS.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Token/iOS.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Token/macOS.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+  CTKCaller:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    sources: [Caller]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).ctk-caller
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: CTK Caller
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Caller/macOS.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
