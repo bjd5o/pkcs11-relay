@@ -1,6 +1,6 @@
 # Relay keys in the system keychain (CryptoTokenKit extension)
 
-Status: **draft for Brian's review (2026-11-20).** Nothing here is built. It changes the spec (see "Spec changes"), so it needs Brian's approval before any code, and its first step is a prototype whose results may change the design.
+Status: **draft for Brian's review (2026-11-20); first decisions taken the same day** (see Decisions). Nothing here is built. It changes the spec (see "Spec changes"), so it needs Brian's approval before any code, and its first step is a prototype whose results may change the design.
 
 ## Goal
 
@@ -34,15 +34,15 @@ What this design changes: the shared store holds signed and sealed messages, nev
 
 ## Prototype first
 
-Each item has a pass condition. The design below assumes they pass; where one fails, the fallback is noted.
+Each item has a pass condition. The design below assumes they pass; where one fails, the alternative is noted.
 
 | # | Question | Pass | If it fails |
 | --- | --- | --- | --- |
 | P1 | Does a persistent-token extension stay alive, blocked in its sign method, while the calling app is in the background and the person approves in our app? | A Mail or test-app signature completes after a 60 s wait on iPhone (NFC) and iPad (USB-C) | Shorter request expiry; if under ~20 s, the local route is impractical on iOS |
 | P2 | How long will callers wait? | Record each caller's limit: Mail, Safari client auth, `ssh` through `ssh-keychain.dylib`, `security`, a test app | Request expiry is set per platform below the shortest useful limit |
 | P3 | Why does CryptoTokenKit repeat calls? | Log every call (time, key, algorithm, input digest): same input repeated, different algorithms, or retries after errors | The dedup key below already covers all three; the log tells us which to tune |
-| P4 | Can the extension return a bare key (no certificate) that callers like `ssh-keychain.dylib` find? | `ssh -I /usr/lib/ssh-keychain.dylib` lists and uses a key without a certificate | Every exposed key needs a certificate in the manifest |
-| P5 | Can the extension post a notification and read the App Group container while the device is locked? | Defines what "locked" does | The extension fails fast with "device locked" instead of waiting |
+| P4 | Can a token key item exist without a certificate (`TKTokenKeychainKey` with no certificate, public key and type set directly), and do callers like `ssh-keychain.dylib` find it? | `ssh -I /usr/lib/ssh-keychain.dylib` lists and uses such a key | The app serves a placeholder certificate for keys the manifest gives none (see "Certificates") |
+| P5 | While the device is locked, can the extension sign with its client key, write its record (files protected until first unlock) and post a notification that shows on the lock screen? | A background caller's request (a scheduled `ssh` on the Mac, a test app's background task on iOS) is approved after unlocking from the notification | The extension fails fast with "device locked" |
 | P6 | Can the extension reach the relay (long-poll, TLS with the pinned CA) for the full wait? | A relayed signature completes from the extension on each platform | Relay route only from the app (the extension hands off, the app relays) |
 | P7 | Does the Mac app come to the front from the notification, and hide itself afterwards so the calling app is in front again? | Both on macOS 14+ | The person switches back by hand, as on iOS |
 
@@ -58,8 +58,8 @@ Each item has a pass condition. The design below assumes they pass; where one fa
 
 ### The extension is a client
 
-- **Identity.** At setup the app creates the extension's client identity key: a Secure Enclave P-256 key in a keychain access group shared with the extension, usable without a biometric (approval is the gate, as for the provider's key file). Client id `<device-id>-keychain`.
-- **Pairing.** The extension's key pairs through the relay like any client (`POST /v1/clients/pending`). The app recognises its own extension's key, so it skips the code comparison and goes straight to the key and window choice and the YubiKey signature of the grant. Other approvers accept the client with its first request there, as for any client.
+- **Identity.** At setup the app creates the extension's client identity key: a Secure Enclave P-256 key in a keychain access group shared with the extension, usable without a biometric (approval is the gate, as for the provider's key file) and accessible after first unlock (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), so background callers work while the device is locked. Client id `<device-id>-keychain`.
+- **Pairing.** The extension's key pairs through the relay like any client (`POST /v1/clients/pending`). The code comparison is what stops a relay from swapping in its own key, so the app does it automatically and more strictly than a person can: it reads the extension's public key from the shared keychain, where it created it, and requires the pending pairing's key to equal it exactly. Then the person chooses keys and window and the YubiKey signs the grant, as for any pairing. Other approvers accept the client with its first request there, as for any client.
 - **Shared code.** The provider's client logic (building and signing the request, the one-time reply key, waiting, verifying the response, opening the sealed result) moves from `relay-pkcs11` into a new `relay-client` crate with no C ABI, used by `relay-pkcs11` and by a new `Client` object in `relay-ffi`. The extension links `RelayFFI` (one Rust static library per binary; the app and the extension are separate binaries). No verification is reimplemented.
 - **Request context.** CryptoTokenKit doesn't tell the extension which app called it. The extension sends `host` = this device's name, `consumer` = `keychain`, and `purpose` = a setting, default "Keychain on <device name>". The approval screen says the calling app is unknown.
 
@@ -70,7 +70,7 @@ For each operation the extension reads the app's key map from the shared contain
 1. **Local**, if this device's approver app operates the key (it's in the key map).
 2. **Relay** otherwise.
 
-A local request offers "Send to another approver" on the approval screen and in the notification. Taking it, or letting the local wait pass a setting's limit, moves the request to the relay route with a new request (a new id; the old one is cancelled locally). Whether to fall back automatically is a setting (see Decisions); the default is no: an unanswered local request expires.
+A local request that nobody answers expires; it never falls back to the relay (Brian, 2026-11-20). Locked devices are covered by the protection classes: the notification shows on the lock screen, and unlocking and tapping it opens the approval within the request's expiry.
 
 ### The local route
 
@@ -89,7 +89,7 @@ The extension submits the request to the relay and waits on the long-poll, as th
 
 ### The shared store
 
-A directory in the App Group container, files written with complete file protection. One record per operation, named by `SHA-256(key fingerprint ‖ algorithm ‖ input)`:
+A directory in the App Group container, files protected until first unlock (`completeUntilFirstUserAuthentication`), so a background caller works while the device is locked. That class is acceptable because the files hold only what the relay sees on the relay route: signed requests and sealed responses. One record per operation, named by `SHA-256(key fingerprint ‖ algorithm ‖ input)`:
 
 | Field | Written by | Content |
 | --- | --- | --- |
@@ -114,13 +114,20 @@ A new optional manifest field, signed with everything else:
 | --- | --- | --- |
 | `keys[].certificates` | `["MIIC…", "MIIB…"]` | Optional, on `sign`, `auth` and `encrypt` keys only. DER X.509 certificates, base64: the leaf first, whose SubjectPublicKeyInfo must equal `keys[].public_key`, then any intermediates. At most 4, each at most 8 KiB |
 
-`verify_manifest` checks that each certificate parses, that the leaf's key matches, and the limits; a bad entry makes the manifest invalid, like any schema error. It does not validate the chain: whoever relies on the certificate does that against their own trust store. Certificates are issued by Brian's own CA (or any CA) outside this system; `relayctl manifest add-certificate` adds one. The extension presents the leaf (and the intermediates, for TLS); the provider ignores the field.
+Certificates are issued by Brian's own CA (or any CA) outside this system. Two levels of checking, neither of which decides trust (that stays with whoever relies on the certificate):
+
+- **When adding, `relayctl manifest add-certificate`** checks the whole chain, so a problem shows up before the manifest is signed rather than on first use: every certificate parses; the leaf's key equals the manifest key; each certificate's issuer matches the next one's subject and its signature verifies with the next one's key; every certificate is valid now (refused if expired, a warning if it expires before the manifest's `valid_until`); key usage fits the role (`digitalSignature` for `sign` and `auth`, `keyEncipherment` or `keyAgreement` for `encrypt`), with a warning when no S/MIME or client-auth extended key usage is present. It uses `x509-cert`, already pinned in the workspace.
+- **At load, `verify_manifest`** keeps to cheap structural checks: each certificate parses, the leaf's key matches, the limits hold; a bad entry makes the manifest invalid, like any schema error. It doesn't check expiry, so one expired certificate can't invalidate a whole manifest.
+
+The extension presents the leaf (and the intermediates, for TLS) and skips a leaf that has expired; the provider ignores the field.
+
+**Keys without a certificate.** If P4 shows a key item needs a certificate, the app makes a placeholder for each key the manifest gives none: subject "relay-pkcs11 placeholder: <label>", the key's public key, signed by a per-device placeholder key the app creates for this alone (no card operation, no approval). It only carries the public key to callers like `ssh-keychain.dylib`; anything that evaluates trust rejects it. A real certificate in the manifest replaces it.
 
 Whole certificates, not hashes, because the extension needs the bytes and the manifest is already the trusted channel; a certificate change means re-signing the manifest either way.
 
 ### Algorithms
 
-The keychain's algorithms map onto the spec's mechanisms. Roles stay as the spec defines them: a `sign` key must receive the full message so the approver can hash and show it, so it accepts only message algorithms.
+The keychain's algorithms map onto the spec's mechanisms. A `sign` key receives the full message so the approver can hash and show it; a key the manifest marks `accepts_digest` also takes digests (below).
 
 | Role | Keychain algorithm | Request |
 | --- | --- | --- |
@@ -129,7 +136,14 @@ The keychain's algorithms map onto the spec's mechanisms. Roles stay as the spec
 | `encrypt` | `rsaEncryptionOAEPSHA256` | `CKM_RSA_PKCS_OAEP` (SHA-256, MGF1-SHA256) |
 | `encrypt` | `ecdhKeyExchangeStandard` | `CKM_ECDH1_DERIVE` with `CKD_NULL` |
 
-Anything else is refused by `supports`, so the caller sees the key as unable to do it. Most keychain callers, S/MIME and TLS among them, sign a digest, so their keys are `auth` keys in this model; the approval screen shows only the digest for them, as it does for `auth` keys today. RSA PKCS#1 v1.5 decryption is not supported (see "Still open").
+Anything else is refused by `supports`, so the caller sees the key as unable to do it. RSA PKCS#1 v1.5 decryption is not supported (see "Still open").
+
+**Digests on `sign` keys (proposal, pending Brian's confirmation).** Callers choose the algorithm; a token can only accept or refuse each one, and there is no way to ask a caller to prefer message algorithms. A caller that holds the message and checks what the key supports may pick a message algorithm, but many (the TLS stack, probably Mail's S/MIME) hash first and offer only digest algorithms, and fail if those are refused. So:
+
+- A new optional manifest field `keys[].accepts_digest` (boolean, `sign` keys only, default false). Without it, a `sign` key keeps the spec's rule: full message only.
+- With it, the key also accepts the digest mechanisms (`CKM_ECDSA` and `CKM_RSA_PKCS` with a DigestInfo). The approval screen says "This app sent only a digest; the content can't be shown".
+- The provider enforces the same field, so a PKCS#11 client can't use the keychain's allowance as a way around the rule.
+- The extension's `supports` answers yes to message algorithms on every `sign` key, so a caller that can send the message does.
 
 ### Errors
 
@@ -163,21 +177,22 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 ## Spec changes
 
 - **Approver application:** the extension, the two routes, the local hand-off, the client identity for `<device-id>-keychain`, and the "calling app unknown" line on the approval screen.
-- **Trust manifest:** `keys[].certificates`; wire-format §9.2.
+- **Trust manifest:** `keys[].certificates` and, if confirmed, `keys[].accepts_digest`; wire-format §9.2. The provider's role enforcement reads `accepts_digest` too.
 - **Relay:** `POST /v1/audit/local`; wire-format §10.
 - **Keys and messages / wire format:** none; the request and response envelopes are unchanged.
 - **Threat model:** the rows above.
 - **Failure handling:** the extension's rows above, each with a test.
 - **Code structure:** the `relay-client` crate.
-- **MVP scope and milestones:** move "CryptoTokenKit token extensions for system-wide use on macOS and iPadOS" from "Out, for later" into a new phase after milestone 7.
+- **MVP scope and milestones:** move "CryptoTokenKit token extensions for system-wide use on macOS and iPadOS" from "Out, for later" into a new phase after milestone 7 (Brian, 2026-11-20).
 
 ## Tests
 
-- `relay-core`: manifest certificate checks (parses, leaf key matches, limits, wrong role), golden vectors.
+- `relay-core`: manifest certificate checks (parses, leaf key matches, limits, wrong role) and `accepts_digest` (only on `sign` keys; digest mechanisms refused without it), golden vectors.
+- `relayctl`: `add-certificate` refuses a broken chain (wrong issuer, bad signature, expired, key mismatch, wrong key usage) and warns as described.
 - `relay-client`: the shared store's record rules (atomic create, repeats while pending, after approval, after a decrypt, after a denial; expiry and cleanup), with two processes racing.
 - `relay-approver`: a local request is checked exactly like a relayed one; every rejection reason; the response is accepted by `verify_response`.
 - `relay-server`: `/v1/audit/local` accepts a valid pair, refuses a mismatched, unsigned, replayed or foreign-device pair, and keeps only hashes for decrypts.
-- `relay-ffi`: the whole local route with the softcard and a temporary directory as the store; the relay route against a real relay; the fallback to the relay.
+- `relay-ffi`: the whole local route with the softcard and a temporary directory as the store; the relay route against a real relay; an unanswered local request expiring without reaching the relay.
 - Simulator: an XCUITest app calls `SecKeyCreateSignature` on the token's key, the test approves in the app, the signature verifies. Whether persistent tokens work in the simulator is part of the prototype; if not, this is a device test.
 - One test per new Failure handling row.
 - **Gate** (on Brian's hardware):
@@ -196,18 +211,25 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 | Manifest certificates, `relayctl`, `/v1/audit/local` | Small to medium |
 | Tests, simulator or device tests, gate | Medium |
 
-## Decisions for Brian
+## Decisions (Brian, 2026-11-20)
 
-1. **Where it goes.** A new phase after milestone 7 (my default), or folded into milestone 7 Part B?
-2. **Fallback to the relay.** When the key is local and the person doesn't answer: expire (default), or send to the other approvers automatically after a limit? And should "Send to another approver" exist at all on the local route?
-3. **Digest-signing callers.** Mail and TLS sign digests, so their keys must be `auth` keys (digest only on screen). Keep the spec's roles as they are (default), or let a `sign` key accept digests from the keychain?
-4. **Pairing the extension.** Skip the code comparison for the app's own extension, since the app created its key (default), or show the code anyway?
-5. **Bare keys.** If P4 passes, expose keys without certificates (default: yes, so `ssh` works without a CA), or only identities?
-6. **Locked device.** If P5 shows the extension can't work while the device is locked: fail fast (default) or wait for unlock?
+| Question | Decision |
+| --- | --- |
+| Where it goes | A new phase after milestone 7 |
+| Falling back to the relay when a local request isn't answered | No, at least for now: it expires |
+| Chain checks for certificates | Validate the whole chain when a certificate is added (`relayctl`), distinct from evaluating trust |
+| Pairing the extension | Not skipped: the app compares the pending pairing's key with the key it created, automatically |
+| Inverting the hand-off (the extension runs the card operation) | Not for now: the extension can't reach an NFC YubiKey, would need the PIN on iOS, and would need an approval gate other callers can't race. Kept as a later option for USB on the Mac (Still open) |
+
+Still to decide:
+
+1. **`accepts_digest`** as proposed under "Algorithms", or another way to let `sign` keys take digests?
+2. **Placeholder certificates** if P4 shows a key item needs one: as proposed under "Certificates"?
 
 ## Still open
 
 - **RSA PKCS#1 v1.5 decryption** for S/MIME. Not in the spec, for the padding-oracle reasons discussed on 2026-11-20. Check first whether Mail can decrypt with an elliptic-curve S/MIME certificate (ECDH, which this design supports).
 - **System PIN prompt on iOS** (`TKTokenSmartCardPINAuthOperation`), so the PIN never enters our process: a post-MVP investigation already noted in `docs/progress.md`.
-- **A local route inside the extension**, without the app hand-off: on the Mac, Face ID from inside the extension worked in Brian's own experiment, and USB smart cards may be reachable from it. It would remove the app switch for USB on the Mac. Later, once the hand-off works everywhere.
+- **A local route inside the extension**, without the app hand-off, and the inverted variant where the extension runs the card operation and the app never sees a result: on the Mac, Face ID from inside the extension worked in Brian's own experiment, USB smart cards may be reachable from it, and the system PIN prompt may supply the PIN. It would remove the app switch for USB on the Mac. Each approval would have to be single-use and bound to its request, since the extension can't tell its callers apart. Later, once the hand-off works everywhere.
+- **Falling back to the relay** when a local request isn't answered, or a "send to another approver" button: not for now.
 - **Returning to the calling app on iOS** automatically: no public API exists. The private one is ruled out.
