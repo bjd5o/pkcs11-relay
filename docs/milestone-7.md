@@ -2,7 +2,7 @@
 
 Status: **second draft, with Brian's answers from 2026-11-19.** Nothing here is built yet.
 
-This phase ships `relay-pkcs11` for Apple platforms: a universal `.dylib` for macOS, distributed through Flox and as a release asset, and a static library in an XCFramework for iPadOS, with a small iPad sample app. `docs/spec.md` remains the source of truth: "PKCS#11 provider (`relay-pkcs11`)", "Per platform" and "Milestones" item 7. This file turns those into tasks, sets defaults for what the spec leaves open, and defines the gate.
+This phase ships `relay-pkcs11` for Apple platforms: a universal `.dylib` for macOS, distributed through a Nix flake (for Flox and Nix) and as GitHub release assets (for mise), and a static library in an XCFramework for iPadOS, with a small iPad sample app. `docs/spec.md` remains the source of truth: "PKCS#11 provider (`relay-pkcs11`)", "Per platform" and "Milestones" item 7. This file turns those into tasks, sets defaults for what the spec leaves open, and defines the gate.
 
 **Spec gate:** `pkcs11-tool` signs on macOS; the sample app signs on an iPad.
 
@@ -12,7 +12,7 @@ The provider is one crate with `crate-type = ["cdylib", "staticlib", "rlib"]`, s
 
 - **Host name.** `discovery::host_name` reads `/proc/sys/kernel/hostname` or `/etc/hostname`, then `$HOSTNAME`. None of those exists for a typical macOS or iPadOS process, so requests claim `unknown`.
 - **Config without an environment variable.** GUI apps on macOS don't see shell variables, so `RELAY_PKCS11_CONFIG` alone is awkward there.
-- **Packaging.** No universal build, no Flox package, no signing or notarization, no XCFramework for the provider, no PKCS#11 header for Swift callers.
+- **Packaging.** No universal build, no Nix flake, no release assets, no signing or notarization, no XCFramework for the provider, no PKCS#11 header for Swift callers.
 - **macOS in CI.** CI builds the provider only for Linux, and runs the third-party callers (`pkcs11-tool`, OpenSSL, `ssh`) only in the Linux container.
 - **A caller on iPadOS.** No app links the provider; the approver app must not, since it already links its own Rust static library (`RelayFFI`).
 
@@ -21,9 +21,11 @@ Nothing in `relay-core` changes. The provider's checks and runtime rules (no thr
 ## Layout added in this phase
 
 ```
+flake.nix, flake.lock      # packages.<system>.relay-pkcs11 for the four systems, built from source
 .flox/
   env/manifest.toml        # project environment: test callers (opensc, openssl, pkcs11-provider, openssh)
-                           # and the [build.relay-pkcs11] package
+deploy/release/
+  package.sh               # per-platform release archives, named for mise's github: backend, plus SHA256SUMS
 deploy/macos/
   build-provider.sh        # cargo for aarch64- and x86_64-apple-darwin, lipo, codesign (when an identity is given)
   notarize.sh              # zip, notarytool submit --wait, check the result; Brian runs it locally
@@ -36,7 +38,7 @@ tests/
   macos-gate.sh            # m3-gate checks run natively on a Mac: relay + test approver binaries, no Docker
 ```
 
-The project environment is separate from the default Flox environment that already provides mise, rustup, gpg and docker. The Rust toolchain stays with mise (`mise.toml`); the project environment adds only what the gate scripts call and the package build.
+The project environment is separate from the default Flox environment that already provides mise, rustup, gpg and docker. The Rust toolchain stays with mise (`mise.toml`); the project environment adds only what the gate scripts call.
 
 ## Config file lookup
 
@@ -68,18 +70,37 @@ If `HOME` is unset, steps 2 and 3 are skipped. The lookup runs on Linux too (ste
 
 Brian approved the change. `docs/spec.md` now names the default paths in its "Configuration" paragraph and in milestone 2's config item. The "Provider config" row of `docs/milestones-1-4.md` points here, and `docs/decisions.md` records it ("Default provider config paths").
 
-## Distribution through Flox
+## Distribution
 
-Brian doesn't use Homebrew; the dylib ships as a Flox package instead. What the Flox docs say (flox.dev, read 2026-11-19), and what follows from it:
+Brian splits his time between macOS and Linux and doesn't use Homebrew, so the provider ships through tools that work on both: a Nix flake (installed with Flox or Nix) and per-platform GitHub release assets (installed with mise). Both are free and public. Flox's own catalog was considered and dropped: a personal catalog installs only for its owner, and sharing needs a paid Flox organization.
 
-- **Build.** A manifest build, `[build.relay-pkcs11]` in `.flox/env/manifest.toml`: `cargo build --release -p relay-pkcs11`, then copy the library to `$out/lib/`. In an activated environment it shows up at `$FLOX_ENV/lib/librelay_pkcs11.dylib` (`.so` on Linux), so docs use `--module "$FLOX_ENV/lib/librelay_pkcs11.dylib"`. `sandbox = "off"` (the default) so cargo can fetch crates. A pure build would need vendored crates, and on macOS Flox's pure sandbox still allows network access anyway.
-- **Toolchain inside the build.** A manifest build runs with the environment's `[install]` packages on `PATH`. The build installs `rustup` from the catalog. Flox's fresh clone doesn't run mise, so the build needs the pinned version from a file `rustup` reads: `rust-toolchain.toml`, which mise also honours (Decisions, item 4).
-- **Publish.** `flox publish relay-pkcs11` needs a clean git tree on a branch pushed to its remote, with full history. Flox clones the repo and builds it again from scratch. Publishing needs a free FloxHub account.
-- **Who can install it.** A package in a personal catalog can be installed **only by its owner**. Sharing with anyone else needs a Flox organization, which is a paid Flox for Teams feature. The docs don't describe public packages. For the MVP, the personal catalog covers Brian's own Macs; other people use the release asset below. See Decisions.
-- **One build per system.** `flox publish` builds on the machine that runs it, and the docs don't describe cross-building. Brian's Mac publishes `aarch64-darwin`. `x86_64-darwin` and the Linux systems would need a machine or CI runner of each kind, and CI would need a FloxHub token as a secret. MVP: `aarch64-darwin` only; the others are listed under "Still open".
-- **Signing.** A Flox install isn't quarantined, and Apple's arm64 linker already ad-hoc signs the dylib. That is enough for `pkcs11-tool`, OpenSSL and OpenSSH. A Developer ID signature doesn't help with library validation either: such apps accept only Apple's code or their own team's. So the Flox package builds from source and carries the linker's ad-hoc signature. The gate checks it with `codesign -dv` on the published result, in case Flox's build step changes it.
+**Nix flake (the main path).**
+- `flake.nix` at the repo root exposes `packages.<system>.relay-pkcs11` for `aarch64-darwin`, `x86_64-darwin`, `aarch64-linux` and `x86_64-linux`. It builds from source with nixpkgs' `rustPlatform.buildRustPackage`, using `Cargo.lock`, and installs only `$out/lib/librelay_pkcs11.dylib` (`.so` on Linux).
+- Flox installs it straight from GitHub, pinned to a tag: `flox install github:<owner>/pkcs11-relay/v0.7.0#relay-pkcs11`, or `relay-pkcs11.flake = "github:<owner>/pkcs11-relay/v0.7.0"` under `[install]` in a manifest. The library is then at `$FLOX_ENV/lib/`. Plain Nix users run `nix profile install` or add the flake as an input.
+- It builds on the user's machine, which takes a minute or two for one crate and its dependencies. No binary cache for the MVP.
+- The flake builds with the `rustc` from its pinned nixpkgs. mise's Rust follows that version, so development, CI and the shipped package use the same compiler. See "Keeping mise's Rust in step with the flake".
 
-**Release asset** (for people outside Brian's catalog): the universal dylib from `deploy/macos/build-provider.sh`, signed with Developer ID and notarized, attached to a GitHub release with its SHA-256. A browser download is quarantined, so the signature and notarization ticket matter here. A bare dylib can't be stapled, so Gatekeeper checks the ticket online the first time it loads.
+**Keeping mise's Rust in step with the flake.** nixpkgs carries one `rustc` per revision, and choosing a different one would need an overlay (`rust-overlay` or `fenix`), which is a new dependency. So the flake's `flake.lock` decides the version, and mise copies it. Rust itself stays with mise and rustup (`rustc`, `cargo`, `clippy`, `rustfmt`, the iOS targets and the fuzzing nightly). nixpkgs' Rust lacks the iOS targets, so it can't replace rustup.
+
+- **`mise run sync-rust`** reads `nix eval --raw --inputs-from . nixpkgs#rustc.version` and runs `mise use rust@<version>` only when it differs from `mise.toml`. That also installs the new toolchain. It declares `sources = ["flake.lock"]`, so mise skips it until the lock changes. If `nix` isn't on `PATH`, it prints a note and exits 0, so mise users without Nix aren't blocked. It passes `--extra-experimental-features 'nix-command flakes'` so it works without a Nix config change.
+- **Hooks in `mise.toml`:** `[hooks] enter = { task = "sync-rust" }`, which runs when a mise-activated shell enters the project. A `[[watch_files]]` entry on `flake.lock` runs the same task, which covers a `git pull` or `nix flake update` while the shell is already in the project (`enter` fires only on entering from outside). Both need `mise activate` in the shell. They don't run in CI, under `mise exec` or in non-interactive shells. A hook failure only prints a warning.
+- **Check:** `flake.nix` reads the pin with `builtins.fromTOML (builtins.readFile ./mise.toml)` and fails evaluation if it differs from `rustc.version`. `nix flake check` in CI catches a lock bumped without the sync.
+- **Bumping Rust** becomes `nix flake update nixpkgs`; the next prompt syncs `mise.toml`; commit both files together.
+- The hook rewrites a tracked file (`mise.toml`), but only when `flake.lock` changed, so the diff always comes with a lock change.
+- The first sync moves mise from 1.93.0 to the newer nixpkgs version, so expect new clippy warnings once.
+
+
+**Release assets (for mise).**
+- Each GitHub release carries one archive per platform, named so mise's `github:` backend picks the right one by OS and CPU: `relay-pkcs11-v0.7.0-aarch64-apple-darwin.tar.gz`, `…-x86_64-apple-darwin.tar.gz`, `…-aarch64-unknown-linux-gnu.tar.gz`, `…-x86_64-unknown-linux-gnu.tar.gz` (and the musl builds from milestone 3), plus `SHA256SUMS`. Each archive holds `lib/librelay_pkcs11.{dylib,so}`.
+- Install with `mise use github:<owner>/pkcs11-relay@0.7.0`. The library path for `--module` is `$(mise where github:<owner>/pkcs11-relay)/lib/librelay_pkcs11.dylib`. mise is built for executables on `PATH`, so this is a little clumsier than the flake; docs show it once.
+- aqua works with the same assets but needs a registry entry; mise's `github:` backend gives the same result without one, so no aqua-specific work.
+- The assets come from CI (the Linux `provider` job and the new `provider-macos` job) and are attached to the release by `deploy/release/package.sh`.
+
+**Signing, and what notarization is for.**
+- macOS checks notarization only for quarantined files, which in practice means files a browser downloaded. Nothing in `/nix/store` is quarantined, and neither is a mise download, so the linker's ad-hoc signature is enough there for `pkcs11-tool`, OpenSSL and OpenSSH.
+- Library validation is a separate check: such apps accept only code signed by Apple or by their own team. A Developer ID signature from Brian's team doesn't get the module in either.
+- A Nix build never had notarization: it builds from source. If a package fetched the notarized release asset instead, Nix's macOS fixup step (strip, install-name rewrite, re-sign) would replace the Developer ID signature and invalidate the notarization, unless the package set `dontFixup = true`. The flake builds from source, so this doesn't come up.
+- So notarization only helps someone who downloads the macOS archive in a browser. Brian chose to do it in this milestone anyway, so a browser download works without a Gatekeeper prompt.
 
 ## Signing and notarization
 
@@ -91,7 +112,7 @@ The only code-signing identity in Brian's keychain is **Apple Development**, not
 4. **Per release:** `CODESIGN_IDENTITY="Developer ID Application: …" deploy/macos/build-provider.sh`, then `deploy/macos/notarize.sh dist/librelay_pkcs11-macos-universal.dylib`. The script zips the dylib, runs `notarytool submit --keychain-profile relay-notary --wait`, prints the log, and fails unless the status is `Accepted`. Expect a few minutes per submission.
 5. **Check:** `codesign -dv --verbose=4` shows the Developer ID authority and `flags=0x10000(runtime)`. `spctl -a -t open --context context:primary-signature -v` on the dylib reports `accepted` with source `Notarized Developer ID`.
 
-The release asset is the only artifact that needs this. If Brian wants to skip it for the MVP, the gate can run entirely on the Flox build. See Decisions.
+Only the macOS release archive needs this, and only for browser downloads. Brian chose to do it in this milestone (2026-11-19); steps 1 to 3 come first, before task 8.
 
 ## Details the spec leaves open: defaults
 
@@ -99,11 +120,11 @@ The release asset is the only artifact that needs this. If Brian wants to skip i
 | --- | --- | --- |
 | Host name | The `gethostname` crate, called from `discovery::host_name` before the `/proc` and `/etc` fallbacks; the config's `host` still wins | Brian's choice: the crate's name says why it's there, where `libc` could be for anything. It's a safe wrapper, so no `unsafe` is added. On iPadOS it returns the device's local name, which is what the approval screen should show |
 | Config location | The lookup in "Config file lookup" | Brian's choice, after Ghostty, with first-found-wins |
-| macOS file name and location | `librelay_pkcs11.dylib`; `$FLOX_ENV/lib/` when installed through Flox | Same stem as the Linux `.so` |
+| macOS file name and location | `librelay_pkcs11.dylib`; `$FLOX_ENV/lib/` through Flox, `lib/` under `mise where` through mise | Same stem as the Linux `.so` |
 | Minimum macOS | 13.0 (`MACOSX_DEPLOYMENT_TARGET=13.0`) for both slices | Covers every Mac Apple still updates; the approver app needs 14, but the provider doesn't use anything newer than 13 |
 | Install name | `@rpath/librelay_pkcs11.dylib` | Callers load it by path through `dlopen`, so the install name only matters for tools that link it |
-| Signing | Flox package: the linker's ad-hoc signature. Release asset: Developer ID Application, hardened runtime (`codesign --options runtime --timestamp`), identity from Brian's keychain | See "Distribution through Flox" |
-| Notarization | Release asset only, local, through the `relay-notary` keychain profile; not in CI | CI would need Apple credentials as secrets, which isn't worth it for the MVP |
+| Signing | Flake and mise installs: the linker's ad-hoc signature. macOS release archive: Developer ID Application, hardened runtime (`codesign --options runtime --timestamp`), identity from Brian's keychain | See "Distribution" |
+| Notarization | macOS release archive only, local, through the `relay-notary` keychain profile; not in CI | CI would need Apple credentials as secrets, which isn't worth it for the MVP |
 | CI artifact | An unsigned universal dylib from a `macos-15` job, plus `lipo -info` and the native gate script | Proves both slices build and the arm64 slice works with third-party callers |
 | CI tools on macOS | The project Flox environment (`flox activate -- tests/macos-gate.sh`), installed on the runner with Flox's GitHub action | The same tools Brian uses locally; no Homebrew anywhere |
 | x86_64 slice | Built in CI; run once by hand under Rosetta during the gate, if an x86_64 `pkcs11-tool` is at hand | No Intel Mac; GitHub's Intel runners are being retired |
@@ -130,12 +151,12 @@ Brian wants Parts A and B in parallel. Part 0 changes the provider, which both p
 ### Part A: macOS dylib (the first half of the gate)
 
 3. **Universal build.** `deploy/macos/build-provider.sh`: release builds for both Darwin targets with the deployment target set, `lipo -create`, `install_name_tool -id`, and `codesign` when `CODESIGN_IDENTITY` is set. Output `dist/librelay_pkcs11-macos-universal.dylib`. Adds `x86_64-apple-darwin` to the targets in `mise.toml`.
-4. **Project Flox environment.** `.flox/env/manifest.toml` with `opensc`, `openssl`, `pkcs11-provider` and `openssh` for the gate, and the `[build.relay-pkcs11]` package. `flox build relay-pkcs11` produces `result-relay-pkcs11/lib/librelay_pkcs11.dylib`; check it with `codesign -dv` and `pkcs11-tool --module … -I`.
+4. **Nix flake and project environment.** `flake.nix` with `packages.<system>.relay-pkcs11` for the four systems; `nix build .#relay-pkcs11` gives `result/lib/librelay_pkcs11.dylib`, checked with `codesign -dv` and `pkcs11-tool --module … -I`. `.flox/env/manifest.toml` with `opensc`, `openssl`, `pkcs11-provider` and `openssh` for the gate. CI runs `nix flake check` on Linux and macOS. The `sync-rust` task and its `enter` and `watch_files` hooks go into `mise.toml`, with the flake's version check; the first sync and any clippy fixes it needs are their own commit.
 5. **Native gate script.** `tests/macos-gate.sh` runs the existing `relay-server` and `relay-test-approver` binaries on the Mac with the fixtures `relay-test-approver gen-fixtures` already writes, then the same checks as `tests/m3-gate.sh` that don't need Linux: `pkcs11-tool` list, sign (EC and RSA), decrypt, denial and expiry return codes, OpenSSL 3 through `pkcs11-provider`, `ssh-keygen -D`. Shared check helpers move to `tests/lib.sh` so the two scripts don't drift. Run as `flox activate -- tests/macos-gate.sh`.
-6. **CI job `provider-macos`** on `macos-15`: install Flox, build the universal dylib, `lipo -info` shows both slices, run `tests/macos-gate.sh` against the arm64 slice inside the project environment, upload the dylib.
-7. **Publish to Flox.** Brian runs `flox publish relay-pkcs11` from a clean, pushed `main` once Part A is merged, for `aarch64-darwin`. Needs his FloxHub account.
-8. **Signing and notarization** (if kept; see Decisions). `deploy/macos/notarize.sh` as in "Signing and notarization". Brian creates the certificate and keychain profile; I write the script and the release checklist.
-9. **Docs.** A macOS section in the user docs: install through Flox (or the release asset), where the config goes, `pkcs11-tool`, OpenSSL, OpenSSH, what refuses to load it and why.
+6. **CI job `provider-macos`** on `macos-15`: install Flox, build the universal dylib, `lipo -info` shows both slices, run `tests/macos-gate.sh` against the arm64 slice inside the project environment, build the flake, upload the per-slice archives.
+7. **Release assets.** `deploy/release/package.sh` turns the CI builds into the per-platform archives and `SHA256SUMS`; a tag attaches them to a GitHub release. Check `mise use github:<owner>/pkcs11-relay` picks the right archive on macOS and Linux.
+8. **Signing and notarization.** `deploy/macos/notarize.sh` as in "Signing and notarization". Brian creates the certificate and keychain profile; I write the script and the release checklist.
+9. **Docs.** A macOS section in the user docs: install through Flox or Nix (flake), or mise (release assets), where the config goes, `pkcs11-tool`, OpenSSL, OpenSSH, what refuses to load it and why.
 
 ### Part B: iPadOS XCFramework and sample app (the second half)
 
@@ -151,7 +172,7 @@ CI, on every change:
 - `apple`: the sample app signs in the simulator, and the signature verifies.
 
 Manual, on Brian's hardware, against the `gate-m5` relay:
-1. **macOS:** the provider installed with `flox install <brian>/relay-pkcs11` into an environment. With `provider.toml` in `~/.config/relay-pkcs11/` and no `RELAY_PKCS11_CONFIG`, run `pkcs11-tool --module "$FLOX_ENV/lib/librelay_pkcs11.dylib" --sign -m ECDSA-SHA256 --id 03` with `hw-sign`. Approve it in the Mac approver app with the YubiKey. The signature verifies with OpenSSL against the public key read through the provider. If notarization is kept, also once with the notarized release asset, downloaded through a browser so it's quarantined. Also once under `arch -x86_64`, if an x86_64 `pkcs11-tool` is available.
+1. **macOS:** the provider installed with `flox install github:<owner>/pkcs11-relay/<tag>#relay-pkcs11` into an environment. With `provider.toml` in `~/.config/relay-pkcs11/` and no `RELAY_PKCS11_CONFIG`, run `pkcs11-tool --module "$FLOX_ENV/lib/librelay_pkcs11.dylib" --sign -m ECDSA-SHA256 --id 03` with `hw-sign`. Approve it in the Mac approver app with the YubiKey. The signature verifies with OpenSSL against the public key read through the provider. Also once with the mise install. Also once with the notarized archive, downloaded through a browser so it's quarantined. Also once under `arch -x86_64`, if an x86_64 `pkcs11-tool` is available.
 2. **macOS callers:** note whether OpenSSL 3 with `pkcs11-provider`, Nix's `ssh` and Apple's `/usr/bin/ssh` load the module. Write the result down; not a pass or fail.
 3. **iPadOS:** the sample app on the iPad imports a client config, pairs (code compared in an approver app, grant signed with the YubiKey), signs a message with `hw-sign` after an approval on the Mac, and verifies the signature.
 
@@ -160,7 +181,7 @@ Manual, on Brian's hardware, against the `gate-m5` relay:
 | Part | Size |
 | --- | --- |
 | Host name, config lookup | Small |
-| Universal build, Flox environment and package, native gate script, CI job | Small to medium; most of it is shell and CI |
+| Universal build, flake, release assets, native gate script, CI job | Small to medium; most of it is shell and CI |
 | Signing, notarization | Small for me; needs Brian's new certificate and keychain profile |
 | XCFramework, headers, sample app, simulator test | Medium; the simulator test reuses most of `tests/sim-e2e.sh` |
 | Gate | One sitting with the Mac and the iPad |
@@ -169,24 +190,20 @@ Manual, on Brian's hardware, against the `gate-m5` relay:
 
 - **`gethostname`** (Rust crate) as a direct dependency of `relay-pkcs11`, pinned in `[workspace.dependencies]`.
 - **OASIS PKCS#11 3.1 headers**, vendored into `apps/apple/Provider/include`.
-- **Flox catalog packages** for the project environment: `opensc`, `openssl`, `pkcs11-provider`, `openssh`, `rustup`.
+- **Flox catalog packages** for the project environment: `opensc`, `openssl`, `pkcs11-provider`, `openssh`.
+- **nixpkgs**, pinned in `flake.lock`, as the flake's only input.
 
 ## Settled with Brian (2026-11-19)
 
-- **Distribution:** Flox instead of Homebrew; no formula or tap.
+- **Distribution:** tools that work on macOS and Linux, no Homebrew: a public Nix flake for Flox and Nix, and release assets for mise. No Flox catalog (private to its owner unless paid), no aqua registry entry.
 - **Config:** XDG path first (default `~/.config`), then Application Support, after Ghostty. The first file found wins, instead of Ghostty's merge, for the reasons in "Config file lookup". The spec change was approved.
 - **Host name:** the `gethostname` crate.
 - **Order:** Parts A and B in parallel, after Part 0.
-
-## Decisions for Brian
-
-1. **Who needs the macOS dylib besides you?** Flox's personal catalog installs only for its owner, and sharing needs a paid organization. If it's only you for the MVP, the personal catalog is enough. Is a notarized release asset worth doing now for other people? Doing it means creating the Developer ID certificate and a notary credential (steps above). Not doing it drops tasks 8 and the release-asset gate step.
-2. **Rust version file.** Move the pinned toolchain from `mise.toml` to `rust-toolchain.toml` so the Flox build and mise read one version? mise picks it up either way.
+- **Notarization:** yes, in this milestone, for the macOS release archive. Brian creates the Developer ID Application certificate and the `relay-notary` keychain profile first.
 
 ## Still open
 
 - Whether Apple's `/usr/bin/ssh` (through `ssh-pkcs11-helper`) loads the module. Checked in the gate; the docs say whatever we find.
 - Whether Nix's `openssh` on macOS is built with PKCS#11 support. If it isn't, the gate's ssh check uses Apple's.
-- Whether Flox's build step leaves the linker's signature alone. Checked in task 4.
-- Flox packages for `x86_64-darwin` and the Linux systems. They need a publishing machine or CI runner for each, plus a FloxHub token in CI. After the MVP.
+- A binary cache for the flake, so installs don't build from source. After the MVP.
 - A CryptoTokenKit persistent-token extension, so every app on macOS and iPadOS sees the relay keys, stays post-MVP (spec "MVP scope").
