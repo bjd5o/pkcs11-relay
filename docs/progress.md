@@ -130,6 +130,7 @@ Part B (design `docs/milestone-5b.md`, approved 2026-11-18):
 Found during the gates; out of scope for the MVP.
 
 - **App without biometrics set up** (iPad, 2026-11-18): enrollment failed with the system's "authentication failure" because Face ID wasn't set up, and the device key needs a fresh biometric. Check `LAContext.canEvaluatePolicy` before setup and enrollment, and say plainly that Face ID or Touch ID has to be set up first.
+- **Log APNs results at the relay** (client-grant gate, 2026-11-20): the relay logs nothing when it sends a push, so an expired request can't be told apart from a push that never arrived. Log each send's outcome (status, APNs reason) at info, without the device token.
 - **Changing a paired client's keys** (Mac, 2026-11-18): the relay can't add a key to a client that is already paired; it has to be revoked and paired again. Add a re-pairing flow or an approver-side "change keys" action.
 - **Adding a device after clients are paired** (iPad, 2026-11-18): each approver only answers clients it approved itself (the relay isn't trusted to say which clients exist), so a new device rejects every request from existing clients as "unpaired client" until the client is revoked and paired again with the new device approving. Needs a way to bring a paired client to a new device without trusting the relay, for example a pairing approval signed by an existing device, or re-pairing that doesn't need a revoke; the app should also say why a request failed its checks.
 - **Client grants, Clients and Approvers screens:** design draft in `docs/client-grants.md` (covers the two items above and the rejection reasons).
@@ -149,4 +150,4 @@ Found during the gates; out of scope for the MVP.
   - The iPad, enrolled afterwards, showed the first-request notice and approved a decrypt from the grant alone; the plaintext matched.
   - The iPad changed the client's keys (dropped hw-auth; seq 2). The provider stopped offering hw-auth, and the phone, after answering its next request, listed only hw-sign and hw-unseal.
   - The Mac revoked the client (up to seq 2). The relay refuses it with 403 `ClientRevoked`, so the provider lists no keys and no request reaches a device. Device-side denial of a revoked client is covered by the engine and FFI tests; the gate couldn't reach it past the relay.
-  - One request to the phone expired unanswered; the resent one was approved. The relay doesn't log push sends, so whether the first push arrived is unknown.
+  - One request to the phone expired: the push arrived but wasn't answered in time (Brian). The resent one was approved.
