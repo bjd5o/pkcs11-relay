@@ -1,5 +1,10 @@
 module RelayPKCS11 {
-    umbrella header "RelayPKCS11.h"
+    header "RelayPKCS11.h"
+    // pkcs11.h includes pkcs11f.h several times, inside struct bodies and with different
+    // macro definitions, so the OASIS headers are textual parts of the one module header.
+    textual header "pkcs11.h"
+    textual header "pkcs11t.h"
+    textual header "pkcs11f.h"
     link "relay_pkcs11"
     export *
 }
