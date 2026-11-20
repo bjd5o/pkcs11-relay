@@ -116,7 +116,9 @@ A new optional manifest field, signed with everything else:
 
 Certificates are issued by Brian's own CA (or any CA) outside this system. Two levels of checking, neither of which decides trust (that stays with whoever relies on the certificate):
 
-- **When adding, `relayctl manifest add-certificate`** checks the whole chain, so a problem shows up before the manifest is signed rather than on first use: every certificate parses; the leaf's key equals the manifest key; each certificate's issuer matches the next one's subject and its signature verifies with the next one's key; every certificate is valid now (refused if expired, a warning if it expires before the manifest's `valid_until`); key usage fits the role (`digitalSignature` for `sign` and `auth`, `keyEncipherment` or `keyAgreement` for `encrypt`), with a warning when no S/MIME or client-auth extended key usage is present. It uses `x509-cert`, already pinned in the workspace.
+- **When adding, `relayctl manifest add-certificate --ca root.pem`** validates the whole chain, so a problem shows up before the manifest is signed rather than on first use. The root is given at add time and needn't go into the manifest.
+  - Path validation with `rustls-webpki` (already pinned; it checks the hardware attestation chains), anchored at the given root: every signature in the chain, CA basic constraints and path length on every issuer, validity now (refused if expired; a warning if any certificate expires before the manifest's `valid_until`), and the name constraints an issuer places on the certificates below it. A chain carrying a name-constraint type `rustls-webpki` can't check (email and URI, I believe) is refused rather than passed unchecked.
+  - With `x509-cert` (already pinned): the leaf's key equals the manifest key, and the leaf's key usage fits the role (`digitalSignature` for `sign` and `auth`, `keyEncipherment` or `keyAgreement` for `encrypt`). No extended key usage is required: not every key is meant for S/MIME or TLS.
 - **At load, `verify_manifest`** keeps to cheap structural checks: each certificate parses, the leaf's key matches, the limits hold; a bad entry makes the manifest invalid, like any schema error. It doesn't check expiry, so one expired certificate can't invalidate a whole manifest.
 
 The extension presents the leaf (and the intermediates, for TLS) and skips a leaf that has expired; the provider ignores the field.
@@ -141,9 +143,9 @@ Anything else is refused by `supports`, so the caller sees the key as unable to 
 **Digests on `sign` keys (proposal, pending Brian's confirmation).** Callers choose the algorithm; a token can only accept or refuse each one, and there is no way to ask a caller to prefer message algorithms. A caller that holds the message and checks what the key supports may pick a message algorithm, but many (the TLS stack, probably Mail's S/MIME) hash first and offer only digest algorithms, and fail if those are refused. So:
 
 - A new optional manifest field `keys[].accepts_digest` (boolean, `sign` keys only, default false). Without it, a `sign` key keeps the spec's rule: full message only.
-- With it, the key also accepts the digest mechanisms (`CKM_ECDSA` and `CKM_RSA_PKCS` with a DigestInfo). The approval screen says "This app sent only a digest; the content can't be shown".
-- The provider enforces the same field, so a PKCS#11 client can't use the keychain's allowance as a way around the rule.
-- The extension's `supports` answers yes to message algorithms on every `sign` key, so a caller that can send the message does.
+- With it, the key also accepts the digest mechanisms (`CKM_ECDSA` and `CKM_RSA_PKCS` with a DigestInfo). The approval screen shows the digest in full hex with its algorithm, so it can be compared with a hash computed elsewhere (for example `shasum` on the client machine), and says the content itself can't be shown.
+- **Approvers enforce it**, as part of the existing check that the operation and mechanism fit the key's role: a digest mechanism on a `sign` key without the field gets a signed denial with reason `policy` (`CKR_FUNCTION_REJECTED` for a PKCS#11 caller, "cancelled" for a keychain caller). The provider and the extension refuse it locally first, and the relay refuses it early as hygiene; neither is trusted to.
+- Callers pick the algorithm, and a token can't publish a preference order: the system asks the extension about one algorithm at a time. The extension answers yes to message algorithms on every `sign` key, so a caller that checks what's supported and can send the message may choose them; whether it does is up to the caller.
 
 ### Errors
 
@@ -188,7 +190,8 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 ## Tests
 
 - `relay-core`: manifest certificate checks (parses, leaf key matches, limits, wrong role) and `accepts_digest` (only on `sign` keys; digest mechanisms refused without it), golden vectors.
-- `relayctl`: `add-certificate` refuses a broken chain (wrong issuer, bad signature, expired, key mismatch, wrong key usage) and warns as described.
+- `relayctl`: `add-certificate` refuses a broken chain (wrong issuer, bad signature, an issuer without CA basic constraints or past its path length, expired, a name outside an issuer's name constraints, a constraint type it can't check, key mismatch, wrong key usage) and warns about expiry before `valid_until`.
+- `relay-approver`: a digest mechanism on a `sign` key without `accepts_digest` is denied with `policy`; with it, the approval view carries the digest and its algorithm.
 - `relay-client`: the shared store's record rules (atomic create, repeats while pending, after approval, after a decrypt, after a denial; expiry and cleanup), with two processes racing.
 - `relay-approver`: a local request is checked exactly like a relayed one; every rejection reason; the response is accepted by `verify_response`.
 - `relay-server`: `/v1/audit/local` accepts a valid pair, refuses a mismatched, unsigned, replayed or foreign-device pair, and keeps only hashes for decrypts.
@@ -217,13 +220,16 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 | --- | --- |
 | Where it goes | A new phase after milestone 7 |
 | Falling back to the relay when a local request isn't answered | No, at least for now: it expires |
-| Chain checks for certificates | Validate the whole chain when a certificate is added (`relayctl`), distinct from evaluating trust |
+| Chain checks for certificates | Validate the whole chain when a certificate is added (`relayctl`), name constraints included, distinct from evaluating trust; no extended-key-usage warning |
+| `x509-cert` | Approved (it was already pinned in the workspace) |
+| Digests on screen | Show the full digest and its algorithm, so it can be checked out of band |
+| Who enforces `accepts_digest` | The approvers, by signed denial; the provider, the extension and the relay refuse it earlier as well |
 | Pairing the extension | Not skipped: the app compares the pending pairing's key with the key it created, automatically |
 | Inverting the hand-off (the extension runs the card operation) | Not for now: the extension can't reach an NFC YubiKey, would need the PIN on iOS, and would need an approval gate other callers can't race. Kept as a later option for USB on the Mac (Still open) |
 
 Still to decide:
 
-1. **`accepts_digest`** as proposed under "Algorithms", or another way to let `sign` keys take digests?
+1. **`accepts_digest`** as proposed under "Algorithms" (with the digest shown in full and approvers enforcing it), or another way to let `sign` keys take digests?
 2. **Placeholder certificates** if P4 shows a key item needs one: as proposed under "Certificates"?
 
 ## Still open
