@@ -80,6 +80,19 @@ targets:
         TARGETED_DEVICE_FAMILY: "2"
         # RelayPKCS11.xcframework is arm64 only (devices and Apple silicon simulators).
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+  SampleSignerUITests:
+    type: bundle.ui-testing
+    supportedDestinations: [iOS]
+    sources: [SampleSignerUITests]
+    dependencies:
+      - target: SampleSigner
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "2"
+        TEST_TARGET_NAME: SampleSigner
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
 schemes:
   RelayApprover:
     build:
@@ -93,3 +106,6 @@ schemes:
     build:
       targets:
         SampleSigner: all
+        SampleSignerUITests: [test]
+    test:
+      targets: [SampleSignerUITests]

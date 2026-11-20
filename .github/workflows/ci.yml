@@ -52,7 +52,8 @@ jobs:
           path: librelay_pkcs11-*.so
   apple:
     # Milestone 5: the approver app in the iOS simulator against a real relay, with relay-ffi's
-    # software test card (tests/sim-e2e.sh). No YubiKey, no signing.
+    # software test card (tests/sim-e2e.sh). Milestone 7: the provider's sample app
+    # (tests/sim-provider.sh). No YubiKey, no signing.
     needs: rust
     runs-on: macos-15
     steps:
@@ -62,3 +63,9 @@ jobs:
           rustup default 1.93.0
       - run: brew install xcodegen
       - run: tests/sim-e2e.sh
+      # Milestone 7: the provider's sample app signs in the simulator (tests/sim-provider.sh),
+      # and builds for iOS devices (unsigned).
+      - run: tests/sim-provider.sh
+      - run: >-
+          xcodebuild -project apps/apple/RelayApprover.xcodeproj -scheme SampleSigner
+          -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO build

@@ -20,57 +20,18 @@ cleanup() {
   if [ -n "${KEEP:-}" ]; then echo "kept $W"; else rm -rf "$W"; fi
 }
 trap cleanup EXIT INT TERM
+# shellcheck source=tests/sim-lib.sh
+. "$ROOT/tests/sim-lib.sh"
 
 echo "== build"
 cargo build -q -p relay-server -p relay-test-approver -p relayctl
 FEATURES=test-card PROFILE=dev apps/apple/build-xcframework.sh
 (cd apps/apple && xcodegen -q)
 
-# Target the simulator by id: a name alone means "that name on the newest runtime", and fails
-# when the device exists only on an older one (iPhone 17 Pro on iOS 26 next to iOS 27). Without
-# an argument, take the first iPhone on the newest iOS runtime this Xcode's SDK covers.
-if [ -n "$SIM" ]; then
-  DEST="platform=iOS Simulator,name=$SIM"
-else
-  SDK=$(xcrun --sdk iphonesimulator --show-sdk-version)
-  PICK=$(xcrun simctl list devices available -j | python3 -I -c '
-import json, sys
-sdk = tuple(int(x) for x in sys.argv[1].split("."))
-best = None
-for rt, devs in json.load(sys.stdin)["devices"].items():
-    name = rt.rsplit(".", 1)[-1]
-    if not name.startswith("iOS-"):
-        continue
-    parts = name[4:].split("-")
-    if not all(p.isdigit() for p in parts):
-        continue  # device-specific runtimes such as iOS-27-2-iPhone19-4
-    ver = tuple(int(p) for p in parts)
-    phones = [d for d in devs if d["name"].startswith("iPhone")]
-    if phones and ver <= sdk and (best is None or ver > best[0]):
-        best = (ver, phones[0])
-if best:
-    print(best[1]["udid"], best[1]["name"], "(iOS " + ".".join(map(str, best[0])) + ")")
-' "$SDK")
-  [ -n "$PICK" ] || {
-    echo "no available iPhone simulator for the iOS $SDK SDK; xcodebuild offers:"
-    xcodebuild -project apps/apple/RelayApprover.xcodeproj -scheme RelayApprover -showdestinations 2>&1 | tail -30
-    exit 1
-  }
-  DEST="platform=iOS Simulator,id=${PICK%% *}"
-  SIM=${PICK#* }
-fi
+pick_simulator iPhone "$SIM"
 
 echo "== fixtures and relay on https://localhost:$PORT"
-target/debug/relay-test-approver gen-fixtures --out "$W" --root "$W" \
-  --relay-url "https://localhost:$PORT" --pairing-cidrs 127.0.0.0/8 2>/dev/null
-RELAY_LISTEN=127.0.0.1:$PORT RELAY_DATA_DIR=$W/relay-data \
-  target/debug/relay-server --config "$W/relay.toml" serve >"$W/relay.log" 2>&1 &
-RELAY_PID=$!
-i=0
-until curl -fs --cacert "$W/relay-ca.pem" "https://localhost:$PORT/healthz" >/dev/null; do
-  i=$((i + 1)); [ $i -gt 50 ] && { echo "relay did not start"; cat "$W/relay.log"; exit 1; }
-  sleep 0.2
-done
+start_relay
 
 # The setup link, exactly as a person would make it (checks the live relay first).
 target/debug/relayctl app-link --no-input --relay-url "https://localhost:$PORT" \
