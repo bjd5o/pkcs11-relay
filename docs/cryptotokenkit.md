@@ -1,6 +1,6 @@
 # Relay keys in the system keychain (CryptoTokenKit extension)
 
-Status: **draft for Brian's review (2026-11-20); first decisions taken the same day** (see Decisions). Nothing here is built. It changes the spec (see "Spec changes"), so it needs Brian's approval before any code, and its first step is a prototype whose results may change the design.
+Status: **decisions taken by Brian on 2026-11-20** (see Decisions); the spec changes still need writing and approving. Nothing here is built. It changes the spec (see "Spec changes"), so it needs Brian's approval before any code, and its first step is a prototype whose results may change the design.
 
 ## Goal
 
@@ -140,7 +140,7 @@ The keychain's algorithms map onto the spec's mechanisms. A `sign` key receives 
 
 Anything else is refused by `supports`, so the caller sees the key as unable to do it. RSA PKCS#1 v1.5 decryption is not supported (see "Still open").
 
-**Digests on `sign` keys (proposal, pending Brian's confirmation).** Callers choose the algorithm; a token can only accept or refuse each one, and there is no way to ask a caller to prefer message algorithms. A caller that holds the message and checks what the key supports may pick a message algorithm, but many (the TLS stack, probably Mail's S/MIME) hash first and offer only digest algorithms, and fail if those are refused. So:
+**Digests on `sign` keys.** Callers choose the algorithm; a token can only accept or refuse each one, and there is no way to ask a caller to prefer message algorithms. A caller that holds the message and checks what the key supports may pick a message algorithm, but many (the TLS stack, probably Mail's S/MIME) hash first and offer only digest algorithms, and fail if those are refused. So:
 
 - A new optional manifest field `keys[].accepts_digest` (boolean, `sign` keys only, default false). Without it, a `sign` key keeps the spec's rule: full message only.
 - With it, the key also accepts the digest mechanisms (`CKM_ECDSA` and `CKM_RSA_PKCS` with a DigestInfo). The approval screen shows the digest in full hex with its algorithm, so it can be compared with a hash computed elsewhere (for example `shasum` on the client machine), and says the content itself can't be shown.
@@ -179,7 +179,7 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 ## Spec changes
 
 - **Approver application:** the extension, the two routes, the local hand-off, the client identity for `<device-id>-keychain`, and the "calling app unknown" line on the approval screen.
-- **Trust manifest:** `keys[].certificates` and, if confirmed, `keys[].accepts_digest`; wire-format §9.2. The provider's role enforcement reads `accepts_digest` too.
+- **Trust manifest:** `keys[].certificates` and `keys[].accepts_digest`; wire-format §9.2. The provider's role enforcement reads `accepts_digest` too.
 - **Relay:** `POST /v1/audit/local`; wire-format §10.
 - **Keys and messages / wire format:** none; the request and response envelopes are unchanged.
 - **Threat model:** the rows above.
@@ -224,13 +224,10 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 | `x509-cert` | Approved (it was already pinned in the workspace) |
 | Digests on screen | Show the full digest and its algorithm, so it can be checked out of band |
 | Who enforces `accepts_digest` | The approvers, by signed denial; the provider, the extension and the relay refuse it earlier as well |
+| Digests on `sign` keys | `keys[].accepts_digest`, as described under "Algorithms" |
+| Keys without a certificate | A placeholder certificate from the app if P4 shows one is needed, as described under "Certificates" |
 | Pairing the extension | Not skipped: the app compares the pending pairing's key with the key it created, automatically |
 | Inverting the hand-off (the extension runs the card operation) | Not for now: the extension can't reach an NFC YubiKey, would need the PIN on iOS, and would need an approval gate other callers can't race. Kept as a later option for USB on the Mac (Still open) |
-
-Still to decide:
-
-1. **`accepts_digest`** as proposed under "Algorithms" (with the digest shown in full and approvers enforcing it), or another way to let `sign` keys take digests?
-2. **Placeholder certificates** if P4 shows a key item needs one: as proposed under "Certificates"?
 
 ## Still open
 
