@@ -21,6 +21,7 @@ toml.workspace = true
 base64.workspace = true
 hex.workspace = true
 zeroize.workspace = true
+gethostname.workspace = true
 
 [dev-dependencies]
 # The core's test helpers (Manifest::from_json_unverified) for unit tests.

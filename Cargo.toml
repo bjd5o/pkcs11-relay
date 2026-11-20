@@ -105,5 +105,9 @@ cryptoki-sys = "=0.5.0"
 ureq = { version = "=3.5.2", default-features = false, features = ["rustls"] }
 futures-util = { version = "=0.3.34", default-features = false, features = ["sink", "std"] }
 
+# Approved 2026-11-19 for milestone 7: the provider's host name on macOS and iPadOS, which
+# have no /proc or /etc/hostname. A safe wrapper, so relay-pkcs11 needs no new unsafe.
+gethostname = "=1.1.0"
+
 [profile.release]
 panic = "unwind" # relay-pkcs11 relies on catch_unwind at the FFI boundary
