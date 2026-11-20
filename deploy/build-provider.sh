@@ -8,11 +8,12 @@
 set -euo pipefail
 libc="${1:?usage: deploy/build-provider.sh gnu|musl}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# Rust version: kept equal to mise.toml by `mise run sync-rust`.
 case "$libc" in
-  gnu)  image=rust:1.93-bookworm; prep=true ;;
+  gnu)  image=rust:1.95.0-bookworm; prep=true ;;
   # Rust's musl targets link statically by default, which rules out a cdylib; the provider
   # must link musl dynamically, as the processes that load it do.
-  musl) image=rust:1.93-alpine; prep="apk add --no-cache musl-dev >/dev/null" ;;
+  musl) image=rust:1.95.0-alpine; prep="apk add --no-cache musl-dev >/dev/null" ;;
   *) echo "libc must be gnu or musl" >&2; exit 2 ;;
 esac
 mkdir -p "$root/dist"

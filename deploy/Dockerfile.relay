@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
 # The relay: one static musl binary in a distroless image, running as non-root.
 # Multi-arch: docker buildx build --platform linux/amd64,linux/arm64 -f deploy/Dockerfile.relay .
-FROM rust:1.93-alpine AS build
+# Rust version: kept equal to mise.toml by `mise run sync-rust`.
+FROM rust:1.95.0-alpine AS build
 RUN apk add --no-cache musl-dev
 WORKDIR /src
 COPY . .

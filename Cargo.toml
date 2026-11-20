@@ -17,7 +17,7 @@ exclude = ["fuzz"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.93"
+rust-version = "1.95"
 license = "Apache-2.0"
 publish = false
 
@@ -68,7 +68,7 @@ rand_core_06 = { package = "rand_core", version = "=0.6.4", features = ["getrand
 # Approved 2026-11-15 for milestone 2 (axum, tokio, sqlx from the spec's technology table).
 axum = { version = "=0.8.9", features = ["ws"] }
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
-# 0.8: sqlx 0.9 needs rustc 1.94 and mise.toml pins 1.93.
+# 0.8: sqlx 0.9 needs rustc 1.94 (chosen when mise pinned 1.93); upgrade deliberately.
 sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
 clap = { version = "=4.6.7", features = ["derive", "env"] }
 toml = "=1.2.1"

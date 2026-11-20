@@ -14,3 +14,4 @@ gate-m5/
 
 # APNs auth keys (developer account); never committed
 *.p8
+/result

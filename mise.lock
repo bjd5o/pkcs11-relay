@@ -8,13 +8,13 @@ backend = "cargo:cargo-fuzz"
 specifiers = ["0.13.2"]
 
 [[tools.rust]]
-version = "1.93.0"
+version = "1.95.0"
 backend = "core:rust"
-specifiers = ["1.93.0"]
+specifiers = ["1.95.0"]
 
 [tools.rust.options]
 components = "clippy,rustfmt"
-targets = "aarch64-apple-ios,aarch64-apple-ios-sim"
+targets = "aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-darwin"
 
 [[tools.xcodegen]]
 version = "2.45.4"

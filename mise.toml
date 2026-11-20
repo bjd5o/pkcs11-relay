@@ -7,7 +7,7 @@
 # Linux targets are added in milestone 3, when the provider builds for glibc and musl.
 # iOS device and simulator targets for the approver app's XCFramework (milestone 5).
 # x86_64-apple-darwin: the Intel slice of the universal provider dylib (milestone 7).
-rust = { version = "1.93.0", components = "rustfmt,clippy", targets = "aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-darwin" }
+rust = { version = "1.95.0", components = "rustfmt,clippy", targets = "aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-darwin" }
 # Fuzzing (fuzz/run.sh adds the pinned nightly toolchain it needs through rustup).
 "cargo:cargo-fuzz" = "0.13.2"
 # Generates apps/apple/RelayApprover.xcodeproj from project.yml (milestone 5).
@@ -21,3 +21,37 @@ DOCKER_CONTEXT = "colima"
 [tasks.fuzz]
 description = "Run a fuzz target from its seeds: mise run fuzz <target> [seconds]"
 run = "fuzz/run.sh"
+
+# mise's Rust follows the rustc in the flake's pinned nixpkgs, so development, CI and the
+# Nix package use one compiler (docs/milestone-7.md, "Keeping mise's Rust in step with the
+# flake"). Bump Rust with `nix flake update nixpkgs`; the hooks below then rewrite the
+# version above; commit flake.lock and mise.toml together. `nix flake check` fails if they
+# differ.
+[tasks.sync-rust]
+description = "Pin mise's Rust to the rustc in the flake's nixpkgs"
+sources = ["flake.lock"]
+run = '''
+if ! command -v nix >/dev/null 2>&1; then
+  echo "sync-rust: nix is not installed; leaving the Rust version in mise.toml alone"
+  exit 0
+fi
+want=$(nix eval --raw --extra-experimental-features 'nix-command flakes' --inputs-from . nixpkgs#rustc.version) || exit 1
+have=$(sed -n 's/^rust = { version = "\([^"]*\)".*/\1/p' mise.toml)
+if [ "$want" = "$have" ]; then exit 0; fi
+sed -i.bak "s/^rust = { version = \"$have\"/rust = { version = \"$want\"/" mise.toml && rm mise.toml.bak
+# The Docker images name the version too; CI reads it from mise.toml.
+for f in deploy/Dockerfile.relay deploy/Dockerfile.test deploy/build-provider.sh; do
+  sed -i.bak "s/rust:$have-/rust:$want-/g" "$f" && rm "$f.bak"
+done
+echo "sync-rust: Rust $have -> $want (from the flake's nixpkgs); commit it with flake.lock"
+mise install rust
+'''
+
+[hooks]
+# Entering the project from outside it (needs `mise activate` in the shell).
+enter = { task = "sync-rust" }
+
+# flake.lock changing while the shell is already in the project (git pull, nix flake update).
+[[watch_files]]
+patterns = ["flake.lock"]
+task = "sync-rust"
