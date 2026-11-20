@@ -77,7 +77,7 @@ Part A:
 - [x] 5.3 App skeleton: SwiftUI multiplatform (XcodeGen), Setup, Enrollment, Approval, Pairing and Status screens, Secure Enclave keys, storage; `relayctl app-config` writes the setup file.
 - [x] 5.4 NFC `CardChannel` (CoreNFC, ISO 7816). Builds; not yet run on a device.
 - [x] 5.5 Simulator end-to-end test (`tests/sim-e2e.sh`), passing locally (2026-11-17). A relay runs on the Mac; the app in the iOS simulator uses relay-ffi's software test card; an XCUITest enrolls, approves the pairing and approves an RSA-OAEP decrypt with the PIN; `relay-test-approver sim-client` verifies the plaintext as the provider would. CI job `apple` (macos-15) passes too (first run 2026-11-17).
-- [ ] Gate on Brian's iPhone over NFC with YubiKey <serial>
+- [x] Gate on Brian's iPhone over NFC with YubiKey <serial> (passed 2026-11-18; the wrong-PIN check below stays optional)
   - 2026-11-18, with the setup-link flow and the new key layout (operation keys imported onto two YubiKeys, an attest key generated on each, both attestation chains in the manifest, version 2, signed with gpg):
     - [x] Setup: `relayctl app-link` QR code scanned; the relay admitted the phone by its setup link
     - [x] Enrollment over NFC; pairing of the Linux client (code compared on the phone), `hw-unseal` only
@@ -85,7 +85,7 @@ Part A:
     - [x] Denial: `C_Decrypt` returned `CKR_FUNCTION_REJECTED` (0x200), seen through OpenSC's PKCS#11 spy, because `pkcs11-tool` retries with `C_DecryptUpdate` and prints that code instead
     - [x] Expiry: `C_Decrypt` returned `CKR_FUNCTION_CANCELED` (0x50) after the provider's 110 s
     - [x] Renewal (16:19 UTC): an approved decrypt renewed the attestation in the same NFC tap (new window 16:19:37–17:19:37, signed during the approval); the plaintext matched, and the app re-registered with the new statement. The first attempt found the expired-attestation bug fixed in `7f68e18`
-    - [ ] Wrong PIN: skipped unless Brian asks (it spends one of the card's PIN tries)
+    - [ ] Wrong PIN (optional, not part of the gate): skipped unless Brian asks (it spends one of the card's PIN tries)
 
 Hardware attestation of attest keys (design `docs/hw-attestation.md`, approved 2026-11-17):
 - [x] Spec, wire-format §9.2/§9.4 and decisions updated
@@ -96,7 +96,7 @@ Hardware attestation of attest keys (design `docs/hw-attestation.md`, approved 2
 - [x] `[hardware_attestation]` (`require`, test-only `roots_file`) in the provider, the test approver and the relay; the app's setup file carries the same; the engine reports an attest key attested on another card
 - [x] Relay: verifies the manifest it serves, advertises and routes only manifest keys from devices whose attestation a manifest attest key signed (window not checked, so expired devices can renew), rejects registrations otherwise, and advertises nothing while the manifest is invalid (`relay-server` `trust` tests)
 - [x] Fixtures: the attest key carries a synthetic chain; the m3 gate checks that a manifest whose attest key shows touch `never` gives zero slots
-- [ ] Real cards: Brian imports the operation keys onto both YubiKeys, generates an attest key on each, then `relayctl manifest add --role attest` per card (per-command approval)
+- [x] Real cards: Brian imported the operation keys onto both YubiKeys, generated an attest key on each, and added both with `relayctl manifest add --role attest` (2026-11-18; both chains are in the `gate-m5` manifest)
 
 Signed setup links (design `docs/setup-link.md`, approved 2026-11-17):
 - [x] Spec, wire-format (§5.1 step 5, §9.2, §10, new §11) and decisions updated
@@ -131,9 +131,9 @@ Found during the gates; out of scope for the MVP.
 
 - **App without biometrics set up** (iPad, 2026-11-18): enrollment failed with the system's "authentication failure" because Face ID wasn't set up, and the device key needs a fresh biometric. Check `LAContext.canEvaluatePolicy` before setup and enrollment, and say plainly that Face ID or Touch ID has to be set up first.
 - **Log APNs results at the relay** (client-grant gate, 2026-11-20): the relay logs nothing when it sends a push, so an expired request can't be told apart from a push that never arrived. Log each send's outcome (status, APNs reason) at info, without the device token.
-- **Changing a paired client's keys** (Mac, 2026-11-18): the relay can't add a key to a client that is already paired; it has to be revoked and paired again. Add a re-pairing flow or an approver-side "change keys" action.
-- **Adding a device after clients are paired** (iPad, 2026-11-18): each approver only answers clients it approved itself (the relay isn't trusted to say which clients exist), so a new device rejects every request from existing clients as "unpaired client" until the client is revoked and paired again with the new device approving. Needs a way to bring a paired client to a new device without trusting the relay, for example a pairing approval signed by an existing device, or re-pairing that doesn't need a revoke; the app should also say why a request failed its checks.
-- **Client grants, Clients and Approvers screens:** design draft in `docs/client-grants.md` (covers the two items above and the rejection reasons).
+- **Resolved by client grants (2026-11-20):** Changing a paired client's keys (Mac, 2026-11-18): the relay can't add a key to a client that is already paired; it has to be revoked and paired again. Add a re-pairing flow or an approver-side "change keys" action.
+- **Resolved by client grants (2026-11-20):** Adding a device after clients are paired (iPad, 2026-11-18): each approver only answers clients it approved itself (the relay isn't trusted to say which clients exist), so a new device rejects every request from existing clients as "unpaired client" until the client is revoked and paired again with the new device approving. Needs a way to bring a paired client to a new device without trusting the relay, for example a pairing approval signed by an existing device, or re-pairing that doesn't need a revoke; the app should also say why a request failed its checks.
+- **Client grants, Clients and Approvers screens:** built and gated (`docs/client-grants.md`; see "Client grants" below), covering the two items above and the rejection reasons.
 
 ## Client grants (design `docs/client-grants.md`, approved 2026-11-18)
 
