@@ -43,46 +43,47 @@ final class CallerModel: ObservableObject {
         NSLog("ctk-caller %@", s)
     }
 
-    func load() {
-        var q: [String: Any] = [
-            kSecClass as String: kSecClassKey,
-            kSecAttrAccessGroup as String: kSecAttrAccessGroupToken,
+    /// Try every way a caller might look for token items, and say what each one finds.
+    static func variants(_ cls: CFString) -> [(String, [String: Any])] {
+        let base: [String: Any] = [
+            kSecClass as String: cls,
             kSecMatchLimit as String: kSecMatchLimitAll,
             kSecReturnAttributes as String: true,
             kSecReturnRef as String: true,
         ]
+        let token: [String: Any] = [kSecAttrAccessGroup as String: kSecAttrAccessGroupToken]
+        var out = [("plain", base), ("token group", base.merging(token) { $1 })]
         #if os(macOS)
-        q[kSecUseDataProtectionKeychain as String] = true
+        let dp: [String: Any] = [kSecUseDataProtectionKeychain as String: true]
+        out += [("data protection", base.merging(dp) { $1 }),
+                ("data protection + token group", base.merging(dp) { $1 }.merging(token) { $1 })]
         #endif
-        var out: CFTypeRef?
-        let st = SecItemCopyMatching(q as CFDictionary, &out)
-        let items = (out as? [[String: Any]]) ?? []
-        keys = items.compactMap { a in
-            guard let ref = a[kSecValueRef as String] else { return nil }
-            let tid = a[kSecAttrTokenID as String] as? String ?? "?"
-            let label = a[kSecAttrLabel as String] as? String ?? "(no label)"
-            return TokenKey(id: "\(tid)/\(label)", label: label, tokenID: tid, ref: ref as! SecKey)
-        }
-        say("token keys: status \(st), \(keys.count) found: \(keys.map { "\($0.label) [\($0.tokenID)]" })")
-        if selected == nil { selected = keys.first?.id }
-        identities()
+        return out
     }
 
-    /// TLS and S/MIME look for identities (certificate + key).
-    func identities() {
-        var q: [String: Any] = [
-            kSecClass as String: kSecClassIdentity,
-            kSecAttrAccessGroup as String: kSecAttrAccessGroupToken,
-            kSecMatchLimit as String: kSecMatchLimitAll,
-            kSecReturnAttributes as String: true,
-        ]
-        #if os(macOS)
-        q[kSecUseDataProtectionKeychain as String] = true
-        #endif
-        var out: CFTypeRef?
-        let st = SecItemCopyMatching(q as CFDictionary, &out)
-        let n = (out as? [[String: Any]])?.count ?? 0
-        say("token identities: status \(st), \(n) found")
+    func load() {
+        var found: [String: TokenKey] = [:]
+        for (cname, cls) in [("keys", kSecClassKey), ("identities", kSecClassIdentity)] {
+            for (name, q) in Self.variants(cls) {
+                var out: CFTypeRef?
+                let st = SecItemCopyMatching(q as CFDictionary, &out)
+                let items = ((out as? [[String: Any]]) ?? []).filter { $0[kSecAttrTokenID as String] != nil }
+                let names = items.map { "\($0[kSecAttrLabel as String] as? String ?? "?") [\($0[kSecAttrTokenID as String] as? String ?? "?")]" }
+                say("\(cname), \(name): status \(st), token items \(names)")
+                guard cls == kSecClassKey else { continue }
+                for a in items {
+                    guard let ref = a[kSecValueRef as String], CFGetTypeID(ref as CFTypeRef) == SecKeyGetTypeID() else { continue }
+                    let tid = a[kSecAttrTokenID as String] as? String ?? "?"
+                    let label = a[kSecAttrLabel as String] as? String ?? "(no label)"
+                    // Only the prototype's token: never offer a real card's keys.
+                    guard tid.contains("ctk-proto") else { continue }
+                    let id = "\(tid)/\(label)"
+                    found[id] = TokenKey(id: id, label: label, tokenID: tid, ref: ref as! SecKey)
+                }
+            }
+        }
+        keys = found.values.sorted { $0.id < $1.id }
+        if selected == nil { selected = keys.first?.id }
     }
 
     func run(after: Double) {
