@@ -148,3 +148,16 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 - **P3: Mail made a second sign call.** It reached the extension 63 ms after the first finished, same key, algorithm and size (443 B) but **different input**, so it isn't an identical retry and the record name (key, algorithm, input) doesn't match. In `immediate` mode there was one call. Brian sent **one** message. Cause unknown: it may have been made while the first was waiting (calls queue), by a draft save, Send pressed again, or Mail itself; the Mac's log kept nothing from Mail. Brian saw several requests and didn't know why.
 - Not checked: a denial, and Mail on the iPhone.
 
+### Mac, Mail: why it signs more than once, 2026-11-23 (`handoff`, one message per run)
+
+| Run | Calls | Detail |
+| --- | --- | --- |
+| Quick, approved in 4.8 s | 1 | |
+| Slow, approved after 77.7 s | 2 | second call 32 ms after the first finished, approved after 25.6 s |
+| Denied | 3 | Mail: the message failed to send (Brian). Two more calls, 13 s after the denial and then exactly 30.000 s later, which Brian saw were for saving the draft |
+
+- **A denial fails safe:** the message wasn't sent (Brian); nothing was sent unsigned.
+- **Mail signs drafts when it autosaves them**, likely on a 30 s timer. That fits the second call in the slow runs (queued behind the first), but it was only seen directly after a denial. Each save signs new input.
+- Not checked: whether composing a signed message for longer than 30 s, without sending, also asks; and whether turning signing off for drafts is possible.
+- **Open:** Brian reports the sent email's signature as `3046…659e`. A DER signature starting `3046` is 72 bytes, and every Mail call logged here returned 70 or 71. Which message it came from isn't known.
+
