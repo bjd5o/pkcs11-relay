@@ -160,4 +160,5 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 - **Mail signs drafts when it autosaves them**, likely on a 30 s timer. That fits the second call in the slow runs (queued behind the first), but it was only seen directly after a denial. Each save signs new input.
 - **Composing alone asks too** (Brian): a signed message left open, without pressing Send, requests a signature. How often wasn't recorded. Whether signing can be turned off for drafts isn't checked.
 - Brian read a signature `3046…659e` from a sent email; it doesn't match any logged Mail call (70 or 71 bytes; `3046` is 72). He thinks it may be the certificate's own signature, which would explain it. Not checked.
+- **Mail on the iPhone:** its settings said "no valid certificates found for signing" with the first test certificate (Brian). That one was self-signed and marked `CA:TRUE`, a mistake in `make-test-identity.sh`; whether that was the reason isn't known. The script now issues a non-CA leaf from a throwaway root.
 
