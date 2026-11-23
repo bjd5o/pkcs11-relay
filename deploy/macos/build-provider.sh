@@ -9,12 +9,15 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
-export MACOSX_DEPLOYMENT_TARGET=13.0
 target=aarch64-apple-darwin
 name=librelay_pkcs11.dylib
 out="dist/librelay_pkcs11-$target.dylib"
 mkdir -p dist
-cargo build --release --locked -p relay-pkcs11 --target "$target"
+# Host-side proc macros first, without the deployment-target variable: with it set, release
+# proc-macro dylibs come out malformed ("mis-aligned LINKEDIT"; see
+# apps/apple/build-xcframework.sh).
+env -u MACOSX_DEPLOYMENT_TARGET cargo build --release --locked -p relay-pkcs11 --lib
+MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release --locked -p relay-pkcs11 --lib --target "$target"
 cp "target/$target/release/$name" "$out"
 # Callers dlopen the module by path; @rpath only matters for tools that link it.
 install_name_tool -id "@rpath/$name" "$out"
