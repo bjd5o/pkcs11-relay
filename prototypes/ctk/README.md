@@ -118,6 +118,6 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 - **Access prompt:** `tokenFor` to `createSession` took 5.5 s on first use, consistent with the prompt, and 3 ms on the next one 3 minutes later, so the permission seems to last at least that long.
 - The shared log and store work with the `group.` container on iOS.
 - **P1, run B: passes.** With CTKProto swiped away, tapping the notification launched it (new process), the tap was delivered (`notification opened` 6 ms after launch logging), approved after 10.9 s, answered after 11.1 s.
-- **P1, run C: the extension waited 67.2 s** and returned the approved signature (`with-cert`; tap at 62.6 s). The log doesn't show whether CTKCaller was in the background for the whole wait, or its own result line; both still to record.
+- **P1, run C: the extension waited 67.2 s** and returned the approved signature (`with-cert`; tap at 62.6 s). CTKCaller was in the background for most of the wait (Brian). Its own result line for this run is still to record.
 - **P2, run D:** unanswered, the extension timed out at its own 100.0 s; CTKCaller reported `CryptoTokenKit -4` after 111.8 s. The 11.8 s difference is unexplained (CTKCaller suspended in the background until reopened would do it). So the caller's own limit is above 100 s, not yet found.
 - **Access prompt:** Brian didn't recognise it when asked later, so treat its wording and meaning as unknown.
