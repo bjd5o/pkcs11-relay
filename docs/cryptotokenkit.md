@@ -53,7 +53,7 @@ Software keys, one test caller, no YubiKey. Details and logs: `prototypes/ctk/RE
 | # | iPhone | Mac (macOS 27.0.1) | iPad |
 | --- | --- | --- | --- |
 | P1 hand-off | **Pass:** about 59 s with the caller out of the foreground; the notification also launches the app when it isn't running | Pass for 13 s, caller in view; the extension stayed alive 100 s unanswered | Not run |
-| P2 caller limits | Test caller: above 100 s. Mail: not run | Test caller: above 100 s. `ssh`, Mail: not run | Not run |
+| P2 caller limits | Test caller: above 100 s. Mail: not run | Test caller: above 100 s. `ssh`: key loads, no approved signature yet. Mail: not run | Not run |
 | P3 repeats | None seen from the test caller | None seen. Once, a second call reached the extension only after the first finished | Not run |
 | P4 bare key | **Pass** for a keychain caller | **Pass** for a keychain caller; `ssh` not run with published keys | Not run |
 | P5 locked | **Pass**, after the first unlock since a restart | Not run | Not run |
@@ -144,7 +144,7 @@ Certificates are issued by Brian's own CA (or any CA) outside this system. Two l
 
 The extension presents the leaf (and the intermediates, for TLS) and skips a leaf that has expired; the provider ignores the field.
 
-**Keys without a certificate.** P4 showed a key item doesn't need one for keychain callers, so bare keys are published as they are. `ssh-keychain(8)` says it serves identities only (RSA through PKCS#11, P-256 through its Secure Key module), so `ssh` may still need a certificate; that is untested. If it does, and a placeholder turns out to work, the app makes a placeholder for each key the manifest gives none: subject "relay-pkcs11 placeholder: <label>", the key's public key, signed by a per-device placeholder key the app creates for this alone (no card operation, no approval). It only carries the public key to callers like `ssh-keychain.dylib`; anything that evaluates trust rejects it. A real certificate in the manifest replaces it.
+**Keys without a certificate.** P4 showed a key item doesn't need one for keychain callers, so bare keys are published as they are. `ssh` loads a bare P-256 key through `ssh-keychain`'s Secure Key route without a certificate **(prototype)**, though its man page speaks of identities. If some other caller turns out to need one, the app makes a placeholder for each key the manifest gives none: subject "relay-pkcs11 placeholder: <label>", the key's public key, signed by a per-device placeholder key the app creates for this alone (no card operation, no approval). It only carries the public key to callers like `ssh-keychain.dylib`; anything that evaluates trust rejects it. A real certificate in the manifest replaces it.
 
 Whole certificates, not hashes, because the extension needs the bytes and the manifest is already the trusted channel; a certificate change means re-signing the manifest either way.
 
@@ -226,7 +226,7 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 - One test per new Failure handling row.
 - **Gate** (on Brian's hardware):
   1. iPhone, NFC, local route: Mail signs a message with an `auth` key that has a certificate, after an approval on the phone; the signature verifies.
-  2. Mac, relay route: `ssh -I /usr/lib/ssh-keychain.dylib` authenticates with `hw-auth`, approved on the phone. **In doubt:** hw-auth is P-256, which the man page says the PKCS#11 route doesn't serve. Either the Secure Key route works, or this step needs an RSA auth key, or another caller.
+  2. Mac, relay route: `ssh -I /usr/lib/ssh-keychain.dylib` authenticates with `hw-auth`, approved on the phone. **In doubt:** hw-auth is P-256, which the man page says the PKCS#11 route doesn't serve. The prototype's P-256 keys don't appear over PKCS#11, but load through the Secure Key route (`ssh-keygen -w … -K`) without a certificate, as `sk-ecdsa` keys with their own `authorized_keys` entry. No signature has been confirmed yet.
   3. iPad, USB-C, local route: a test app decrypts with `hw-unseal`; the plaintext matches.
   4. The relay's audit log has rows for the local operations, with only hashes for the decrypt.
 

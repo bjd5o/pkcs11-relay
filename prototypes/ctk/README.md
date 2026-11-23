@@ -126,3 +126,14 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 - **P6: passes** for short requests: 18 of 18 returned 200 over 91.2 s from inside the extension, then it signed. Whether CTKCaller was in the background is not recorded, and a single long-poll held open, and the relay's pinned CA, are not tested.
 - **P8: passes.** From inside the extension the protected item was read (status 0 after 9.4 s) and the signature completed. iOS showed "Allow CTK Proto to use Face ID?", its one-time permission for the containing app; the item's `.biometryCurrentSet` protection means a Face ID match followed. A later run should show the match alone.
 - **P4: passes for a keychain caller.** With constraints, `bare` is published and signs (72 B, `immediate`). No access prompt came for the new key.
+
+### Mac, ssh through `ssh-keychain.dylib`, 2026-11-23 (no YubiKey attached, keys published)
+
+- **PKCS#11 (`ssh-keygen -D`): no slots** for the P-256 keys, with and without `KEYCHAIN_CERTIFICATES`. Fits the man page (RSA only); an RSA identity is untested.
+- **Secure Key route (`ssh-keygen -w … -K`): loads both keys, the bare one too**, as `sk-ecdsa-sha2-nistp256@openssh.com`. So `ssh` needs no certificate. The earlier -1 failure was the unpublished keys. `-K` asks for a PIN and accepted an empty one.
+- **A server sees an `sk-ecdsa` key,** not the plain ECDSA key the PKCS#11 provider presents: a different `authorized_keys` entry.
+- **The call reaches the extension** as a digest: `ecdsaSignatureDigestRFC4754`, 32 B, after one algorithm the prototype refused. So the key must accept digests, as an `auth` key does.
+- **No valid signature yet.** Both runs were in `handoff` and neither was approved: CTKProto and its extension were replaced during the first, and both requests were denied in the app. `ssh-keygen -Y sign` still wrote a signature file each time ("Write signature to …"), which failed verification. **A refusal doesn't surface as an error to ssh-keygen here**; an ssh server would reject the result. Worth confirming once one is approved.
+- **Liveness again:** the first request outlived its extension and was listed until denied 31 s later.
+- `supports` is answered from the published keys of the whole token; a plain unentitled command-line program can list them (`SecItem`, token group named).
+
