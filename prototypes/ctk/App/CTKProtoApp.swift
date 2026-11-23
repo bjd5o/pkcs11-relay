@@ -322,6 +322,7 @@ struct ContentView: View {
                 #endif
                 Section("Log") {
                     Button("Clear log") { Log.clear(); model.refresh() }
+                    ShareLink("Copy or share log", item: model.log)
                     Text(model.log.split(separator: "\n").suffix(80).joined(separator: "\n"))
                         .font(.system(size: 10).monospaced())
                         .textSelection(.enabled)
