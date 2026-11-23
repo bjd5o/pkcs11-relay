@@ -120,7 +120,12 @@ final class TokenSession: TKTokenSession, TKTokenSessionDelegate {
     /// P1: notification, then wait for the app's answer in the store.
     private func handoff(_ req: ProtoRequest, settings: Settings) throws -> Data {
         Store.prune(olderThan: settings.waitSecs + 30)
-        if Store.create(req) {
+        let created: Bool
+        do { created = try Store.create(req) } catch {
+            Log.write("ext", "store write failed: \(error)")
+            throw TKError(.communicationError)
+        }
+        if created {
             Log.write("ext", "record created, posting notification")
             postNotification(req)
         } else {

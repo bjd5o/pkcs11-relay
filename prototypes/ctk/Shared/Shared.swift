@@ -6,6 +6,7 @@
 
 import CryptoKit
 import Foundation
+import os
 import Security
 
 enum Proto {
@@ -73,7 +74,8 @@ enum Log {
         } else {
             try? data.write(to: file, options: .untilFirstUnlock)
         }
-        NSLog("ctk-proto %@ %@", who, msg)
+        // Public on purpose: prototype data only (hashes, algorithms, timings).
+        Logger(subsystem: "ctk-proto", category: who).notice("\(msg, privacy: .public)")
     }
     static func read() -> String { (try? String(contentsOf: file, encoding: .utf8)) ?? "" }
     static func clear() { try? FileManager.default.removeItem(at: file) }
@@ -127,13 +129,14 @@ enum Store {
     static func requestURL(_ id: String) -> URL { dir.appendingPathComponent("\(id).req") }
     static func responseURL(_ id: String) -> URL { dir.appendingPathComponent("\(id).resp") }
 
-    /// Exclusive create: true only for the call that made the record.
-    static func create(_ r: ProtoRequest) -> Bool {
-        guard let d = try? JSONEncoder().encode(r) else { return false }
+    /// Exclusive create: true only for the call that made the record, false if it already exists.
+    /// Any other failure (no access to the container) throws.
+    static func create(_ r: ProtoRequest) throws -> Bool {
+        let d = try JSONEncoder().encode(r)
         do {
             try d.write(to: requestURL(r.id), options: [.withoutOverwriting, .untilFirstUnlock])
             return true
-        } catch {
+        } catch let e as CocoaError where e.code == .fileWriteFileExists {
             return false
         }
     }

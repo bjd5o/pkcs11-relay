@@ -17,6 +17,8 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     PROTO_GROUP: group.$(BUNDLE_ID_PREFIX).ctk-proto
+    # macOS refuses an extension a group container whose id lacks the team prefix.
+    "PROTO_GROUP[sdk=macosx*]": $(DEVELOPMENT_TEAM).$(BUNDLE_ID_PREFIX).ctk-proto
     PROTO_KEYCHAIN_GROUP: $(AppIdentifierPrefix)$(BUNDLE_ID_PREFIX).ctk-proto
     PROTO_CLASS_ID: $(BUNDLE_ID_PREFIX).ctk-proto.token
     MARKETING_VERSION: "0.1"
