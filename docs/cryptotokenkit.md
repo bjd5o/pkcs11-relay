@@ -1,6 +1,6 @@
 # Relay keys in the system keychain (CryptoTokenKit extension)
 
-Status: **decisions taken by Brian on 2026-11-20** (see Decisions); the spec changes still need writing and approving. Nothing here is built. It changes the spec (see "Spec changes"), so it needs Brian's approval before any code, and its first step is a prototype whose results may change the design.
+Status: **decisions taken by Brian on 2026-11-20** (see Decisions); the spec changes still need writing and approving. It changes the spec (see "Spec changes"), so it needs Brian's approval before any code. Only the prototype (`prototypes/ctk`) is built; its results of 2026-11-23 are in "Prototype results", and what they changed is marked **(prototype)**. Those changes are Claude's proposals until Brian confirms them.
 
 ## Goal
 
@@ -28,7 +28,7 @@ Yubico's iOS Authenticator ([Yubico/yubioath-ios](https://github.com/Yubico/yubi
 3. The notification opens the app on a PIN screen. The app connects to the YubiKey (NFC or wired), verifies the PIN, runs the operation, and writes the result to the shared `UserDefaults`.
 4. The person switches back to the calling app themselves; there's no automatic return.
 
-CryptoTokenKit calls the sign method several times for one operation, even after an error. Yubico answers repeat calls inside a 100-second window with "cancelled", so only one notification shows.
+Yubico's code says CryptoTokenKit calls the sign method several times for one operation, even after an error (the prototype hasn't seen this, with its own caller). It answers repeat calls inside a 100-second window with "cancelled", so only one notification shows.
 
 What this design changes: the shared store holds signed and sealed messages, never a plaintext or a bare signature, and it isn't `UserDefaults` (a plist on disk); repeats are recognised by what was asked, not by a time window; the app shows the full approval screen, not only a PIN field.
 
@@ -46,19 +46,37 @@ Each item has a pass condition. The design below assumes they pass; where one fa
 | P6 | Can the extension reach the relay (long-poll, TLS with the pinned CA) for the full wait? | A relayed signature completes from the extension on each platform | Relay route only from the app (the extension hands off, the app relays) |
 | P7 | Does the Mac app come to the front from the notification, and hide itself afterwards so the calling app is in front again? | Both on macOS 14+ | The person switches back by hand, as on iOS |
 
+### Prototype results (2026-11-23)
+
+Software keys, one test caller, no YubiKey. Details and logs: `prototypes/ctk/README.md`.
+
+| # | iPhone | Mac (macOS 27.0.1) | iPad |
+| --- | --- | --- | --- |
+| P1 hand-off | **Pass:** about 59 s with the caller out of the foreground; the notification also launches the app when it isn't running | Pass for 13 s, caller in view; the extension stayed alive 100 s unanswered | Not run |
+| P2 caller limits | Test caller: above 100 s. Mail: not run | Test caller: above 100 s. `ssh`, Mail: not run | Not run |
+| P3 repeats | None seen from the test caller | None seen. Once, a second call reached the extension only after the first finished | Not run |
+| P4 bare key | **Pass** for a keychain caller | **Pass** for a keychain caller; `ssh` not run with published keys | Not run |
+| P5 locked | **Pass**, after the first unlock since a restart | Not run | Not run |
+| P6 network | **Pass** for short requests (18 over 91 s). A held long-poll and the pinned CA: not run | Not run | Not run |
+| P7 front and back | – | **Pass**, but only when the app posts the notification | – |
+| P8 biometric in the extension | **Pass:** the prompt names the containing app | Not run | Not run |
+
+Not tested at all: digest and key-exchange calls, the Secure Enclave client key used from the extension (the prototype's keys were software), and iOS 26's NFC smart-card slots (P9 in the README).
+
 ## Design
 
 ### The token
 
 - One token configuration, created by the app with `TKTokenDriver.Configuration`, named after the relay, holding one keychain key item per manifest key with role `sign`, `auth` or `encrypt` (never `attest`), with the manifest's label.
-- Each key carries its leaf certificate when the manifest has one (see "Certificates"); the item is then an identity that TLS client authentication and S/MIME can select. Without a certificate the key is a bare key item (P4).
+- Each key carries its leaf certificate when the manifest has one (see "Certificates"); the item is then an identity that TLS client authentication and S/MIME can select. Without a certificate the key is a bare key item. It isn't an identity, so callers that look for identities don't see it. A bare item must have its operation `constraints` set by hand: without them the keychain rejects the token's **whole** item set (-25303), bare or not **(prototype)**.
 - The app rewrites the configuration whenever it accepts a new manifest: keys added, removed or with new certificates. It also removes the configuration when the app is reset or the feature is turned off.
+- **Check what was published (prototype).** Writing the configuration reports no error when the keychain rejects the items. After each write the app looks its keys up in the keychain and shows an error if any is missing. On iOS that lookup needs `com.apple.token` in the app's keychain groups.
 - The token lists keys the manifest trusts, not keys some approver has advertised. A key no approver currently operates still appears; a request for it fails with "no approver" (see "Errors").
 - `attest` keys are never exposed, as in the provider.
 
 ### The extension is a client
 
-- **Identity.** At setup the app creates the extension's client identity key: a Secure Enclave P-256 key in a keychain access group shared with the extension, usable without a biometric (approval is the gate, as for the provider's key file) and accessible after first unlock (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), so background callers work while the device is locked. Client id `<device-id>-keychain`.
+- **Identity.** At setup the app creates the extension's client identity key: a Secure Enclave P-256 key in a keychain access group shared with the extension, usable without a biometric (approval is the gate, as for the provider's key file; still to be tried from the extension) and accessible after first unlock (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), so background callers work while the device is locked. Client id `<device-id>-keychain`.
 - **Pairing.** The extension's key pairs through the relay like any client (`POST /v1/clients/pending`). The code comparison is what stops a relay from swapping in its own key, so the app does it automatically and more strictly than a person can: it reads the extension's public key from the shared keychain, where it created it, and requires the pending pairing's key to equal it exactly. Then the person chooses keys and window and the YubiKey signs the grant, as for any pairing. Other approvers accept the client with its first request there, as for any client.
 - **Shared code.** The provider's client logic (building and signing the request, the one-time reply key, waiting, verifying the response, opening the sealed result) moves from `relay-pkcs11` into a new `relay-client` crate with no C ABI, used by `relay-pkcs11` and by a new `Client` object in `relay-ffi`. The extension links `RelayFFI` (one Rust static library per binary; the app and the extension are separate binaries). No verification is reimplemented.
 - **Request context.** CryptoTokenKit doesn't tell the extension which app called it. The extension sends `host` = this device's name, `consumer` = `keychain`, and `purpose` = a setting, default "Keychain on <device name>". The approval screen says the calling app is unknown.
@@ -75,9 +93,9 @@ A local request that nobody answers expires; it never falls back to the relay (B
 ### The local route
 
 1. The extension builds and signs the request (same envelope, `expires_at` from the per-platform limit) and creates the request's record in the shared store (below). Creating it is atomic, so only one call per operation posts the notification.
-2. The notification ("Approve a keychain request: hw-sign") opens the app on the approval screen for that record.
-3. The app's engine checks the request as if the relay had delivered it: client signature, grant and acceptance, replay cache, expiry, role and mechanism, rate limit. The approval screen is the usual one, with the "calling app unknown" line. Face ID, PIN and the card operation follow as today; renewal of the attestation or the grant can happen in the same card session.
-4. The app writes the signed response to the record and, on macOS, hides itself (P7). On iOS the screen ends with "Done: return to your app".
+2. The notification ("Approve a keychain request: hw-sign") opens the app on the approval screen for that record. **Who posts it (prototype):** on iOS the extension. On the Mac the app does, because clicking a notification the extension posted never opened the app (cause unknown). So on the Mac the approver app must be running, watching the store; it already is, as a menu-bar app. If it isn't running, the request expires.
+3. The app's engine checks the request as if the relay had delivered it: client signature, grant and acceptance, replay cache, expiry, role and mechanism, rate limit. The approval screen is the usual one, with the "calling app unknown" line. **Just before the card operation** the engine also requires that the extension is still waiting ("Liveness" below). Face ID, PIN and the card operation follow as today; renewal of the attestation or the grant can happen in the same card session.
+4. The app writes the signed response to the record and, on macOS, hides itself (P7). On iOS the screen ends with "Done: return to your app". If the prototype's queueing holds, an unanswered call may delay later ones until it expires, which is another reason to keep the expiry short.
 5. The extension sees the response, verifies it with `verify_response` (attestation, device signature, request binding, the signature check against the hardware key), opens the sealed result in memory with the reply key, zeroizes the reply key, and returns the result to the system.
 6. The app posts the request and the response to the relay for the audit log (`POST /v1/audit/local`, below), queued if the relay is unreachable.
 
@@ -89,17 +107,20 @@ The extension submits the request to the relay and waits on the long-poll, as th
 
 ### The shared store
 
-A directory in the App Group container, files protected until first unlock (`completeUntilFirstUserAuthentication`), so a background caller works while the device is locked. That class is acceptable because the files hold only what the relay sees on the relay route: signed requests and sealed responses. One record per operation, named by `SHA-256(key fingerprint ‖ algorithm ‖ input)`:
+A directory in the App Group container (on the Mac the group id must start with the team id, or the system refuses the extension access **(prototype)**), files protected until first unlock (`completeUntilFirstUserAuthentication`), so a background caller works while the device is locked. That class is acceptable because the files hold only what the relay sees on the relay route: signed requests and sealed responses. One record per operation, named by `SHA-256(key fingerprint ‖ algorithm ‖ input)`:
 
 | Field | Written by | Content |
 | --- | --- | --- |
 | `request` | extension | The signed request envelope (input included: a digest, a message to be signed, or a ciphertext) |
 | `state` | both | `pending`, `answered`, `cancelled`, `expired` |
 | `response` | app | The signed response envelope; the result inside is sealed to the extension's reply key |
+| `waiting_at` | extension | Refreshed every second while the call waits (liveness) |
 | timestamps | both | Created, answered |
 
 Rules:
-- **Created atomically** (exclusive create). The call that creates it posts the notification; any other call for the same key, algorithm and input, from the same session, a new session or a restarted extension process, waits on the existing record.
+- **Created atomically** (exclusive create). The call that creates it posts the notification; any other call for the same key, algorithm and input **in the same extension process** waits on the existing record. A write that fails for any other reason is an error, never "already exists" **(prototype)**.
+- **After a restart, start over.** The reply key lives only in the memory of the process that made the request, so a restarted extension can't open an answer to the old one. It replaces a record whose `waiting_at` is stale with a new request. This corrects an earlier version of this design, where a restarted process waited on the old record.
+- **Liveness (prototype).** In the prototype, replacing the extension mid-wait left its request behind, and the app later approved it and ran the operation for nobody. So a record whose `waiting_at` is more than a few seconds old is dead: the app doesn't list it, and refuses it if it dies while on screen, before the card is used. A file lock would be simpler, but iOS can kill a suspended process that holds one in a shared container.
 - **Answering repeats.** A repeat while `pending` waits. A repeat within a few seconds of an approved signature gets the same signature (the extension keeps it in memory for that time). A repeat after a decrypt or key exchange was delivered asks again: plaintexts aren't kept for repeats. A repeat after a denial gets the denial until the record expires.
 - **Lifetime.** A record lives until the request's `expires_at` plus a short grace, then is deleted by whichever process next looks.
 - **Where the logic lives.** The record format and rules are Rust, in `relay-client` (the extension's side) and `relay-approver` (the app's side), exposed through `relay-ffi`; Swift only passes the container path.
@@ -123,7 +144,7 @@ Certificates are issued by Brian's own CA (or any CA) outside this system. Two l
 
 The extension presents the leaf (and the intermediates, for TLS) and skips a leaf that has expired; the provider ignores the field.
 
-**Keys without a certificate.** If P4 shows a key item needs a certificate, the app makes a placeholder for each key the manifest gives none: subject "relay-pkcs11 placeholder: <label>", the key's public key, signed by a per-device placeholder key the app creates for this alone (no card operation, no approval). It only carries the public key to callers like `ssh-keychain.dylib`; anything that evaluates trust rejects it. A real certificate in the manifest replaces it.
+**Keys without a certificate.** P4 showed a key item doesn't need one for keychain callers, so bare keys are published as they are. `ssh-keychain(8)` says it serves identities only (RSA through PKCS#11, P-256 through its Secure Key module), so `ssh` may still need a certificate; that is untested. If it does, and a placeholder turns out to work, the app makes a placeholder for each key the manifest gives none: subject "relay-pkcs11 placeholder: <label>", the key's public key, signed by a per-device placeholder key the app creates for this alone (no card operation, no approval). It only carries the public key to callers like `ssh-keychain.dylib`; anything that evaluates trust rejects it. A real certificate in the manifest replaces it.
 
 Whole certificates, not hashes, because the extension needs the bytes and the manifest is already the trusted channel; a certificate change means re-signing the manifest either way.
 
@@ -153,7 +174,9 @@ Anything else is refused by `supports`, so the caller sees the key as unable to 
 | --- | --- |
 | Signed denial (`user_denied`, `client_*`, `key_not_granted`, `policy`, `expired`) | `TKError.canceledByUser` |
 | Signed error (card absent, wrong PIN, PIN blocked, card error) | `TKError.communicationError` |
-| No answer before `expires_at` | `TKError.canceledByUser` |
+| No answer before `expires_at` | `TKError.canceledByUser` (seen as -4 by the prototype's caller) |
+| The shared store can't be read or written | `TKError.communicationError`, logged |
+| The extension is replaced while waiting (an app update) | The system returns `TKError.tokenNotFound` (-7); the record goes stale and is never run |
 | Response fails verification (attestation, device signature, request binding, signature check) | `TKError.corruptedData`, logged loudly |
 | Relay unreachable on the relay route; no approver operates the key | `TKError.communicationError` |
 | Algorithm not allowed for the key's role | `supports` returns false; the operation is never attempted |
@@ -174,6 +197,8 @@ Anything else is refused by `supports`, so the caller sees the key as unable to 
 | The App Group container (write) | Could plant a request or a response | A planted request must carry the extension's client signature; a planted response must verify against an attested device key and this request |
 | The relay | Can drop or delay local audit posts | Audit was already relay-side; the app keeps its own local history |
 
+Apple's `SecItem.h` says every app may use the token access group if its query names it, so the first row holds as written. On the iPhone one prompt to allow access to an item appeared when the test caller first asked for a key, and didn't return; what it was isn't established, so nothing relies on it. On the Mac none was reported.
+
 Approval fatigue gets worse: any app can now trigger a request at a plausible moment, and the screen can't name it. The defenses stay the same (approve only what you just started; the purpose text; rate limits), and the setting to turn the extension off is the backstop.
 
 ## Spec changes
@@ -192,7 +217,8 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 - `relay-core`: manifest certificate checks (parses, leaf key matches, limits, wrong role) and `accepts_digest` (only on `sign` keys; digest mechanisms refused without it), golden vectors.
 - `relayctl`: `add-certificate` refuses a broken chain (wrong issuer, bad signature, an issuer without CA basic constraints or past its path length, expired, a name outside an issuer's name constraints, a constraint type it can't check, key mismatch, wrong key usage) and warns about expiry before `valid_until`.
 - `relay-approver`: a digest mechanism on a `sign` key without `accepts_digest` is denied with `policy`; with it, the approval view carries the digest and its algorithm.
-- `relay-client`: the shared store's record rules (atomic create, repeats while pending, after approval, after a decrypt, after a denial; expiry and cleanup), with two processes racing.
+- `relay-client`: the shared store's record rules (atomic create, repeats while pending, after approval, after a decrypt, after a denial; a failed write reported as an error; a stale record replaced after a restart; expiry and cleanup), with two processes racing.
+- `relay-approver`: a record whose waiter is gone isn't listed, and is refused before the card is used if it goes stale on screen.
 - `relay-approver`: a local request is checked exactly like a relayed one; every rejection reason; the response is accepted by `verify_response`.
 - `relay-server`: `/v1/audit/local` accepts a valid pair, refuses a mismatched, unsigned, replayed or foreign-device pair, and keeps only hashes for decrypts.
 - `relay-ffi`: the whole local route with the softcard and a temporary directory as the store; the relay route against a real relay; an unanswered local request expiring without reaching the relay.
@@ -200,7 +226,7 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 - One test per new Failure handling row.
 - **Gate** (on Brian's hardware):
   1. iPhone, NFC, local route: Mail signs a message with an `auth` key that has a certificate, after an approval on the phone; the signature verifies.
-  2. Mac, relay route: `ssh -I /usr/lib/ssh-keychain.dylib` authenticates with `hw-auth`, approved on the phone.
+  2. Mac, relay route: `ssh -I /usr/lib/ssh-keychain.dylib` authenticates with `hw-auth`, approved on the phone. **In doubt:** hw-auth is P-256, which the man page says the PKCS#11 route doesn't serve. Either the Secure Key route works, or this step needs an RSA auth key, or another caller.
   3. iPad, USB-C, local route: a test app decrypts with `hw-unseal`; the plaintext matches.
   4. The relay's audit log has rows for the local operations, with only hashes for the decrypt.
 
@@ -213,6 +239,12 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 | Extension, token configuration, notification hand-off, settings | Medium to large |
 | Manifest certificates, `relayctl`, `/v1/audit/local` | Small to medium |
 | Tests, simulator or device tests, gate | Medium |
+
+## To confirm (prototype, 2026-11-23)
+
+1. On the Mac, the app posts the notification and must be running.
+2. Liveness: a request is refused before the card is used once its extension stops waiting, and a restarted extension starts a new request.
+3. Gate step 2 (`ssh` with hw-auth), once `ssh` is tested.
 
 ## Decisions (Brian, 2026-11-20)
 
@@ -236,3 +268,6 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 - **A local route inside the extension**, without the app hand-off, and the inverted variant where the extension runs the card operation and the app never sees a result: on the Mac, Face ID from inside the extension worked in Brian's own experiment, USB smart cards may be reachable from it, and the system PIN prompt may supply the PIN. It would remove the app switch for USB on the Mac. Each approval would have to be single-use and bound to its request, since the extension can't tell its callers apart. Later, once the hand-off works everywhere.
 - **Falling back to the relay** when a local request isn't answered, or a "send to another approver" button: not for now.
 - **Returning to the calling app on iOS** automatically: no public API exists. The private one is ruled out.
+- **Why a Mac notification posted by the extension doesn't open the app**: `usernoted` couldn't match its source to a launchable app, in every logged click, including with a single registered build.
+- **iOS 26 NFC smart-card slots** (`createNFCSlot`, `TKSmartCardTokenRegistrationManager`): the system may be able to drive NFC, and perhaps the PIN, itself. That would reopen the inverted hand-off and the system PIN prompt. P9; Brian runs it.
+- **Before the first unlock after a restart**, the extension's keys and files are unavailable. Untested; it should fail fast.
