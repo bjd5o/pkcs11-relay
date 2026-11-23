@@ -92,7 +92,8 @@ jobs:
       - uses: flox/install-flox-action@v2
       - run: deploy/macos/build-provider.sh
       - run: MOD=dist/librelay_pkcs11-aarch64-apple-darwin.dylib flox activate -- tests/macos-gate.sh
-      - run: nix flake check
+      # The runner's Nix doesn't enable flakes by default.
+      - run: nix --extra-experimental-features 'nix-command flakes' flake check
       - uses: actions/upload-artifact@v4
         with:
           name: librelay_pkcs11-macos
@@ -103,4 +104,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: flox/install-flox-action@v2
-      - run: nix flake check
+      # The runner's Nix doesn't enable flakes by default.
+      - run: nix --extra-experimental-features 'nix-command flakes' flake check
