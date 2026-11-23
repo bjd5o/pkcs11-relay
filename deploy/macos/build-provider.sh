@@ -27,5 +27,5 @@ else
   # install_name_tool invalidates the linker's signature, and arm64 code must be signed.
   codesign --force --sign - "$out"
 fi
-codesign -dv "$out" 2>&1 | grep -E '^(Authority|Signature|CodeDirectory)' || true
+codesign -dvv "$out" 2>&1 | grep -E '^(Authority|Signature|CodeDirectory)' || true
 echo "built $out"

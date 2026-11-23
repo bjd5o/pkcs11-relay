@@ -37,7 +37,7 @@ for pair in "${pairs[@]}"; do
   fi
   case "$file" in
     *.dylib)
-      if ! codesign -dv "$src/$file" 2>&1 | grep -q '^Authority=Developer ID Application'; then
+      if ! codesign -dvv "$src/$file" 2>&1 | grep -q '^Authority=Developer ID Application'; then
         echo "$src/$file is not Developer ID signed; run deploy/macos/build-provider.sh with CODESIGN_IDENTITY, then notarize.sh" >&2
         exit 1
       fi
