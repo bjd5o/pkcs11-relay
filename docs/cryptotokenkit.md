@@ -199,7 +199,7 @@ Anything else is refused by `supports`, so the caller sees the key as unable to 
 
 Apple's `SecItem.h` says every app may use the token access group if its query names it, so the first row holds as written. On the iPhone one prompt to allow access to an item appeared when the test caller first asked for a key, and didn't return; what it was isn't established, so nothing relies on it. On the Mac none was reported.
 
-Approval fatigue gets worse: any app can now trigger a request at a plausible moment, and the screen can't name it. The defenses stay the same (approve only what you just started; the purpose text; rate limits), and the setting to turn the extension off is the backstop.
+Approval fatigue gets worse: Mail alone asks on a timer while a signed message is open (accepted for now), and any app can now trigger a request at a plausible moment, and the screen can't name it. The defenses stay the same (approve only what you just started; the purpose text; rate limits), and the setting to turn the extension off is the backstop.
 
 ## Spec changes
 
@@ -242,8 +242,6 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 
 ## To confirm (prototype, 2026-11-23)
 
-0. What to do about Mail's draft signatures (see "Still open"). It affects the gate's Mail step and how usable S/MIME signing is.
-
 1. Gate step 2: use the Secure Key route, so the server's `authorized_keys` carries hw-auth's `sk-ecdsa` form next to its plain ECDSA form, and the gate becomes a real `ssh` login.
 
 ## Decisions (Brian, 2026-11-20)
@@ -261,11 +259,12 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 | Pairing the extension | Not skipped: the app compares the pending pairing's key with the key it created, automatically |
 | Liveness (2026-11-23) | A request is refused, before the card is used, once the extension that asked has stopped waiting |
 | Notifications on the Mac (2026-11-23) | The app posts them, so it must be running; if it isn't, the request expires |
+| Mail's draft signatures (2026-11-23) | Accepted for now: each draft autosave asks for its own approval, and nothing is designed around it |
 | Inverting the hand-off (the extension runs the card operation) | Not for now: the extension can't reach an NFC YubiKey, would need the PIN on iOS, and would need an approval gate other callers can't race. Kept as a later option for USB on the Mac (Still open) |
 
 ## Still open
 
-- **Mail asks for a signature each time it saves a draft**, apparently every 30 s: one message took two or three requests when approval was slow or denied, one when it was quick **(prototype)**. A denied message isn't sent. So a person composing signed mail may face repeated approvals, each a YubiKey operation, for drafts nobody receives. The app can't tell a draft from a send: both are signed attributes. Options to consider: tell people to turn signing on only when sending; show repeated requests for the same key as a group with one Deny; or a short cool-down after a denial, so autosaves don't ring. None is designed yet. Composing without sending asks too (Brian, 2026-11-23), so this happens in ordinary use, not only when approval is slow.
+- **Mail asks for a signature each time it saves a draft**, apparently every 30 s: one message took two or three requests when approval was slow or denied, one when it was quick **(prototype)**. A denied message isn't sent. So a person composing signed mail may face repeated approvals, each a YubiKey operation, for drafts nobody receives. The app can't tell a draft from a send: both are signed attributes. Accepted for now (Brian, 2026-11-23); the user docs should say so and suggest turning signing on only when sending. Options if it becomes a problem: a Mail setting that stops it, if there is one (not tried); show repeated requests for the same key as a group with one Deny; or a short cool-down after a denial, so autosaves don't ring. None is designed yet. Composing without sending asks too (Brian, 2026-11-23), so this happens in ordinary use, not only when approval is slow.
 - **RSA PKCS#1 v1.5 decryption** for S/MIME. Not in the spec, for the padding-oracle reasons discussed on 2026-11-20. Check first whether Mail can decrypt with an elliptic-curve S/MIME certificate (ECDH, which this design supports).
 - **System PIN prompt on iOS** (`TKTokenSmartCardPINAuthOperation`), so the PIN never enters our process: a post-MVP investigation already noted in `docs/progress.md`.
 - **A local route inside the extension**, without the app hand-off, and the inverted variant where the extension runs the card operation and the app never sees a result: on the Mac, Face ID from inside the extension worked in Brian's own experiment, USB smart cards may be reachable from it, and the system PIN prompt may supply the PIN. It would remove the app switch for USB on the Mac. Each approval would have to be single-use and bound to its request, since the extension can't tell its callers apart. Later, once the hand-off works everywhere.
