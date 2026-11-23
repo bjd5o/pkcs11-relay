@@ -76,7 +76,7 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 | P2 caller limits | | | | |
 | P3 repeat pattern | | | | |
 | P4 bare key | | | | |
-| P5 locked | | | | |
+| P5 locked | Pass (after first unlock) | | | |
 | P6 network | | | | |
 | P7 front and back | – | – | | |
 | P8 biometric in extension | | | | |
@@ -122,4 +122,4 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 - **P2, run D:** unanswered, the extension timed out at its own 100.0 s; CTKCaller reported `CryptoTokenKit -4` after 111.8 s. The 11.8 s difference is unexplained (CTKCaller suspended in the background until reopened would do it). So the caller's own limit is above 100 s, not yet found.
 - **Access prompt:** Brian didn't recognise it when asked later, so treat its wording and meaning as unknown.
 - **P1, run C repeated (18:34Z): the log itself shows the background wait.** CTKProto opened 2.7 s after the call and approved at 61.6 s; the extension answered at 62.1 s. So CTKCaller was out of the foreground for about 59 s.
-- **P5 (18:39Z):** one sign call; store write and notification succeeded, tap after 7.5 s, approved after 9.6 s, answered after 10.1 s; Brian reports it signed. The log doesn't show whether the phone was locked when the call arrived, so whether this passes depends on what was on screen (still to record). Only "unlocked once since restart" is covered.
+- **P5 (18:39Z):** one sign call; store write and notification succeeded, tap after 7.5 s, approved after 9.6 s, answered after 10.1 s; Brian reports it signed. The notification was on the lock screen before Brian unlocked, so **P5 passes on the iPhone**: the extension read its settings, wrote the record and notified while locked. Only "unlocked once since restart" is covered.
