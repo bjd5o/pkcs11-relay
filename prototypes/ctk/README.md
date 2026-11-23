@@ -92,3 +92,12 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 - **P4, bare key: works for a keychain caller.** With operation `constraints` set, `bare` is published and CTKCaller finds it and reaches the extension with it. Without constraints `secd` rejects it (the -25303 above); certificate-backed keys publish either way. A bare key isn't an identity, so callers that look for identities don't see it.
 - **P2, plain caller:** CTKCaller's `SecKeyCreateSignature` waited 100.3 s, then got `CryptoTokenKit -4` (the extension's timeout). The extension stayed alive throughout. No signature completed yet.
 - **App Group on macOS needs the team-id prefix.** `containermanagerd` rejected the extension's access to `group.…`, so it used default settings and couldn't write the request. The store misread that as "record exists" and posted no notification. Both fixed; not yet rerun.
+
+### Mac, 2026-11-23, after the fixes (no YubiKey attached; `both` with constraints)
+
+- **Published:** both keys and one identity (`with-cert`), in all four query variants.
+- **Signing works**, both keys, message algorithm, signatures verify: `immediate` in under 0.1 s; `handoff` approved in CTKProto after 8.5 s (`with-cert`) and 12.3 s (`bare`), returned to the caller within 0.3 s of the approval.
+- **P1 on the Mac:** passes for waits of about 12 s approved, and 100 s unapproved (timeout). iPhone and iPad untested.
+- **P3:** no repeats with CTKCaller: one `sign` call per action, after two `supports` calls for the same algorithm. Other callers untested.
+- **Notifications:** the extension can post (`notification added: ok`). Clicking at least one failed: `usernoted` logged "Failed to find appropriate application to launch for <bundle id>", and the app never logged the click. Extra builds of the app were on disk, which may be the cause; unproven.
+- **Not run:** digests, RFC 4754 and key exchange; P2 and P3 with ssh or Mail; P5, P6, P7 (needs a look at the screen), P8.
