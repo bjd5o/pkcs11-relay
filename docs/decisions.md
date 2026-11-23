@@ -299,3 +299,8 @@ Decision (Brian): when `RELAY_PKCS11_CONFIG` is unset, the provider reads `$XDG_
 
 Context: the milestone 7 plan built a universal (arm64 + x86_64) macOS dylib and an `x86_64-darwin` flake package, with the Intel slice tested only under Rosetta.
 Decision (Brian): Intel Macs aren't supported. The provider ships for Apple silicon only: `deploy/macos/build-provider.sh` builds `aarch64-apple-darwin`, the flake and the Flox environment drop `x86_64-darwin`, and the release has no Intel archive.
+
+## 2026-11-20: PKCS#11 3.2 headers for the iPadOS XCFramework
+
+Context: the milestone 7 plan vendored the OASIS PKCS#11 3.1 headers. OASIS has since published 3.2 headers in the same repository.
+Decision (Brian): vendor 3.2, pinned to a commit (`1d5e40e`, 2025-10-22), because the published 3.2 headers changed after their release. The provider still fills the 2.40 `CK_FUNCTION_LIST`, which 3.2 keeps unchanged, so callers see the same ABI; 3.2's additions (`CK_FUNCTION_LIST_3_2`, key encapsulation, post-quantum mechanisms) are declared but not implemented. Source and hashes are in `apps/apple/Provider/include/README.md`.
