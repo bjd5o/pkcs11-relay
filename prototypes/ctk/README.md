@@ -100,4 +100,5 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 - **P1 on the Mac:** passes for waits of about 12 s approved, and 100 s unapproved (timeout). iPhone and iPad untested.
 - **P3:** no repeats with CTKCaller: one `sign` call per action, after two `supports` calls for the same algorithm. Other callers untested.
 - **Notifications:** the extension can post (`notification added: ok`). Clicking at least one failed: `usernoted` logged "Failed to find appropriate application to launch for <bundle id>", and the app never logged the click. Extra builds of the app were on disk, which may be the cause; unproven.
-- **Not run:** digests, RFC 4754 and key exchange; P2 and P3 with ssh or Mail; P5, P6, P7 (needs a look at the screen), P8.
+- **Not run:** digests, RFC 4754 and key exchange; P2 and P3 with ssh or Mail; P5, P6, P8.
+- **P7, second half: passes** (Brian, 2026-11-23): after Approve, CTKProto hid and CTKCaller was in front again. The first half, coming to the front from the notification, depends on the click problem above.
