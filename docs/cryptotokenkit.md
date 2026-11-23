@@ -53,8 +53,8 @@ Software keys, one test caller, no YubiKey. Details and logs: `prototypes/ctk/RE
 | # | iPhone | Mac (macOS 27.0.1) | iPad |
 | --- | --- | --- | --- |
 | P1 hand-off | **Pass:** about 59 s with the caller out of the foreground; the notification also launches the app when it isn't running | Pass for 13 s, caller in view; the extension stayed alive 100 s unanswered | Not run |
-| P2 caller limits | Test caller: above 100 s. Mail: not run | Test caller: above 100 s. `ssh`: signs through the Secure Key route; its wait limit: not run. Mail signs; its wait limit: not run | Not run |
-| P3 repeats | None seen from the test caller | None seen. Once, a second call reached the extension only after the first finished | Not run |
+| P2 caller limits | Test caller: above 100 s. Mail: not run | Test caller: above 100 s. `ssh`: signs through the Secure Key route; its wait limit: not run. Mail: at least 98.8 s | Not run |
+| P3 repeats | None seen from the test caller | Test caller: none. **Mail: a second call with different input**, just after the first finished; cause unknown. Calls queue: seen twice | Not run |
 | P4 bare key | **Pass** for a keychain caller | **Pass** for a keychain caller; `ssh` not run with published keys | Not run |
 | P5 locked | **Pass**, after the first unlock since a restart | Not run | Not run |
 | P6 network | **Pass** for short requests (18 over 91 s). A held long-poll and the pinned CA: not run | Not run | Not run |
@@ -121,7 +121,7 @@ Rules:
 - **Created atomically** (exclusive create). The call that creates it posts the notification; any other call for the same key, algorithm and input **in the same extension process** waits on the existing record. A write that fails for any other reason is an error, never "already exists" **(prototype)**.
 - **After a restart, start over.** The reply key lives only in the memory of the process that made the request, so a restarted extension can't open an answer to the old one. It replaces a record whose `waiting_at` is stale with a new request. This corrects an earlier version of this design, where a restarted process waited on the old record.
 - **Liveness (prototype).** In the prototype, replacing the extension mid-wait left its request behind, and the app later approved it and ran the operation for nobody. So a record whose `waiting_at` is more than a few seconds old is dead: the app doesn't list it, and refuses it if it dies while on screen, before the card is used. A file lock would be simpler, but iOS can kill a suspended process that holds one in a shared container.
-- **Answering repeats.** A repeat while `pending` waits. A repeat within a few seconds of an approved signature gets the same signature (the extension keeps it in memory for that time). A repeat after a decrypt or key exchange was delivered asks again: plaintexts aren't kept for repeats. A repeat after a denial gets the denial until the record expires.
+- **Answering repeats.** A repeat while `pending` waits. A repeat with a different input is a new operation and needs its own approval: Mail made one in the prototype (cause unknown), which the record name can't recognise **(prototype)**. A repeat within a few seconds of an approved signature gets the same signature (the extension keeps it in memory for that time). A repeat after a decrypt or key exchange was delivered asks again: plaintexts aren't kept for repeats. A repeat after a denial gets the denial until the record expires.
 - **Lifetime.** A record lives until the request's `expires_at` plus a short grace, then is deleted by whichever process next looks.
 - **Where the logic lives.** The record format and rules are Rust, in `relay-client` (the extension's side) and `relay-approver` (the app's side), exposed through `relay-ffi`; Swift only passes the container path.
 
@@ -263,6 +263,7 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 
 ## Still open
 
+- **Why Mail signed twice** (different input each time), and whether one message always costs two approvals. If it does, the design needs an answer, because a person will approve the second without knowing what it is for.
 - **RSA PKCS#1 v1.5 decryption** for S/MIME. Not in the spec, for the padding-oracle reasons discussed on 2026-11-20. Check first whether Mail can decrypt with an elliptic-curve S/MIME certificate (ECDH, which this design supports).
 - **System PIN prompt on iOS** (`TKTokenSmartCardPINAuthOperation`), so the PIN never enters our process: a post-MVP investigation already noted in `docs/progress.md`.
 - **A local route inside the extension**, without the app hand-off, and the inverted variant where the extension runs the card operation and the app never sees a result: on the Mac, Face ID from inside the extension worked in Brian's own experiment, USB smart cards may be reachable from it, and the system PIN prompt may supply the PIN. It would remove the app switch for USB on the Mac. Each approval would have to be single-use and bound to its request, since the extension can't tell its callers apart. Later, once the hand-off works everywhere.

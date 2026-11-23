@@ -143,5 +143,8 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 
 - **Mail signed with `with-cert`** (Brian): one `supports` and one `sign` call, `ecdsaSignatureMessageX962SHA256`, 443 B in, 70 B out. No repeats, no digest algorithm asked. The self-signed certificate was offered.
 - 443 B is too small to be the mail. It is presumably the S/MIME signed attributes, which hold a digest of the content; the input wasn't kept, so this is inference.
-- Not checked: whether the received message's signature verifies, Mail's wait limit and its behaviour in `handoff` or on a denial, and decryption.
+- Not checked then: the received signature, the wait limit and a denial (see below), and decryption.
+- **Mail in `handoff`, app-posted notification:** the click opened CTKProto; approved after 57.0 s (`sign done` 57.4 s), and a second call approved after 98.3 s (98.8 s). Both answered. Mail shows the messages as signed, with the expected trust warning for a self-signed certificate (Brian). So **Mail waits at least 98.8 s**.
+- **P3: Mail made a second sign call.** It reached the extension 63 ms after the first finished, same key, algorithm and size (443 B) but **different input**, so it isn't an identical retry and the record name (key, algorithm, input) doesn't match. In `immediate` mode there was one call. Cause unknown: it may have been made while the first was waiting (calls queue) by a draft save, a resend or a second message. Brian saw several requests and didn't know why.
+- Not checked: a denial, and Mail on the iPhone.
 
