@@ -61,7 +61,9 @@ Software keys, one test caller, no YubiKey. Details and logs: `prototypes/ctk/RE
 | P7 front and back | – | **Pass**, but only when the app posts the notification | – |
 | P8 biometric in the extension | **Pass:** the prompt names the containing app | Not run | Not run |
 
-Not tested at all: digest and key-exchange calls, the Secure Enclave client key used from the extension (the prototype's keys were software), and iOS 26's NFC smart-card slots (P9 in the README).
+The Secure Enclave client key used from the extension (P10 in the README) passes on the iPhone, in front and locked (Brian's report, 2026-11-23); the Mac and iPad weren't run. The keys that answered callers were software throughout.
+
+Not tested at all: key-exchange calls, and iOS 26's NFC smart-card slots (P9 in the README). Digest calls were seen only from `ssh` on the Mac.
 
 ## Design
 
@@ -76,7 +78,7 @@ Not tested at all: digest and key-exchange calls, the Secure Enclave client key 
 
 ### The extension is a client
 
-- **Identity.** At setup the app creates the extension's client identity key: a Secure Enclave P-256 key in a keychain access group shared with the extension, usable without a biometric (approval is the gate, as for the provider's key file; still to be tried from the extension) and accessible after first unlock (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), so background callers work while the device is locked. Client id `<device-id>-keychain`.
+- **Identity.** At setup the app creates the extension's client identity key: a Secure Enclave P-256 key in a keychain access group shared with the extension, usable without a biometric (approval is the gate, as for the provider's key file; on the iPhone the extension signed with such a key, made by the app, in front and while locked **(prototype)**) and accessible after first unlock (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), so background callers work while the device is locked. Client id `<device-id>-keychain`.
 - **Pairing.** The extension's key pairs through the relay like any client (`POST /v1/clients/pending`). The code comparison is what stops a relay from swapping in its own key, so the app does it automatically and more strictly than a person can: it reads the extension's public key from the shared keychain, where it created it, and requires the pending pairing's key to equal it exactly. Then the person chooses keys and window and the YubiKey signs the grant, as for any pairing. Other approvers accept the client with its first request there, as for any client.
 - **Shared code.** The provider's client logic (building and signing the request, the one-time reply key, waiting, verifying the response, opening the sealed result) moves from `relay-pkcs11` into a new `relay-client` crate with no C ABI, used by `relay-pkcs11` and by a new `Client` object in `relay-ffi`. The extension links `RelayFFI` (one Rust static library per binary; the app and the extension are separate binaries). No verification is reimplemented.
 - **Request context.** CryptoTokenKit doesn't tell the extension which app called it. The extension sends `host` = this device's name, `consumer` = `keychain`, and `purpose` = a setting, default "Keychain on <device name>". The approval screen says the calling app is unknown.

@@ -88,6 +88,7 @@ Setup: **Make Secure Enclave client key** in CTKProto; the log must say `[app] e
 | P7 front and back | – | – | | |
 | P8 biometric in extension | Pass | | | iOS asked once for Face ID permission, naming CTK Proto |
 | P9 iOS 26 NFC | | – | – | |
+| P10 Enclave client key | Pass, in front and locked | | | Brian's report; log not kept here |
 
 ### Mac, 2026-11-23 (macOS 27.0.1, no YubiKey attached)
 
