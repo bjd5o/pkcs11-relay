@@ -42,6 +42,8 @@ enum Mode: String, Codable, CaseIterable, Identifiable {
     /// The client identity key: sign a test message with a Secure Enclave key the app made, from the
     /// extension and with no biometric, then answer with the software key.
     case enclave
+    /// P6: one request held open by longpoll-server.py for "Wait" seconds, then answer.
+    case longpoll
     var id: String { rawValue }
 }
 
@@ -56,6 +58,8 @@ struct Settings: Codable, Equatable {
     /// The running app posts the notification instead of the extension (the Mac click problem).
     /// Optional so an older settings file still loads.
     var appNotifies: Bool?
+    /// Address of longpoll-server.py (port 8444).
+    var holdHost: String?
 
     static var file: URL { Proto.container.appendingPathComponent("settings.json") }
     static func load() -> Settings {

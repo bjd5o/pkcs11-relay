@@ -68,6 +68,11 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 3. In CTKCaller, **Find token keys**: record which of the card's keys appear (the system PIV token lists slots that hold certificates).
 4. Only if a key in slots 85–89 is listed: sign with it from CTKCaller and record whether the system asks for the card over NFC and for the PIN itself. Any operation that needs the PIN is Brian's to run; one PIN attempt, no retries.
 
+### P6b: one request held open, with a pinned certificate
+`./make-longpoll-cert.sh <LAN address>`, `xcodegen`, rebuild CTKProto, `./longpoll-server.py <LAN address>`. In CTKProto set the address and tap **Copy long-poll root and test from the app** (this asks for local network access, if the system does). Mode `longpoll`, Wait 90 s. Sign from CTKCaller: in front, in the background, and locked.
+- Pass: `[ext] longpoll ok: … held 90 s`, and the server logs `answered after 90.0 s`.
+- The client is a plain TLS connection with the test root as its only anchor (checked from the Mac: right root accepted, wrong root refused). The real one is rustls.
+
 ### P10: a Secure Enclave client key used from the extension
 Setup: **Make Secure Enclave client key** in CTKProto; the log must say `[app] enclave: key made; ok`. Mode `enclave`. Each call signs a test message with that key inside the extension, checks it, then answers with the software key.
 - A, in front: sign from CTKCaller. Pass: `[ext] enclave: ok …`, no Face ID prompt, `sign ok`.

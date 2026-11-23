@@ -26,6 +26,8 @@
 	<string>$(PROTO_KEYCHAIN_GROUP)</string>
 	<key>ProtoClassID</key>
 	<string>$(PROTO_CLASS_ID)</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>The prototype's long-poll check connects to a test server on this network.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>The prototype reads a test item that needs Face ID.</string>
 	<key>NSExtension</key>

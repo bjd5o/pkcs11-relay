@@ -111,6 +111,15 @@ final class TokenSession: TKTokenSession, TKTokenSessionDelegate {
         case .biometric:
             try readBiometricItem()
             result = try Keys.perform(req)
+        case .longpoll:
+            do {
+                let r = try LongPoll.hold(host: settings.holdHost ?? "", port: 8444, secs: Int(settings.waitSecs)) { Log.write("ext", "longpoll: \($0)") }
+                Log.write("ext", "longpoll ok: \(r)")
+            } catch {
+                Log.write("ext", "longpoll FAILED: \(error.localizedDescription)")
+                throw TKError(.communicationError)
+            }
+            result = try Keys.perform(req)
         case .enclave:
             do {
                 Log.write("ext", "enclave: \(try Keys.tryEnclaveKey())")

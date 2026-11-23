@@ -18,3 +18,4 @@ gate-m5/
 # CryptoTokenKit prototype: generated project and throwaway test identity
 prototypes/ctk/CTKProto.xcodeproj/
 prototypes/ctk/App/Resources/
+prototypes/ctk/.longpoll/

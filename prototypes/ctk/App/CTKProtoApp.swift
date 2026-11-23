@@ -95,6 +95,29 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
         refresh()
     }
 
+    /// Put the pinned root where the extension can read it, then hold a 3 s request from the app: this
+    /// is also where the system asks for local network access, if it does.
+    func tryLongPoll() {
+        do {
+            guard let u = Bundle.main.url(forResource: "longpoll-root", withExtension: "der") else {
+                throw err("longpoll-root.der missing: run make-longpoll-cert.sh and xcodegen, then rebuild")
+            }
+            try Data(contentsOf: u).write(to: LongPoll.rootFile, options: [.atomic, .untilFirstUnlock])
+        } catch {
+            Log.write("app", "longpoll FAILED: \(error.localizedDescription)")
+            return
+        }
+        let host = settings.holdHost ?? ""
+        DispatchQueue.global().async {
+            do {
+                let r = try LongPoll.hold(host: host, port: 8444, secs: 3) { Log.write("app", "longpoll: \($0)") }
+                Log.write("app", "longpoll ok: \(r)")
+            } catch {
+                Log.write("app", "longpoll FAILED: \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// Make the Enclave key and try it from the app first, so a later failure is the extension's.
     func makeEnclaveKey() {
         do {
@@ -307,6 +330,10 @@ struct ContentView: View {
                     Stepper("Wait \(Int(model.settings.waitSecs)) s", value: $model.settings.waitSecs, in: 5...600, step: 5)
                     Stepper("Immediate delay \(Int(model.settings.immediateDelaySecs)) s", value: $model.settings.immediateDelaySecs, in: 0...600, step: 5)
                     TextField("Network URL", text: $model.settings.url)
+                    TextField("Long-poll server address", text: Binding(
+                        get: { model.settings.holdHost ?? "" },
+                        set: { model.settings.holdHost = $0 }))
+                    Button("Copy long-poll root and test from the app") { model.tryLongPoll() }
                     #if os(macOS)
                     Toggle("Hide after answering (P7)", isOn: $model.hideAfterAnswer)
                     Toggle("App posts the notification", isOn: Binding(
