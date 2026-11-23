@@ -39,6 +39,9 @@ enum Mode: String, Codable, CaseIterable, Identifiable {
     case network
     /// Face ID / Touch ID from inside the extension (reading a biometric-protected item), then sign.
     case biometric
+    /// The client identity key: sign a test message with a Secure Enclave key the app made, from the
+    /// extension and with no biometric, then answer with the software key.
+    case enclave
     var id: String { rawValue }
 }
 
@@ -237,6 +240,62 @@ enum Keys {
         }
         guard let d = out else { throw err!.takeRetainedValue() as Error }
         return d as Data
+    }
+
+    // MARK: Secure Enclave client key (made by the app, used by the extension)
+
+    static let enclaveObject = "enclave-client"
+
+    static func makeEnclaveKey() throws {
+        SecItemDelete(base(enclaveObject) as CFDictionary)
+        var err: Unmanaged<CFError>?
+        guard let ac = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, .privateKeyUsage, &err) else {
+            throw err!.takeRetainedValue() as Error
+        }
+        var attrs: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeySizeInBits as String: 256,
+            kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+            kSecPrivateKeyAttrs as String: [
+                kSecAttrIsPermanent as String: true,
+                kSecAttrApplicationTag as String: tag(enclaveObject),
+                kSecAttrAccessGroup as String: Proto.keychainGroup,
+                kSecAttrAccessControl as String: ac,
+            ] as [String: Any],
+        ]
+        #if os(macOS)
+        attrs[kSecUseDataProtectionKeychain as String] = true
+        #endif
+        guard SecKeyCreateRandomKey(attrs as CFDictionary, &err) != nil else { throw err!.takeRetainedValue() as Error }
+    }
+
+    /// Find the key, sign, verify, and check it is an Enclave key that can't be exported. Throws at
+    /// the first step that fails, with that step's status.
+    static func tryEnclaveKey() throws -> String {
+        func fail(_ s: String) -> Error { NSError(domain: "ctk-proto", code: 2, userInfo: [NSLocalizedDescriptionKey: s]) }
+        var q = base(enclaveObject)
+        q[kSecAttrKeyClass as String] = kSecAttrKeyClassPrivate
+        q[kSecReturnRef as String] = true
+        q[kSecReturnAttributes as String] = true
+        var out: CFTypeRef?
+        let st = SecItemCopyMatching(q as CFDictionary, &out)
+        guard st == errSecSuccess, let d = out as? [String: Any], let ref = d[kSecValueRef as String] else {
+            throw fail("lookup status \(st) \(SecCopyErrorMessageString(st, nil) as String? ?? "")")
+        }
+        let key = ref as! SecKey
+        let token = d[kSecAttrTokenID as String] as? String ?? "none"
+        guard token == kSecAttrTokenIDSecureEnclave as String else { throw fail("not an Enclave key: token \(token)") }
+        guard SecKeyCopyExternalRepresentation(key, nil) == nil else { throw fail("the private key could be exported") }
+        let msg = Data("client request \(Date())".utf8)
+        let t0 = Date()
+        var err: Unmanaged<CFError>?
+        guard let sig = SecKeyCreateSignature(key, .ecdsaSignatureMessageX962SHA256, msg as CFData, &err) else {
+            throw fail("sign: \(err!.takeRetainedValue())")
+        }
+        let took = Date().timeIntervalSince(t0)
+        guard let pub = SecKeyCopyPublicKey(key),
+              SecKeyVerifySignature(pub, .ecdsaSignatureMessageX962SHA256, msg as CFData, sig, nil) else { throw fail("the signature does not verify") }
+        return "ok: Enclave key, not exportable, signed and verified in \(String(format: "%.3f", took)) s"
     }
 
     /// A keychain item that needs Face ID / Touch ID to read: the extension's biometric test.

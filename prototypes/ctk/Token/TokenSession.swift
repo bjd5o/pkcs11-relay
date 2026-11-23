@@ -111,6 +111,14 @@ final class TokenSession: TKTokenSession, TKTokenSessionDelegate {
         case .biometric:
             try readBiometricItem()
             result = try Keys.perform(req)
+        case .enclave:
+            do {
+                Log.write("ext", "enclave: \(try Keys.tryEnclaveKey())")
+            } catch {
+                Log.write("ext", "enclave FAILED: \(error.localizedDescription)")
+                throw TKError(.communicationError)
+            }
+            result = try Keys.perform(req)
         }
         recent[id] = (result, Date())
         Log.write("ext", "\(op) done after \(String(format: "%.1f", Date().timeIntervalSince(started))) s, \(result.count)B")

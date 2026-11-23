@@ -95,6 +95,17 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
         refresh()
     }
 
+    /// Make the Enclave key and try it from the app first, so a later failure is the extension's.
+    func makeEnclaveKey() {
+        do {
+            try Keys.makeEnclaveKey()
+            Log.write("app", "enclave: key made; \(try Keys.tryEnclaveKey())")
+        } catch {
+            Log.write("app", "enclave FAILED: \(error.localizedDescription)")
+        }
+        refresh()
+    }
+
     /// Are this token's keys really in the keychain?
     func checkPublished() {
         var q: [String: Any] = [
@@ -286,6 +297,7 @@ struct ContentView: View {
                     }
                     Toggle("Set operation constraints", isOn: $model.setConstraints)
                     Button("Set up keys and token") { model.setUp() }
+                    Button("Make Secure Enclave client key") { model.makeEnclaveKey() }
                     Button("Remove token", role: .destructive) { model.removeToken() }
                 }
                 Section("Extension") {

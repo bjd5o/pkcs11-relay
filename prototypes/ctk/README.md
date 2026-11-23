@@ -68,6 +68,13 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 3. In CTKCaller, **Find token keys**: record which of the card's keys appear (the system PIV token lists slots that hold certificates).
 4. Only if a key in slots 85–89 is listed: sign with it from CTKCaller and record whether the system asks for the card over NFC and for the PIN itself. Any operation that needs the PIN is Brian's to run; one PIN attempt, no retries.
 
+### P10: a Secure Enclave client key used from the extension
+Setup: **Make Secure Enclave client key** in CTKProto; the log must say `[app] enclave: key made; ok`. Mode `enclave`. Each call signs a test message with that key inside the extension, checks it, then answers with the software key.
+- A, in front: sign from CTKCaller. Pass: `[ext] enclave: ok …`, no Face ID prompt, `sign ok`.
+- B, locked: **Run after delay**, lock the phone, wait, unlock, read the log. Pass: the `[ext] enclave: ok` line's time falls while it was locked.
+- C, after a restart, before the first unlock: expected to be unavailable; not worth testing by hand unless something else needs it.
+- If it fails: a software key in the same group, as the prototype's other keys.
+
 ## Results
 
 | Check | iPhone | iPad | Mac | Notes |
