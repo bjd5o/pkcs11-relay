@@ -111,3 +111,4 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 
 - **Published:** with `com.apple.token` in CTKProto's iOS entitlements, its check finds `with-cert` (status 0) and `TKTokenWatcher` lists the token. Without it the check returned -34018, which proved nothing.
 - **CTKCaller:** its search returned -26276 (`errSecInternal`) and no items. It asked for attributes and key references together; now it asks for them separately. The extension has logged nothing on the iPhone yet, unlike on the Mac. Cause open.
+- **iOS asks the person first** (Brian, 2026-11-23): with the split search, iOS prompted to allow CTKCaller access to an item, and after Allow it found the keys. No such prompt was reported on the Mac. Still to record: the prompt's wording, whether it names the calling app, whether it is per key or per token, whether Allow lasts, and what Deny returns. Whether the earlier -26276 was this prompt failing to show is unknown.
