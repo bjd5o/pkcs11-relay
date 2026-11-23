@@ -133,7 +133,9 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 - **Secure Key route (`ssh-keygen -w … -K`): loads both keys, the bare one too**, as `sk-ecdsa-sha2-nistp256@openssh.com`. So `ssh` needs no certificate. The earlier -1 failure was the unpublished keys. `-K` asks for a PIN and accepted an empty one.
 - **A server sees an `sk-ecdsa` key,** not the plain ECDSA key the PKCS#11 provider presents: a different `authorized_keys` entry.
 - **The call reaches the extension** as a digest: `ecdsaSignatureDigestRFC4754`, 32 B, after one algorithm the prototype refused. So the key must accept digests, as an `auth` key does.
-- **No valid signature yet.** Both runs were in `handoff` and neither was approved: CTKProto and its extension were replaced during the first, and both requests were denied in the app. `ssh-keygen -Y sign` still wrote a signature file each time ("Write signature to …"), which failed verification. **A refusal doesn't surface as an error to ssh-keygen here**; an ssh server would reject the result. Worth confirming once one is approved.
+- **Signing works** (`immediate`, rerun at 13:01): `ssh-keygen -Y sign` with each key, `with-cert` and `bare`, and `ssh-keygen -Y verify` reports a good signature for both. An `ssh` login wasn't tried.
+- **The same file gives the same digest every time**, for both keys and across runs: nothing in it is fresh, so the record name repeats too. An `ssh` login signs session data, which differs each time.
+- **Unapproved calls.** The first two runs were in `handoff` and neither was approved: CTKProto and its extension were replaced during the first, and both requests were denied in the app. `ssh-keygen -Y sign` still wrote a signature file each time ("Write signature to …"), which failed verification. **A refusal doesn't surface as an error to ssh-keygen here**; an ssh server would reject the result. Worth confirming once one is approved.
 - **Liveness again:** the first request outlived its extension and was listed until denied 31 s later.
-- `supports` is answered from the published keys of the whole token; a plain unentitled command-line program can list them (`SecItem`, token group named).
+- An unentitled command-line program lists the published keys (`SecItem`, naming the token group).
 
