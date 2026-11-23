@@ -109,4 +109,5 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 
 ### iPhone, 2026-11-23
 
-- CTKCaller finds no token keys; cause open. CTKProto's `published keys` check returned -34018 (missing entitlement), so it proved nothing: it now asks for `com.apple.token` on iOS. The extension logged nothing during setup, unlike on the Mac.
+- **Published:** with `com.apple.token` in CTKProto's iOS entitlements, its check finds `with-cert` (status 0) and `TKTokenWatcher` lists the token. Without it the check returned -34018, which proved nothing.
+- **CTKCaller:** its search returned -26276 (`errSecInternal`) and no items. It asked for attributes and key references together; now it asks for them separately. The extension has logged nothing on the iPhone yet, unlike on the Mac. Cause open.

@@ -49,7 +49,6 @@ final class CallerModel: ObservableObject {
             kSecClass as String: cls,
             kSecMatchLimit as String: kSecMatchLimitAll,
             kSecReturnAttributes as String: true,
-            kSecReturnRef as String: true,
         ]
         let token: [String: Any] = [kSecAttrAccessGroup as String: kSecAttrAccessGroupToken]
         var out = [("plain", base), ("token group", base.merging(token) { $1 })]
@@ -59,6 +58,27 @@ final class CallerModel: ObservableObject {
                 ("data protection + token group", base.merging(dp) { $1 }.merging(token) { $1 })]
         #endif
         return out
+    }
+
+    /// A usable reference for one key: a separate query, since this may involve the extension.
+    func reference(tokenID: String, label: String) -> SecKey? {
+        var q: [String: Any] = [
+            kSecClass as String: kSecClassKey,
+            kSecAttrAccessGroup as String: kSecAttrAccessGroupToken,
+            kSecAttrTokenID as String: tokenID,
+            kSecAttrLabel as String: label,
+            kSecReturnRef as String: true,
+        ]
+        #if os(macOS)
+        q[kSecUseDataProtectionKeychain as String] = true
+        #endif
+        var out: CFTypeRef?
+        let t0 = Date()
+        let st = SecItemCopyMatching(q as CFDictionary, &out)
+        let text = SecCopyErrorMessageString(st, nil) as String? ?? ""
+        say("reference for \(label): status \(st) \(text) after \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+        guard st == errSecSuccess, let ref = out, CFGetTypeID(ref) == SecKeyGetTypeID() else { return nil }
+        return (ref as! SecKey)
     }
 
     func load() {
@@ -72,13 +92,15 @@ final class CallerModel: ObservableObject {
                 say("\(cname), \(name): status \(st), token items \(names)")
                 guard cls == kSecClassKey else { continue }
                 for a in items {
-                    guard let ref = a[kSecValueRef as String], CFGetTypeID(ref as CFTypeRef) == SecKeyGetTypeID() else { continue }
                     let tid = a[kSecAttrTokenID as String] as? String ?? "?"
                     let label = a[kSecAttrLabel as String] as? String ?? "(no label)"
-                    // Only the prototype's token: never offer a real card's keys.
+                    // Only the prototype's token: never ask for a real card's keys.
                     guard tid.contains("ctk-proto") else { continue }
                     let id = "\(tid)/\(label)"
-                    found[id] = TokenKey(id: id, label: label, tokenID: tid, ref: ref as! SecKey)
+                    guard found[id] == nil else { continue }
+                    if let ref = reference(tokenID: tid, label: label) {
+                        found[id] = TokenKey(id: id, label: label, tokenID: tid, ref: ref)
+                    }
                 }
             }
         }
