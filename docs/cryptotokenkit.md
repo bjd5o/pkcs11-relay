@@ -242,8 +242,7 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 
 ## To confirm (prototype, 2026-11-23)
 
-1. On the Mac, the app posts the notification and must be running.
-2. Gate step 2 (`ssh` with hw-auth), once `ssh` is tested.
+1. Gate step 2 (`ssh` with hw-auth), once `ssh` is tested.
 
 ## Decisions (Brian, 2026-11-20)
 
@@ -259,6 +258,7 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 | Keys without a certificate | A placeholder certificate from the app if P4 shows one is needed, as described under "Certificates" |
 | Pairing the extension | Not skipped: the app compares the pending pairing's key with the key it created, automatically |
 | Liveness (2026-11-23) | A request is refused, before the card is used, once the extension that asked has stopped waiting |
+| Notifications on the Mac (2026-11-23) | The app posts them, so it must be running; if it isn't, the request expires |
 | Inverting the hand-off (the extension runs the card operation) | Not for now: the extension can't reach an NFC YubiKey, would need the PIN on iOS, and would need an approval gate other callers can't race. Kept as a later option for USB on the Mac (Still open) |
 
 ## Still open
