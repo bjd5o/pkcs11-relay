@@ -19,6 +19,11 @@ struct CTKProtoApp: App {
     }
 }
 
+enum ItemSet: String, CaseIterable, Identifiable {
+    case certificate, bare, both
+    var id: String { rawValue }
+}
+
 @MainActor
 final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published var status = ""
@@ -28,6 +33,9 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
     @Published var focused: String?
     @Published var hideAfterAnswer = true
     @Published var tokenIDs: [String] = []
+    /// Which items to publish: secd rejects the whole set when one item is bad.
+    @Published var itemSet: ItemSet = .certificate
+    @Published var setConstraints = false
 
     override init() {
         super.init()
@@ -62,10 +70,31 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
             let bare = try Keys.generate(object: Proto.bareObject)
             try storeBiometricItem()
             try registerToken(cert: cert, bare: bare)
-            Log.write("app", "set up: keys stored, token registered")
+            Log.write("app", "set up: keys stored, configuration written (items=\(itemSet.rawValue) constraints=\(setConstraints))")
+            // Writing the configuration says nothing about the keychain: look for the items.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.checkPublished() }
         } catch {
             Log.write("app", "set up failed: \(error)")
         }
+        refresh()
+    }
+
+    /// Are this token's keys really in the keychain?
+    func checkPublished() {
+        var q: [String: Any] = [
+            kSecClass as String: kSecClassKey,
+            kSecAttrAccessGroup as String: kSecAttrAccessGroupToken,
+            kSecAttrTokenID as String: "\(Proto.classID):\(Proto.instanceID)",
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true,
+        ]
+        #if os(macOS)
+        q[kSecUseDataProtectionKeychain as String] = true
+        #endif
+        var out: CFTypeRef?
+        let st = SecItemCopyMatching(q as CFDictionary, &out)
+        let labels = ((out as? [[String: Any]]) ?? []).map { $0[kSecAttrLabel as String] as? String ?? "?" }
+        Log.write("app", "published keys: status \(st) \(labels)")
         refresh()
     }
 
@@ -127,7 +156,19 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
         bareKey.publicKeyHash = Data(Insecure.SHA1.hash(data: raw))
         bareKey.canSign = true
         bareKey.canPerformKeyExchange = true
-        cfg.keychainItems = [certItem, certKey, bareKey]
+        if setConstraints {
+            let c: [NSNumber: Any] = [
+                NSNumber(value: TKTokenOperation.signData.rawValue): true,
+                NSNumber(value: TKTokenOperation.performKeyExchange.rawValue): true,
+            ]
+            certKey.constraints = c
+            bareKey.constraints = c
+        }
+        switch itemSet {
+        case .certificate: cfg.keychainItems = [certItem, certKey]
+        case .bare: cfg.keychainItems = [bareKey]
+        case .both: cfg.keychainItems = [certItem, certKey, bareKey]
+        }
     }
 
     private func storeBiometricItem() throws {
@@ -217,6 +258,10 @@ struct ContentView: View {
             Form {
                 Section("Setup") {
                     Text(model.status).font(.caption.monospaced())
+                    Picker("Items", selection: $model.itemSet) {
+                        ForEach(ItemSet.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Toggle("Set operation constraints", isOn: $model.setConstraints)
                     Button("Set up keys and token") { model.setUp() }
                     Button("Remove token", role: .destructive) { model.removeToken() }
                 }
