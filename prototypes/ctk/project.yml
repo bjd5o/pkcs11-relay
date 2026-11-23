@@ -67,5 +67,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_CFBundleDisplayName: CTK Caller
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": Caller/iOS.entitlements
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": Caller/iOS.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Caller/macOS.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"

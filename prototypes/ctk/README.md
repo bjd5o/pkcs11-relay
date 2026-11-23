@@ -81,3 +81,12 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 | P7 front and back | – | – | | |
 | P8 biometric in extension | | | | |
 | P9 iOS 26 NFC | | – | – | |
+
+### Mac, 2026-11-23 (macOS 27.0.1, no YubiKey attached)
+
+- The token is registered and visible: `TKTokenWatcher` lists `<class id>:ctk-proto`, and `sc_auth identities` lists the `with-cert` identity.
+- **P4, ssh: fails as designed.** `ssh-keychain(8)` provides identities (key plus certificate) only: RSA through PKCS#11, P-256 only through the Secure Key module. `ssh-keygen -D /usr/lib/ssh-keychain.dylib` reports "returned no slots" for this token, whose keys are P-256. This doesn't test an RSA identity.
+- **P-256 through the Secure Key module: not working yet.** `ssh-keygen -w /usr/lib/ssh-keychain.dylib -K` returned failure -1, and `sc_auth list-ctk-identities` listed nothing. The extension logged no call. Cause unknown; the self-signed certificate is one untested possibility ("valid identities" in the man page).
+- **P2 and P3 through ssh: not run,** since no key could be loaded.
+- **Callers need an entitlement.** Reading token items needs `com.apple.token` in `keychain-access-groups` (Yubico's sample has it); CTKCaller was missing it. An unentitled command-line lister got `errSecItemNotFound` for every class. So "any app can use the keys" is wrong as stated in the design: an app has to ask for that group.
+- Don't read `pluginkit`'s `-` mark as "turned off": `ctkd` was running Apple's `pivtoken` while it showed `-`. Unplug any YubiKey before listing tokens.
