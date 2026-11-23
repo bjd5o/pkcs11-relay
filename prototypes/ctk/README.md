@@ -75,11 +75,11 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 | P1 hand-off in background | Pass, 67 s | | Pass, 13 s (in front) | Mac: app must post the notification |
 | P2 caller limits | | | | |
 | P3 repeat pattern | | | | |
-| P4 bare key | | | | |
+| P4 bare key | Pass | | Pass | Keychain caller only; needs constraints |
 | P5 locked | Pass (after first unlock) | | | |
-| P6 network | | | | |
+| P6 network | Pass, 91 s | | | Public test page, short requests |
 | P7 front and back | – | – | | |
-| P8 biometric in extension | | | | |
+| P8 biometric in extension | Pass | | | iOS asked once for Face ID permission, naming CTK Proto |
 | P9 iOS 26 NFC | | – | – | |
 
 ### Mac, 2026-11-23 (macOS 27.0.1, no YubiKey attached)
@@ -123,3 +123,6 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 - **Access prompt:** Brian didn't recognise it when asked later, so treat its wording and meaning as unknown.
 - **P1, run C repeated (18:34Z): the log itself shows the background wait.** CTKProto opened 2.7 s after the call and approved at 61.6 s; the extension answered at 62.1 s. So CTKCaller was out of the foreground for about 59 s.
 - **P5 (18:39Z):** one sign call; store write and notification succeeded, tap after 7.5 s, approved after 9.6 s, answered after 10.1 s; Brian reports it signed. The notification was on the lock screen before Brian unlocked, so **P5 passes on the iPhone**: the extension read its settings, wrote the record and notified while locked. Only "unlocked once since restart" is covered.
+- **P6: passes** for short requests: 18 of 18 returned 200 over 91.2 s from inside the extension, then it signed. Whether CTKCaller was in the background is not recorded, and a single long-poll held open, and the relay's pinned CA, are not tested.
+- **P8: passes.** From inside the extension the protected item was read (status 0 after 9.4 s) and the signature completed. iOS showed "Allow CTK Proto to use Face ID?", its one-time permission for the containing app; the item's `.biometryCurrentSet` protection means a Face ID match followed. A later run should show the match alone.
+- **P4: passes for a keychain caller.** With constraints, `bare` is published and signs (72 B, `immediate`). No access prompt came for the new key.
