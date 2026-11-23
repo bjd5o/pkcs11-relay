@@ -1,6 +1,6 @@
 # Relay keys in the system keychain (CryptoTokenKit extension)
 
-Status: **decisions taken by Brian on 2026-11-20** (see Decisions); the spec changes still need writing and approving. It changes the spec (see "Spec changes"), so it needs Brian's approval before any code. Only the prototype (`prototypes/ctk`) is built; its results of 2026-11-23 are in "Prototype results", and what they changed is marked **(prototype)**. Those changes are Claude's proposals until Brian confirms them.
+Status: **decisions taken by Brian on 2026-11-20** (see Decisions); the spec changes still need writing and approving. It changes the spec (see "Spec changes"), so it needs Brian's approval before any code. Only the prototype (`prototypes/ctk`) is built; its results of 2026-11-23 are in "Prototype results", and what they changed is marked **(prototype)**. Brian confirmed the ones under Decisions dated 2026-11-23; the rest are Claude's proposals.
 
 ## Goal
 
@@ -226,7 +226,7 @@ Approval fatigue gets worse: Mail alone asks on a timer while a signed message i
 - One test per new Failure handling row.
 - **Gate** (on Brian's hardware):
   1. iPhone, NFC, local route: Mail signs a message with a `sign` key that has a certificate (a message algorithm on the Mac **(prototype)**). **Unproven:** iOS Mail didn't offer the test certificate; the cause wasn't pursued (Brian, 2026-11-23). If a certificate from Brian's CA isn't offered either, a test app signs on the phone instead, after an approval on the phone; the signature verifies.
-  2. Mac, relay route: `ssh -I /usr/lib/ssh-keychain.dylib` authenticates with `hw-auth`, approved on the phone. **In doubt:** hw-auth is P-256, which the man page says the PKCS#11 route doesn't serve. The prototype's P-256 keys don't appear over PKCS#11, but load through the Secure Key route (`ssh-keygen -w … -K`) without a certificate, as `sk-ecdsa` keys with their own `authorized_keys` entry. `ssh-keygen -Y sign` with both keys produced signatures that verify; a login wasn't tried, and an unapproved call made `ssh-keygen` write an invalid signature without an error.
+  2. Mac, relay route: an `ssh` login with `hw-auth` through `ssh-keychain`'s Secure Key route, approved on the phone; the test server's `authorized_keys` holds the key's `sk-ecdsa` form. Then a denied login, which must fail. In the prototype `ssh-keygen -Y sign` signed with both keys and the signatures verified **(prototype)**; a login wasn't tried, and an unapproved call made `ssh-keygen` write an invalid signature without an error.
   3. iPad, USB-C, local route: a test app decrypts with `hw-unseal`; the plaintext matches.
   4. The relay's audit log has rows for the local operations, with only hashes for the decrypt.
 
@@ -240,11 +240,7 @@ Approval fatigue gets worse: Mail alone asks on a timer while a signed message i
 | Manifest certificates, `relayctl`, `/v1/audit/local` | Small to medium |
 | Tests, simulator or device tests, gate | Medium |
 
-## To confirm (prototype, 2026-11-23)
-
-1. Gate step 2: use the Secure Key route, so the server's `authorized_keys` carries hw-auth's `sk-ecdsa` form next to its plain ECDSA form, and the gate becomes a real `ssh` login.
-
-## Decisions (Brian, 2026-11-20)
+## Decisions (Brian, 2026-11-20, and 2026-11-23 where dated)
 
 | Question | Decision |
 | --- | --- |
@@ -260,6 +256,7 @@ Approval fatigue gets worse: Mail alone asks on a timer while a signed message i
 | Liveness (2026-11-23) | A request is refused, before the card is used, once the extension that asked has stopped waiting |
 | Notifications on the Mac (2026-11-23) | The app posts them, so it must be running; if it isn't, the request expires |
 | Mail's draft signatures (2026-11-23) | Accepted for now: each draft autosave asks for its own approval, and nothing is designed around it |
+| The Mac gate step (2026-11-23) | A real `ssh` login with hw-auth through `ssh-keychain`'s Secure Key route, with the `sk-ecdsa` line on the gate's test server, plus a denial. Everyday `ssh` uses the PKCS#11 provider and the plain ECDSA line |
 | Inverting the hand-off (the extension runs the card operation) | Not for now: the extension can't reach an NFC YubiKey, would need the PIN on iOS, and would need an approval gate other callers can't race. Kept as a later option for USB on the Mac (Still open) |
 
 ## Still open
