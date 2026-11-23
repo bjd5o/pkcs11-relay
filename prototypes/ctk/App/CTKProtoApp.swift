@@ -109,6 +109,13 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
         #endif
         var out: CFTypeRef?
         let st = SecItemCopyMatching(q as CFDictionary, &out)
+        let configs = TKTokenDriver.Configuration.driverConfigurations
+        for (cls, d) in configs {
+            for (inst, c) in d.tokenConfigurations {
+                Log.write("app", "configuration \(cls):\(inst) items=\(c.keychainItems.map { "\($0.objectID) constraints=\($0.constraints?.count ?? 0)" })")
+            }
+        }
+        Log.write("app", "watcher tokens: \(TKTokenWatcher().tokenIDs.filter { $0.contains("ctk-proto") })")
         let labels = ((out as? [[String: Any]]) ?? []).map { $0[kSecAttrLabel as String] as? String ?? "?" }
         Log.write("app", "published keys: status \(st) \(labels)")
         refresh()

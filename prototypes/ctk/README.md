@@ -106,3 +106,7 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 - **Notifications on the Mac: the app has to post them.** An app-posted notification opened CTKProto and logged the click (approved after 4.4 s, signature verifies), so P7 passes both ways. Extension-posted ones failed on every logged click, before and after it and with the stray builds unregistered. Cause unknown. So on the Mac the app must be running (or be launched some other way) to show a request.
 - **One call at a time:** a second CTKCaller sign made while the first waited reached the extension only after the first finished, 7 s later. Seen once, same caller and key; whether other callers are blocked too is untested.
 - **An approval can outlive its caller.** Rebuilding the app replaced the extension mid-wait: CTKCaller got `CryptoTokenKit -7` (token not found) after 56.7 s, but the record stayed, and CTKProto approved it 8.5 s later and ran the operation for nobody. The real design needs a liveness signal from the extension, or must expire a record once its waiter is gone.
+
+### iPhone, 2026-11-23
+
+- CTKCaller finds no token keys; cause open. CTKProto's `published keys` check returned -34018 (missing entitlement), so it proved nothing: it now asks for `com.apple.token` on iOS. The extension logged nothing during setup, unlike on the Mac.
