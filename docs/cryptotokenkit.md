@@ -53,7 +53,7 @@ Software keys, one test caller, no YubiKey. Details and logs: `prototypes/ctk/RE
 | # | iPhone | Mac (macOS 27.0.1) | iPad |
 | --- | --- | --- | --- |
 | P1 hand-off | **Pass:** about 59 s with the caller out of the foreground; the notification also launches the app when it isn't running | Pass for 13 s, caller in view; the extension stayed alive 100 s unanswered | Not run |
-| P2 caller limits | Test caller: above 100 s. Mail: not run | Test caller: above 100 s. `ssh`: signs through the Secure Key route; its wait limit and Mail: not run | Not run |
+| P2 caller limits | Test caller: above 100 s. Mail: not run | Test caller: above 100 s. `ssh`: signs through the Secure Key route; its wait limit: not run. Mail signs; its wait limit: not run | Not run |
 | P3 repeats | None seen from the test caller | None seen. Once, a second call reached the extension only after the first finished | Not run |
 | P4 bare key | **Pass** for a keychain caller | **Pass** for a keychain caller; `ssh` not run with published keys | Not run |
 | P5 locked | **Pass**, after the first unlock since a restart | Not run | Not run |
@@ -161,7 +161,7 @@ The keychain's algorithms map onto the spec's mechanisms. A `sign` key receives 
 
 Anything else is refused by `supports`, so the caller sees the key as unable to do it. RSA PKCS#1 v1.5 decryption is not supported (see "Still open").
 
-**Digests on `sign` keys.** Callers choose the algorithm; a token can only accept or refuse each one, and there is no way to ask a caller to prefer message algorithms. A caller that holds the message and checks what the key supports may pick a message algorithm, but many (the TLS stack, probably Mail's S/MIME) hash first and offer only digest algorithms, and fail if those are refused. So:
+**Digests on `sign` keys.** Callers choose the algorithm; a token can only accept or refuse each one, and there is no way to ask a caller to prefer message algorithms. A caller that holds the message and checks what the key supports may pick a message algorithm, but some hash first and offer only digest algorithms, and fail if those are refused: `ssh` through the Secure Key route does **(prototype)**, and the TLS stack probably does. Mail on the Mac asked for a message algorithm **(prototype)**, so a `sign` key can serve it without `accepts_digest`; what it sent (443 B) is presumably the S/MIME signed attributes, which the approver could parse but which hold only a digest of the mail. So:
 
 - A new optional manifest field `keys[].accepts_digest` (boolean, `sign` keys only, default false). Without it, a `sign` key keeps the spec's rule: full message only.
 - With it, the key also accepts the digest mechanisms (`CKM_ECDSA` and `CKM_RSA_PKCS` with a DigestInfo). The approval screen shows the digest in full hex with its algorithm, so it can be compared with a hash computed elsewhere (for example `shasum` on the client machine), and says the content itself can't be shown.
@@ -225,7 +225,7 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 - Simulator: an XCUITest app calls `SecKeyCreateSignature` on the token's key, the test approves in the app, the signature verifies. Whether persistent tokens work in the simulator is part of the prototype; if not, this is a device test.
 - One test per new Failure handling row.
 - **Gate** (on Brian's hardware):
-  1. iPhone, NFC, local route: Mail signs a message with an `auth` key that has a certificate, after an approval on the phone; the signature verifies.
+  1. iPhone, NFC, local route: Mail signs a message with a `sign` key that has a certificate (a message algorithm on the Mac **(prototype)**; the iPhone isn't checked yet), after an approval on the phone; the signature verifies.
   2. Mac, relay route: `ssh -I /usr/lib/ssh-keychain.dylib` authenticates with `hw-auth`, approved on the phone. **In doubt:** hw-auth is P-256, which the man page says the PKCS#11 route doesn't serve. The prototype's P-256 keys don't appear over PKCS#11, but load through the Secure Key route (`ssh-keygen -w … -K`) without a certificate, as `sk-ecdsa` keys with their own `authorized_keys` entry. `ssh-keygen -Y sign` with both keys produced signatures that verify; a login wasn't tried, and an unapproved call made `ssh-keygen` write an invalid signature without an error.
   3. iPad, USB-C, local route: a test app decrypts with `hw-unseal`; the plaintext matches.
   4. The relay's audit log has rows for the local operations, with only hashes for the decrypt.

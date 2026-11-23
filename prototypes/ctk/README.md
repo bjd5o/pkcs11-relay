@@ -139,3 +139,9 @@ iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTo
 - **Liveness again:** the first request outlived its extension and was listed until denied 31 s later.
 - An unentitled command-line program lists the published keys (`SecItem`, naming the token group).
 
+### Mac, Mail, 2026-11-23 (`immediate`)
+
+- **Mail signed with `with-cert`** (Brian): one `supports` and one `sign` call, `ecdsaSignatureMessageX962SHA256`, 443 B in, 70 B out. No repeats, no digest algorithm asked. The self-signed certificate was offered.
+- 443 B is too small to be the mail. It is presumably the S/MIME signed attributes, which hold a digest of the content; the input wasn't kept, so this is inference.
+- Not checked: whether the received message's signature verifies, Mail's wait limit and its behaviour in `handoff` or on a denial, and decryption.
+
