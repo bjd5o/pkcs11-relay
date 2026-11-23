@@ -263,7 +263,7 @@ Approval fatigue gets worse: any app can now trigger a request at a plausible mo
 
 ## Still open
 
-- **Why Mail signed twice** (different input each time), and whether one message always costs two approvals. If it does, the design needs an answer, because a person will approve the second without knowing what it is for.
+- **Why Mail signed twice for one message** (different input each time), when one quick send in `immediate` mode cost one, and whether a slow approval is what causes it. If it does, the design needs an answer, because a person will approve the second without knowing what it is for.
 - **RSA PKCS#1 v1.5 decryption** for S/MIME. Not in the spec, for the padding-oracle reasons discussed on 2026-11-20. Check first whether Mail can decrypt with an elliptic-curve S/MIME certificate (ECDH, which this design supports).
 - **System PIN prompt on iOS** (`TKTokenSmartCardPINAuthOperation`), so the PIN never enters our process: a post-MVP investigation already noted in `docs/progress.md`.
 - **A local route inside the extension**, without the app hand-off, and the inverted variant where the extension runs the card operation and the app never sees a result: on the Mac, Face ID from inside the extension worked in Brian's own experiment, USB smart cards may be reachable from it, and the system PIN prompt may supply the PIN. It would remove the app switch for USB on the Mac. Each approval would have to be single-use and bound to its request, since the extension can't tell its callers apart. Later, once the hand-off works everywhere.
