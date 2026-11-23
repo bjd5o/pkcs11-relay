@@ -50,6 +50,9 @@ struct Settings: Codable, Equatable {
     var url: String = "https://www.apple.com/library/test/success.html"
     /// Delay before answering in immediate mode (to measure caller limits without a person).
     var immediateDelaySecs: Double = 0
+    /// The running app posts the notification instead of the extension (the Mac click problem).
+    /// Optional so an older settings file still loads.
+    var appNotifies: Bool?
 
     static var file: URL { Proto.container.appendingPathComponent("settings.json") }
     static func load() -> Settings {

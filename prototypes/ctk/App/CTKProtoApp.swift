@@ -34,6 +34,7 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
     @Published var hideAfterAnswer = true
     @Published var tokenIDs: [String] = []
     /// Which items to publish: secd rejects the whole set when one item is bad.
+    private var notified: Set<String> = []
     @Published var itemSet: ItemSet = .certificate
     @Published var setConstraints = false
 
@@ -54,11 +55,26 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
 
     func refresh() {
         pending = Store.pending()
+        if settings.appNotifies == true { notifyNew() }
         log = Log.read()
         tokenIDs = TKTokenWatcher().tokenIDs
         let configured = TKTokenDriver.Configuration.driverConfigurations[Proto.classID]?.tokenConfigurations[Proto.instanceID] != nil
         let keys = [Proto.certObject, Proto.bareObject].map { "\($0): \(Keys.privateKey($0) == nil ? "missing" : "ok")" }
         status = "class \(Proto.classID)\ntoken configured: \(configured)\n" + keys.joined(separator: ", ")
+    }
+
+    private func notifyNew() {
+        for r in pending where notified.insert(r.id).inserted {
+            let c = UNMutableNotificationContent()
+            c.title = "Approve a keychain request (from the app)"
+            c.body = "\(r.op) with \(r.object)"
+            c.userInfo = ["id": r.id]
+            c.categoryIdentifier = "ctk-proto.request"
+            c.sound = .default
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: r.id, content: c, trigger: nil)) { err in
+                Log.write("app", "app notification added: \(err.map { "\($0)" } ?? "ok")")
+            }
+        }
     }
 
     // MARK: setup
@@ -274,6 +290,9 @@ struct ContentView: View {
                     TextField("Network URL", text: $model.settings.url)
                     #if os(macOS)
                     Toggle("Hide after answering (P7)", isOn: $model.hideAfterAnswer)
+                    Toggle("App posts the notification", isOn: Binding(
+                        get: { model.settings.appNotifies == true },
+                        set: { model.settings.appNotifies = $0 }))
                     #endif
                 }
                 Section("Pending requests") {

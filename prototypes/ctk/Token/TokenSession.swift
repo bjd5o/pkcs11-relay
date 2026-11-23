@@ -126,8 +126,12 @@ final class TokenSession: TKTokenSession, TKTokenSessionDelegate {
             throw TKError(.communicationError)
         }
         if created {
-            Log.write("ext", "record created, posting notification")
-            postNotification(req)
+            if settings.appNotifies == true {
+                Log.write("ext", "record created, leaving the notification to the app")
+            } else {
+                Log.write("ext", "record created, posting notification")
+                postNotification(req)
+            }
         } else {
             Log.write("ext", "record exists (repeat call): waiting on it")
         }
