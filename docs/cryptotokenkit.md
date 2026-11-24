@@ -57,7 +57,7 @@ Software keys, one test caller, no YubiKey. Details and logs: `prototypes/ctk/RE
 | P3 repeats | None seen from the test caller | Test caller: none. **Mail: extra calls, for draft autosaves**, each with different input. Calls queue: seen three times | Not run |
 | P4 bare key | **Pass** for a keychain caller | **Pass** for a keychain caller; `ssh` not run with published keys | Not run |
 | P5 locked | **Pass**, after the first unlock since a restart | Not run | Not run |
-| P6 network | **Pass** for short requests (18 over 91 s). A held long-poll and the pinned CA: not run | Not run | Not run |
+| P6 network | **Pass:** short requests (18 over 91 s), and one request held 90 s on a pinned certificate, three times, over Wi-Fi to a test server | Not run | Not run |
 | P7 front and back | – | **Pass**, but only when the app posts the notification | – |
 | P8 biometric in the extension | **Pass:** the prompt names the containing app | Not run | Not run |
 
@@ -105,7 +105,7 @@ A denial or a card error is a signed response like any other, so the extension m
 
 ### The relay route
 
-The extension submits the request to the relay and waits on the long-poll, as the provider does, bounded by the same per-platform limit. Every approver that operates the key is rung; the first valid response wins. The extension verifies and opens it exactly as above.
+The extension submits the request to the relay and waits on the long-poll, as the provider does, bounded by the same per-platform limit. A relay on the local network needs iOS's local network permission, which the app must ask for before the extension is used (**(prototype)**: the extension connected once the app had been allowed; whether it can ask itself isn't known). Every approver that operates the key is rung; the first valid response wins. The extension verifies and opens it exactly as above.
 
 ### The shared store
 

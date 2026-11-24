@@ -93,6 +93,7 @@ Setup: **Make Secure Enclave client key** in CTKProto; the log must say `[app] e
 | P7 front and back | – | – | | |
 | P8 biometric in extension | Pass | | | iOS asked once for Face ID permission, naming CTK Proto |
 | P9 iOS 26 NFC | | – | – | |
+| P6b held connection | Pass: 90 s, three runs | | | Throwaway pinned server, Wi-Fi; not rustls |
 | P10 Enclave client key | Pass, in front and locked | | | Brian's report; log not kept here |
 
 ### Mac, 2026-11-23 (macOS 27.0.1, no YubiKey attached)
@@ -175,4 +176,5 @@ Setup: **Make Secure Enclave client key** in CTKProto; the log must say `[app] e
 - Brian read a signature `3046…659e` from a sent email; it doesn't match any logged Mail call (70 or 71 bytes; `3046` is 72). He thinks it may be the certificate's own signature, which would explain it. Not checked.
 - **Mail on the iPhone:** its settings said "no valid certificates found for signing" with the first test certificate (Brian). That one was self-signed and marked `CA:TRUE`, a mistake in `make-test-identity.sh`; whether that was the reason isn't known. The script now issues a non-CA leaf from a throwaway root.
 - **Mail on the iPhone: skipped, unproven** (Brian, 2026-11-23). With the corrected certificate (non-CA, S/MIME usage, real address) in the installed build, the Sign setting still offered none. Not checked: whether the identity is published on the phone, whether the address matches the account, and whether trusting the issuer changes it. No trust setting was changed.
+- **P6b: passes on the iPhone** (Wi-Fi, 2026-11-23): three calls, each one request held 90 s by the test server and answered (91.2, 90.2 and 91.1 s), with the test root as the only anchor; each then signed. The runs were meant as in front, in the background and locked; the log doesn't record the phone's state. The app's first attempt waited 4.4 s with "Network is down" before connecting, which fits the local network permission prompt; the extension connected without trouble afterwards. Not tested: cellular, a network change mid-hold, rustls, and the extension without the app having asked first.
 
