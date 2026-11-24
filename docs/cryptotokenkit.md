@@ -63,7 +63,7 @@ Software keys, one test caller, no YubiKey. Details and logs: `prototypes/ctk/RE
 
 The Secure Enclave client key used from the extension (P10 in the README) passes on the iPhone, in front and locked (Brian's report, 2026-11-23); the Mac and iPad weren't run. The keys that answered callers were software throughout.
 
-Not tested at all: key-exchange calls, and iOS 26's NFC smart-card slots (P9 in the README). Digest calls were seen only from `ssh` on the Mac.
+Not tested at all: key-exchange calls. iOS 26's NFC smart-card slots (P9) didn't get as far as a card; see "Still open". Digest calls were seen only from `ssh` on the Mac.
 
 ## Design
 
@@ -270,5 +270,5 @@ Approval fatigue gets worse: Mail alone asks on a timer while a signed message i
 - **Falling back to the relay** when a local request isn't answered, or a "send to another approver" button: not for now.
 - **Returning to the calling app on iOS** automatically: no public API exists. The private one is ruled out.
 - **Why a Mac notification posted by the extension doesn't open the app**: `usernoted` couldn't match its source to a launchable app, in every logged click, including with a single registered build.
-- **iOS 26 NFC smart-card slots** (`createNFCSlot`, `TKSmartCardTokenRegistrationManager`): the system may be able to drive NFC, and perhaps the PIN, itself. That would reopen the inverted hand-off and the system PIN prompt. P9; Brian runs it.
+- **iOS 26 NFC smart-card slots** (`createNFCSlot`, `TKSmartCardTokenRegistrationManager`): the system may be able to drive NFC, and perhaps the PIN, itself. That would reopen the inverted hand-off and the system PIN prompt. Tried on 2026-11-23 (P9): the slot opened without an error and the system removed it within 2 to 3 s, each time, before any card was detected. Cause unknown, so this says nothing about whether it can work. Not pursued further for now; the app's own NFC path stays.
 - **Before the first unlock after a restart**, the extension's keys and files are unavailable. Untested; it should fail fast.

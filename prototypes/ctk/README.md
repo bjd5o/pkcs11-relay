@@ -95,7 +95,7 @@ Setup: **Make Secure Enclave client key** in CTKProto; the log must say `[app] e
 | P6 network | Pass, 91 s | | | Public test page, short requests |
 | P7 front and back | – | – | | |
 | P8 biometric in extension | Pass | | | iOS asked once for Face ID permission, naming CTK Proto |
-| P9 iOS 26 NFC | | – | – | |
+| P9 iOS 26 NFC | Not working here, cause unknown | – | – | Stopped 2026-11-23; no card read, nothing registered |
 | P6b held connection | Pass: 90 s, three runs | | | Throwaway pinned server, Wi-Fi; not rustls |
 | P10 Enclave client key | Pass, in front and locked | | | Brian's report; log not kept here |
 
@@ -183,3 +183,4 @@ Setup: **Make Secure Enclave client key** in CTKProto; the log must say `[app] e
 - **P9, first tries (iPhone, 2026-11-23):** `createNFCSlot` opened a session four times without an error; no new card token appeared within 40 s. Two other tokens were already on the phone, and the one key and certificate listed look like those (a third-party app's stored certificate), not this card. Whether the card was detected, or even presented, isn't recorded. The app now logs the slot's state.
 
 - **P9, next try:** the slot opened (`empty` at 1 s) and was `missing` at 3 s, while the app's own wait runs 40 s: the system removed it, and the card was never detected. The app's once-a-second token query is now paused during a session, in case that was the reason.
+- **P9, last try: the same** with nothing else querying tokens: `empty` at 1 s, `missing` at 2 s, no card detected. Stopped there. No card was ever read or registered, so there is nothing to undo. Not established: whether the system, the setup of this prototype (entitlements, how the session is used) or another app's token on the phone is the reason, or whether the tray was dismissed by hand.
