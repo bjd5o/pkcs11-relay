@@ -57,7 +57,7 @@ Software keys, one test caller, no YubiKey. Details and logs: `prototypes/ctk/RE
 | P3 repeats | None seen from the test caller | Test caller: none. **Mail: extra calls, for draft autosaves**, each with different input. Calls queue: seen three times | Not run |
 | P4 bare key | **Pass** for a keychain caller | **Pass** for a keychain caller; `ssh` not run with published keys | Not run |
 | P5 locked | **Pass**, after the first unlock since a restart | Not run | Not run |
-| P6 network | **Pass:** short requests (18 over 91 s), and one request held 90 s on a pinned certificate, three times, over Wi-Fi to a test server | Not run | Not run |
+| P6 network | **Pass:** short requests (18 over 91 s), and one request held 90 s on a pinned certificate, in front, in the background and locked, over Wi-Fi to a test server | Not run | Not run |
 | P7 front and back | – | **Pass**, but only when the app posts the notification | – |
 | P8 biometric in the extension | **Pass:** the prompt names the containing app | Not run | Not run |
 
