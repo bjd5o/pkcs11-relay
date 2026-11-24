@@ -286,6 +286,7 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
     #if os(iOS)
     /// Held so it can be ended: the system UI stays up otherwise.
     private var nfcSession: Any?
+    private var nfcStarting = false
     /// Tokens that appeared during the last read: the only ones offered for registering.
     @Published var justRead: [String] = []
 
@@ -293,17 +294,37 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
     func createNFCSlot() {
         guard let mgr = TKSmartCardSlotManager.default else { Log.write("app", "nfc: no slot manager"); return }
         guard mgr.isNFCSupported() else { Log.write("app", "nfc: not supported here"); return }
+        guard nfcSession == nil, !nfcStarting else { Log.write("app", "nfc: a session is already open"); return }
+        nfcStarting = true
         let before = Set(cardTokens)
+        let names = Set(mgr.slotNames)
         Log.write("app", "nfc: creating slot; \(before.count) other token(s) already present")
         mgr.createNFCSlot(message: "Hold your YubiKey to the iPhone (read only)") { session, error in
             Log.write("app", "nfc: session=\(session == nil ? "none" : "ok") error=\(error.map { "\($0)" } ?? "-")")
             Task { @MainActor in
                 self.nfcSession = session
-                guard session != nil else { return }
+                self.nfcStarting = false
+                guard let session else { return }
+                let slotName = session.slotName
+                Log.write("app", "nfc: slot name \(slotName == nil ? "none" : "given"), new slots \(Set(mgr.slotNames).subtracting(names).count)")
+                var slot: TKSmartCardSlot?
+                var last = ""
                 // Until a token appears that wasn't there before, or 40 s.
                 for i in 1...40 {
                     try? await Task.sleep(for: .seconds(1))
                     guard self.nfcSession != nil else { return }
+                    // The slot's own state only: no session with the card, so no commands from here.
+                    if slot == nil, let n = session.slotName { slot = mgr.slotNamed(n) }
+                    let now: String
+                    switch slot?.state {
+                    case .missing?: now = "missing"
+                    case .empty?: now = "empty"
+                    case .probing?: now = "probing"
+                    case .muteCard?: now = "card present but not answering"
+                    case .validCard?: now = "valid card"
+                    default: now = slot == nil ? "no slot" : "other"
+                    }
+                    if now != last { Log.write("app", "nfc: slot \(now) after \(i) s"); last = now }
                     let new = Set(self.cardTokens).subtracting(before)
                     if !new.isEmpty || i == 40 {
                         self.justRead = Array(new)
