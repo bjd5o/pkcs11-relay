@@ -82,7 +82,7 @@ Making the keys visible to every app would need a CryptoTokenKit extension, whic
 ## Releasing (maintainer)
 
 1. Tag the release on `main` and let CI build the Linux modules (`provider` job artifacts).
-2. On the Mac, with the Developer ID certificate in the keychain and the `relay-notary` profile saved (`docs/milestone-7.md`, "Signing and notarization"):
+2. On the Mac, with the Developer ID certificate in the keychain and the `Relay Notary` profile saved (`docs/milestone-7.md`, "Signing and notarization"):
 
    ```sh
    CODESIGN_IDENTITY="Developer ID Application: …" deploy/macos/build-provider.sh

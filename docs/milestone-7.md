@@ -109,8 +109,8 @@ The only code-signing identity in Brian's keychain is **Apple Development**, not
 
 1. **Create the certificate.** Xcode → Settings → Accounts → the team → Manage Certificates → + → **Developer ID Application**. Only the team's Account Holder can create one. On a personal team, that's Brian. The private key stays in the login keychain; export a `.p12` backup to somewhere safe.
 2. **Create a notarization credential.** Either an app-specific password (account.apple.com → Sign-In and Security → App-Specific Passwords) or an App Store Connect API key (Users and Access → Integrations, role Developer). The API key is easier to revoke; either works.
-3. **Save it in the keychain:** `xcrun notarytool store-credentials relay-notary --apple-id <id> --team-id <team> --password <app-specific password>` (or `--key`, `--key-id`, `--issuer` for an API key). The profile name `relay-notary` is the only thing scripts refer to; the team id and credentials never enter the repo.
-4. **Per release:** `CODESIGN_IDENTITY="Developer ID Application: …" deploy/macos/build-provider.sh`, then `deploy/macos/notarize.sh dist/librelay_pkcs11-aarch64-apple-darwin.dylib`. The script zips the dylib, runs `notarytool submit --keychain-profile relay-notary --wait`, prints the log, and fails unless the status is `Accepted`. Expect a few minutes per submission.
+3. **Save it in the keychain:** `xcrun notarytool store-credentials "Relay Notary"`, which prompts for the Apple ID, team id and app-specific password, or an API key (no `--password` option: it would land in the shell history). The profile name `Relay Notary` is the only thing scripts refer to; the team id and credentials never enter the repo.
+4. **Per release:** `CODESIGN_IDENTITY="Developer ID Application: …" deploy/macos/build-provider.sh`, then `deploy/macos/notarize.sh dist/librelay_pkcs11-aarch64-apple-darwin.dylib`. The script zips the dylib, runs `notarytool submit --keychain-profile "Relay Notary" --wait`, prints the log, and fails unless the status is `Accepted`. Expect a few minutes per submission.
 5. **Check:** `codesign -dv --verbose=4` shows the Developer ID authority and `flags=0x10000(runtime)`. `spctl -a -t open --context context:primary-signature -v` on the dylib reports `accepted` with source `Notarized Developer ID`.
 
 Only the macOS release archive needs this, and only for browser downloads. Brian chose to do it in this milestone (2026-11-19); steps 1 to 3 come first, before task 8.
@@ -125,7 +125,7 @@ Only the macOS release archive needs this, and only for browser downloads. Brian
 | Minimum macOS | 13.0 (`MACOSX_DEPLOYMENT_TARGET=13.0`) for the release build | Covers every Mac Apple still updates; the approver app needs 14, but the provider doesn't use anything newer than 13 |
 | Install name | `@rpath/librelay_pkcs11.dylib` | Callers load it by path through `dlopen`, so the install name only matters for tools that link it |
 | Signing | Flake and mise installs: the linker's ad-hoc signature. macOS release archive: Developer ID Application, hardened runtime (`codesign --options runtime --timestamp`), identity from Brian's keychain | See "Distribution" |
-| Notarization | macOS release archive only, local, through the `relay-notary` keychain profile; not in CI | CI would need Apple credentials as secrets, which isn't worth it for the MVP |
+| Notarization | macOS release archive only, local, through the `Relay Notary` keychain profile; not in CI | CI would need Apple credentials as secrets, which isn't worth it for the MVP |
 | CI artifact | An unsigned Apple silicon dylib from a `macos-15` job, plus the native gate script | Proves it builds and works with third-party callers |
 | CI tools on macOS | The project Flox environment (`flox activate -- tests/macos-gate.sh`), installed on the runner with Flox's GitHub action | The same tools Brian uses locally; no Homebrew anywhere |
 | Intel Macs | Not supported: no x86_64 slice, no `x86_64-darwin` flake package | Brian's call (2026-11-20); no Intel Mac to test on, and GitHub's Intel runners are being retired |
@@ -201,7 +201,7 @@ Manual, on Brian's hardware, against the `gate-m5` relay:
 - **Config:** XDG path first (default `~/.config`), then Application Support, after Ghostty. The first file found wins, instead of Ghostty's merge, for the reasons in "Config file lookup". The spec change was approved.
 - **Host name:** the `gethostname` crate.
 - **Order:** Parts A and B in parallel, after Part 0.
-- **Notarization:** yes, in this milestone, for the macOS release archive. Brian creates the Developer ID Application certificate and the `relay-notary` keychain profile first.
+- **Notarization:** yes, in this milestone, for the macOS release archive. Brian creates the Developer ID Application certificate and the `Relay Notary` keychain profile first.
 
 ## Still open
 

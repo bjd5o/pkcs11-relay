@@ -169,7 +169,7 @@ Found during the gates; out of scope for the MVP.
 - [x] Part A, Rust sync: `mise run sync-rust` with `enter` and `flake.lock` hooks, and the flake's version check. First sync: Rust 1.93.0 → 1.95.0 in `mise.toml`, the Dockerfiles, `deploy/build-provider.sh` and `rust-version`; CI reads the version from `mise.toml`. Clippy clean, 197 tests pass on 1.95.0
 - [x] Part A, native gate: `tests/macos-gate.sh` with the project Flox environment (OpenSC 0.26, OpenSSL 3.3.2, pkcs11-provider 0.5, OpenSSH 9.9p1); all 23 checks pass against the release dylib (2026-11-20). `ssh -I` skipped: no test sshd
 - [x] Part A, CI: `provider-macos` and `flake-linux` jobs. Not yet run on GitHub
-- [x] Part A, release: `deploy/release/package.sh` and `deploy/macos/notarize.sh`; both refuse unsigned macOS dylibs. Notarization not yet run (needs the Developer ID certificate and `relay-notary` profile); mise's choice of archive not yet checked against a real release
+- [x] Part A, release: `deploy/release/package.sh` and `deploy/macos/notarize.sh`; both refuse unsigned macOS dylibs. Notarization accepted by Apple with the `Relay Notary` profile (2026-11-23); the signed dylib passes `spctl` as Notarized Developer ID. `package.sh` not yet run on it; mise's choice of archive not yet checked against a real release
 - [x] Part A, docs: `docs/provider-macos.md` (install, config, callers, library validation, release steps)
 - [x] Docker integration gate rerun after Parts A and B were merged (parameterized `tests/m3-gate.sh`, Rust 1.95.0 images): milestone 2 (15 checks) and milestone 3 (24 checks, with `ssh -I`) pass on colima, aarch64 (2026-11-23)
 - [ ] Part A, manual gate on Brian's Mac (`docs/milestone-7.md`, Gate 1 and 2)
