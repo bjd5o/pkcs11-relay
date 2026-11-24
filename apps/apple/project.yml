@@ -1,5 +1,6 @@
 # XcodeGen spec: `xcodegen` here writes RelayApprover.xcodeproj (not committed).
-# Build the Rust side first: apps/apple/build-xcframework.sh
+# Build the Rust side first: apps/apple/build-xcframework.sh (RelayApprover) and
+# apps/apple/build-provider-xcframework.sh (SampleSigner).
 name: RelayApprover
 options:
   deploymentTarget:
@@ -17,6 +18,8 @@ targets:
       - RelayApprover
       - path: Generated/bindings/relay_ffi.swift
         group: Generated
+        # So xcodegen also runs when only RelayPKCS11 is built (tests/sim-provider.sh).
+        optional: true
     dependencies:
       - framework: Generated/RelayFFI.xcframework
         embed: false
@@ -59,6 +62,37 @@ targets:
         SWIFT_VERSION: "5.0"
         TEST_TARGET_NAME: RelayApprover
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+  # The iPad sample app for the PKCS#11 provider (milestone 7). It links RelayPKCS11 only,
+  # never RelayFFI: two Rust static libraries in one binary give duplicate std symbols.
+  SampleSigner:
+    type: application
+    supportedDestinations: [iOS]
+    sources: [SampleSigner]
+    dependencies:
+      - framework: Generated/RelayPKCS11.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(BUNDLE_ID_PREFIX).sample-signer
+        INFOPLIST_FILE: SampleSigner/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "2"
+        # RelayPKCS11.xcframework is arm64 only (devices and Apple silicon simulators).
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+  SampleSignerUITests:
+    type: bundle.ui-testing
+    supportedDestinations: [iOS]
+    sources: [SampleSignerUITests]
+    dependencies:
+      - target: SampleSigner
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "2"
+        TEST_TARGET_NAME: SampleSigner
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
 schemes:
   RelayApprover:
     build:
@@ -68,3 +102,10 @@ schemes:
         RelayApproverUITests: [test]
     test:
       targets: [RelayApproverTests, RelayApproverUITests]
+  SampleSigner:
+    build:
+      targets:
+        SampleSigner: all
+        SampleSignerUITests: [test]
+    test:
+      targets: [SampleSignerUITests]

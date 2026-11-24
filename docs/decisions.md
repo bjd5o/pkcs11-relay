@@ -289,3 +289,18 @@ Decision (Brian): this is a demo app; drop databases and start clean rather than
 - The relay creates its tables with every column and runs no migration; a stored client always has a grant. An older `relay.db` must be deleted.
 - The app's saved state has no `clients` list and requires `grants` and `revocations`; an older state file fails to load and the app starts unenrolled.
 - Revoke cancels up to the newest grant this device holds (no `max(1)`).
+
+## 2026-11-19: Default provider config paths
+
+Context: GUI apps on macOS don't inherit shell environment variables, so a config named only by `RELAY_PKCS11_CONFIG` is awkward there. The spec named no default path.
+Decision (Brian): when `RELAY_PKCS11_CONFIG` is unset, the provider reads `$XDG_CONFIG_HOME/relay-pkcs11/provider.toml` (`~/.config` when the variable is unset, empty or relative), then, on Apple platforms, `~/Library/Application Support/relay-pkcs11/provider.toml`. The paths follow Ghostty's. Unlike Ghostty, which loads every file it finds and merges them, the first file found is the whole config: the file names the manifest signer and the trust anchors, and a merge could combine them from different files. A `RELAY_PKCS11_CONFIG` that names a missing file is an error, not a fall-through. Shadowed files are logged as a warning. The spec's Configuration paragraph and milestone 2 item were updated with Brian's approval; details are in `docs/milestone-7.md`, "Config file lookup".
+
+## 2026-11-20: No Intel Macs
+
+Context: the milestone 7 plan built a universal (arm64 + x86_64) macOS dylib and an `x86_64-darwin` flake package, with the Intel slice tested only under Rosetta.
+Decision (Brian): Intel Macs aren't supported. The provider ships for Apple silicon only: `deploy/macos/build-provider.sh` builds `aarch64-apple-darwin`, the flake and the Flox environment drop `x86_64-darwin`, and the release has no Intel archive.
+
+## 2026-11-20: PKCS#11 3.2 headers for the iPadOS XCFramework
+
+Context: the milestone 7 plan vendored the OASIS PKCS#11 3.1 headers. OASIS has since published 3.2 headers in the same repository.
+Decision (Brian): vendor 3.2, pinned to a commit (`1d5e40e`, 2025-10-22), because the published 3.2 headers changed after their release. The provider still fills the 2.40 `CK_FUNCTION_LIST`, which 3.2 keeps unchanged, so callers see the same ABI; 3.2's additions (`CK_FUNCTION_LIST_3_2`, key encapsulation, post-quantum mechanisms) are declared but not implemented. Source and hashes are in `apps/apple/Provider/include/README.md`.

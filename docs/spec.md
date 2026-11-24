@@ -178,7 +178,7 @@ The provider holds no private keys and no key list of its own. It builds its slo
 - **One approval per operation.** PKCS#11 callers often call `C_Decrypt` / `C_Sign` twice: first with a null buffer to learn the output length, then for real. Approve on the first call, cache the result for that session, and serve both calls from it.
 - **Concurrency.** Support `CKF_OS_LOCKING_OK` and several sessions at once; each operation is an independent request.
 
-**Configuration.** PKCS#11 gives a module no standard way to receive config, so the library reads a file named by an environment variable (for example `RELAY_PKCS11_CONFIG=/etc/relay-pkcs11.toml`). Everything in it except the client identity key is public.
+**Configuration.** PKCS#11 gives a module no standard way to receive config, so the library reads a file named by an environment variable (for example `RELAY_PKCS11_CONFIG=/etc/relay-pkcs11.toml`). When that variable is unset, it reads the first file that exists of `$XDG_CONFIG_HOME/relay-pkcs11/provider.toml` (default `~/.config`) and, on Apple platforms, `~/Library/Application Support/relay-pkcs11/provider.toml`; files are never merged. Everything in it except the client identity key is public.
 
 | Setting | Example | Used for |
 | --- | --- | --- |
@@ -562,7 +562,7 @@ One Rust crate builds a loadable module for Linux and macOS and a static library
 
 - No threads, sockets or files before `C_Initialize`; after a `fork()`, the child must call `C_Initialize` again, as PKCS#11 requires.
 - Blocking HTTPS per call (`ureq`), bounded by the configured timeout; no async runtime inside the host process.
-- Config read at `C_Initialize` from the file named by `RELAY_PKCS11_CONFIG`; a bad config logs a clear error and the provider reports zero slots instead of crashing the host.
+- Config read at `C_Initialize` from the file named by `RELAY_PKCS11_CONFIG`, or, when it is unset, from the first of `$XDG_CONFIG_HOME/relay-pkcs11/provider.toml` (default `~/.config`) and, on Apple platforms, `~/Library/Application Support/relay-pkcs11/provider.toml`; a bad config logs a clear error and the provider reports zero slots instead of crashing the host.
 - Manifest cache on disk; relay key list cached in memory with a short TTL.
 
 **Per platform**

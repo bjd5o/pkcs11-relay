@@ -66,8 +66,14 @@ fn default_skew() -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct TrustedClient {
     pub client_id: String,
-    /// Base64 DER SPKI of the client identity key.
-    pub public_key: String,
+    /// Base64 DER SPKI of the client identity key, when it is known in advance.
+    #[serde(default)]
+    pub public_key: Option<String>,
+    /// For a client that creates its key itself (the iPadOS sample app): a file holding the
+    /// pairing code the client shows. A pending pairing is approved when its code matches,
+    /// as a person comparing the codes would. Read at each pairing; missing means no match.
+    #[serde(default)]
+    pub pairing_code_file: Option<PathBuf>,
     /// Keys the client may use.
     pub keys: Vec<String>,
     /// Approve this client's pending pairing when its key matches (the test stand-in for a
@@ -97,6 +103,21 @@ pub struct Approver {
     pin: Zeroizing<Vec<u8>>,
     handled: Mutex<HashSet<[u8; 16]>>,
     approved_pairings: Mutex<HashSet<String>>,
+}
+
+impl TrustedClient {
+    /// Whether a pending pairing with this key and code is this client: the configured key,
+    /// or else the code in `pairing_code_file`. Neither configured matches nothing.
+    pub fn matches(&self, spki: &[u8], code: &str) -> bool {
+        if let Some(pk) = &self.public_key {
+            let b64 = base64::engine::general_purpose::STANDARD;
+            return b64.decode(pk).ok().as_deref() == Some(spki);
+        }
+        self.pairing_code_file
+            .as_deref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .is_some_and(|c| !c.trim().is_empty() && c.trim() == code)
+    }
 }
 
 fn load_or_create_device_key(dir: &Path) -> Result<SoftwareKey, String> {
@@ -365,8 +386,7 @@ impl Approver {
         else {
             return;
         };
-        let b64 = base64::engine::general_purpose::STANDARD;
-        if b64.decode(&tc.public_key).ok().as_deref() != Some(view.public_key.spki()) {
+        if !tc.matches(view.public_key.spki(), &view.code) {
             return;
         }
         let fp = view.public_key.fingerprint().as_str().to_string();
@@ -544,5 +564,47 @@ impl Approver {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client(public_key: Option<&str>, code_file: Option<PathBuf>) -> TrustedClient {
+        TrustedClient {
+            client_id: "c".into(),
+            public_key: public_key.map(String::from),
+            pairing_code_file: code_file,
+            keys: Vec::new(),
+            approve_pairing: true,
+        }
+    }
+
+    #[test]
+    fn a_configured_key_must_match_the_pending_key() {
+        let c = client(Some("AQID"), None); // base64 of 01 02 03
+        assert!(c.matches(&[1, 2, 3], "any-code"));
+        assert!(!c.matches(&[1, 2, 4], "any-code"));
+    }
+
+    #[test]
+    fn a_code_file_must_hold_the_pending_code() {
+        let dir = std::env::temp_dir().join(format!("relay-test-code-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("code");
+        let c = client(None, Some(f.clone()));
+        assert!(!c.matches(&[1], "boil-framing"), "no file yet");
+        std::fs::write(&f, "boil-framing\n").unwrap();
+        assert!(c.matches(&[1], "boil-framing"));
+        assert!(!c.matches(&[1], "other-code"));
+        std::fs::write(&f, "\n").unwrap();
+        assert!(!c.matches(&[1], ""), "an empty file matches nothing");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_client_with_neither_matches_nothing() {
+        assert!(!client(None, None).matches(&[1], "code"));
     }
 }

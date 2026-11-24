@@ -2,9 +2,14 @@
 # Milestone 3 gate, run by the client container: third-party PKCS#11 callers against the
 # provider, through the relay and the fixture approvers (A approves, B denies, C is stale).
 # Every signature is verified by OpenSSL against the public key read through the provider.
+# tests/macos-gate.sh runs the same checks natively on a Mac, with these overridden:
+#   MOD    the provider module               FIX   the gen-fixtures directory
+#   SSHD   host of the test sshd, or empty to skip the `ssh -I` check (no sshd on the Mac)
 set -u
-MOD=/usr/lib/pkcs11/librelay_pkcs11.so
-export RELAY_PKCS11_CONFIG=/fixtures/provider.toml
+MOD=${MOD:-/usr/lib/pkcs11/librelay_pkcs11.so}
+FIX=${FIX:-/fixtures}
+SSHD=${SSHD-sshd}
+export RELAY_PKCS11_CONFIG="$FIX/provider.toml"
 W=$(mktemp -d)
 FAILS=0
 pass() { echo "PASS  $1"; }
@@ -83,7 +88,7 @@ done
 # This pkcs11-tool cannot export Ed25519/X25519 public keys: take them from the signed
 # manifest (keys are pretty-printed with sorted fields, so public_key follows label).
 manifest_pub() {
-  awk -v l="\"label\": \"$1\"" 'index($0, l) { f = 1 } f && /"public_key"/ { gsub(/.*: "|",?$/, ""); print; exit }' /fixtures/manifest.json \
+  awk -v l="\"label\": \"$1\"" 'index($0, l) { f = 1 } f && /"public_key"/ { gsub(/.*: "|",?$/, ""); print; exit }' $FIX/manifest.json \
     | base64 -d | openssl pkey -pubin -inform DER -out "$W/$1.pem" 2>/dev/null
 }
 manifest_pub sign-ed25519
@@ -127,17 +132,19 @@ check "OpenSSL pkcs11-provider signs (auth-ec), verified by OpenSSL" sh -c "
   openssl pkeyutl -verify -pubin -inkey $W/auth-ec.pem -in $W/dgst -sigfile $W/sig5"
 
 # --- OpenSSH ---
-check "ssh-keygen -D lists the auth key the sshd trusts" sh -c "ssh-keygen -D $MOD 2>/dev/null | cut -d' ' -f1,2 | grep -qxF \"\$(cut -d' ' -f1,2 /fixtures/ssh_authorized_keys)\""
-check "ssh -I authenticates to a test sshd with the auth key" \
-  ssh -I "$MOD" -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o PreferredAuthentications=publickey tester@sshd true
+check "ssh-keygen -D lists the auth key the sshd trusts" sh -c "ssh-keygen -D $MOD 2>/dev/null | cut -d' ' -f1,2 | grep -qxF \"\$(cut -d' ' -f1,2 $FIX/ssh_authorized_keys)\""
+if [ -n "$SSHD" ]; then
+  check "ssh -I authenticates to a test sshd with the auth key" \
+    ssh -I "$MOD" -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o PreferredAuthentications=publickey "tester@$SSHD" true
+fi
 
 # --- Hardware attestation: an attest key whose YubiKey attestation shows touch never makes the
 # whole manifest invalid, so a provider with no cached copy lists zero slots. ---
 mkdir -p "$W/hw"
-sed -e 's#^manifest_url = .*#manifest_url = "file:///fixtures/manifest-touch-never.json"#' \
+sed -e "s#^manifest_url = .*#manifest_url = \"file://$FIX/manifest-touch-never.json\"#" \
     -e "s#^manifest_cache = .*#manifest_cache = \"$W/hw/manifest.json\"#" \
-    /fixtures/provider.toml >"$W/hw/provider.toml"
+    $FIX/provider.toml >"$W/hw/provider.toml"
 check "attest key without touch always: zero slots" sh -c \
   "RELAY_PKCS11_CONFIG=$W/hw/provider.toml pkcs11-tool --module $MOD -L 2>&1 | tee $W/hw/out | grep -q 'Available slots' && ! grep -q '^Slot ' $W/hw/out && grep -q 'touch policy never' $W/hw/out || { RELAY_PKCS11_CONFIG=$W/hw/provider.toml pkcs11-tool --module $MOD -L; exit 1; }"
 
@@ -145,7 +152,7 @@ check "attest key without touch always: zero slots" sh -c \
 # re-reads its signer file every minute; then it lists no keys, so every slot is empty. (Slots
 # come from the manifest's tokens; keys from the relay's list. Requests in flight are cancelled
 # with 503: relay-test-approver tests/setup_and_signer.rs.) ---
-cp /fixtures/signer-revoked.asc /fixtures/signer.asc
+cp $FIX/signer-revoked.asc $FIX/signer.asc
 i=0
 until ! p11 --token-label softcard-a -O 2>/dev/null | grep -q "label:"; do
   i=$((i + 1)); [ $i -gt 90 ] && break

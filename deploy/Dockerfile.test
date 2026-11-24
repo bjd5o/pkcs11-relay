@@ -2,7 +2,8 @@
 # Test tooling: the headless approver, gate client and fixture generator, plus the PKCS#11
 # provider and the third-party callers the milestone 3 gate uses (pkcs11-tool, OpenSSL 3
 # with pkcs11-provider, OpenSSH).
-FROM rust:1.93-bookworm AS build
+# Rust version: kept equal to mise.toml by `mise run sync-rust`.
+FROM rust:1.95.0-bookworm AS build
 WORKDIR /src
 # relay-pcsc (the approver's --pcsc mode) links libpcsclite.
 RUN apt-get update && apt-get install -y --no-install-recommends libpcsclite-dev \

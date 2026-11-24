@@ -6,7 +6,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
-      - run: rustup component add rustfmt clippy
+      # The Rust version comes from mise.toml, which follows the flake's nixpkgs (sync-rust).
+      - run: echo "RUST=$(sed -n 's/^rust = { version = \"\([^\"]*\)\".*/\1/p' mise.toml)" >> "$GITHUB_ENV"
+      - run: rustup toolchain install "$RUST" --profile minimal -c rustfmt,clippy && rustup default "$RUST"
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
@@ -27,19 +29,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, libc: gnu, runner: ubuntu-24.04, image: "rust:1.93-bookworm", setup: "true" }
-          - { arch: aarch64, libc: gnu, runner: ubuntu-24.04-arm, image: "rust:1.93-bookworm", setup: "true" }
+          - { arch: x86_64, libc: gnu, runner: ubuntu-24.04, image: bookworm, setup: "true" }
+          - { arch: aarch64, libc: gnu, runner: ubuntu-24.04-arm, image: bookworm, setup: "true" }
           # musl targets link statically by default, which rules out a cdylib.
-          - { arch: x86_64, libc: musl, runner: ubuntu-24.04, image: "rust:1.93-alpine", setup: "apk add --no-cache musl-dev", rustflags: "-C target-feature=-crt-static" }
-          - { arch: aarch64, libc: musl, runner: ubuntu-24.04-arm, image: "rust:1.93-alpine", setup: "apk add --no-cache musl-dev", rustflags: "-C target-feature=-crt-static" }
+          - { arch: x86_64, libc: musl, runner: ubuntu-24.04, image: alpine, setup: "apk add --no-cache musl-dev", rustflags: "-C target-feature=-crt-static" }
+          - { arch: aarch64, libc: musl, runner: ubuntu-24.04-arm, image: alpine, setup: "apk add --no-cache musl-dev", rustflags: "-C target-feature=-crt-static" }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      # The Rust version comes from mise.toml, which follows the flake's nixpkgs (sync-rust).
+      - run: echo "RUST=$(sed -n 's/^rust = { version = \"\([^\"]*\)\".*/\1/p' mise.toml)" >> "$GITHUB_ENV"
       # JavaScript actions cannot run inside Alpine containers on arm64 runners, so checkout
       # and upload run on the host and only the build runs in the image.
-      - name: build in ${{ matrix.image }}
+      - name: build in rust:${{ env.RUST }}-${{ matrix.image }}
         env:
-          IMAGE: ${{ matrix.image }}
+          IMAGE: rust:${{ env.RUST }}-${{ matrix.image }}
           SETUP: ${{ matrix.setup }}
           BUILD_RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
@@ -52,13 +56,53 @@ jobs:
           path: librelay_pkcs11-*.so
   apple:
     # Milestone 5: the approver app in the iOS simulator against a real relay, with relay-ffi's
-    # software test card (tests/sim-e2e.sh). No YubiKey, no signing.
+    # software test card (tests/sim-e2e.sh). Milestone 7: the provider's sample app
+    # (tests/sim-provider.sh). No YubiKey, no signing.
     needs: rust
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      # The Rust version comes from mise.toml, which follows the flake's nixpkgs (sync-rust).
+      - run: echo "RUST=$(sed -n 's/^rust = { version = \"\([^\"]*\)\".*/\1/p' mise.toml)" >> "$GITHUB_ENV"
       - run: |
-          rustup toolchain install 1.93.0 --profile minimal --target aarch64-apple-ios,aarch64-apple-ios-sim
-          rustup default 1.93.0
+          rustup toolchain install "$RUST" --profile minimal --target aarch64-apple-ios,aarch64-apple-ios-sim
+          rustup default "$RUST"
       - run: brew install xcodegen
       - run: tests/sim-e2e.sh
+      # Milestone 7: the provider's sample app signs in the simulator (tests/sim-provider.sh),
+      # and builds for iOS devices (unsigned).
+      - run: tests/sim-provider.sh
+      - run: >-
+          xcodebuild -project apps/apple/RelayApprover.xcodeproj -scheme SampleSigner
+          -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO build
+  provider-macos:
+    # Milestone 7, part A: the Apple silicon dylib, the milestone 3 checks natively on a Mac
+    # (tests/macos-gate.sh) against it, and the Nix flake. No Intel Macs. Unsigned: signing and
+    # notarization stay with Brian (deploy/macos/notarize.sh).
+    needs: rust
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      # The Rust version comes from mise.toml, which follows the flake's nixpkgs (sync-rust).
+      - run: echo "RUST=$(sed -n 's/^rust = { version = \"\([^\"]*\)\".*/\1/p' mise.toml)" >> "$GITHUB_ENV"
+      - run: |
+          rustup toolchain install "$RUST" --profile minimal
+          rustup default "$RUST"
+      # Flox for the gate's callers (.flox/env); its installer also brings Nix for the flake.
+      - uses: flox/install-flox-action@v2
+      - run: deploy/macos/build-provider.sh
+      - run: MOD=dist/librelay_pkcs11-aarch64-apple-darwin.dylib flox activate -- tests/macos-gate.sh
+      # The runner's Nix doesn't enable flakes by default.
+      - run: nix --extra-experimental-features 'nix-command flakes' flake check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: librelay_pkcs11-macos
+          path: dist/librelay_pkcs11-*.dylib
+  flake-linux:
+    # The flake's Linux package and the Rust version check (mise.toml = nixpkgs' rustc).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: flox/install-flox-action@v2
+      # The runner's Nix doesn't enable flakes by default.
+      - run: nix --extra-experimental-features 'nix-command flakes' flake check

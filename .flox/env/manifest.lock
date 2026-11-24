@@ -1,0 +1,408 @@
+{
+  "lockfile-version": 1,
+  "manifest": {
+    "schema-version": "1.19.0",
+    "install": {
+      "opensc": {
+        "pkg-path": "opensc"
+      },
+      "openssh": {
+        "pkg-path": "openssh"
+      },
+      "openssl": {
+        "pkg-path": "openssl"
+      },
+      "pkcs11-provider": {
+        "pkg-path": "pkcs11-provider"
+      }
+    },
+    "hook": {},
+    "profile": {},
+    "options": {
+      "systems": [
+        "aarch64-darwin",
+        "aarch64-linux",
+        "x86_64-linux"
+      ]
+    }
+  },
+  "packages": [
+    {
+      "attr_path": "opensc",
+      "broken": false,
+      "derivation": "/nix/store/fz5lg2zbc8680641prcdwd7ds2yxc4ll-opensc-0.26.0.drv",
+      "description": "Set of libraries and utilities to access smart cards",
+      "install_id": "opensc",
+      "license": "LGPL-2.1-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "name": "opensc-0.26.0",
+      "pname": "opensc",
+      "rev": "a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "rev_count": 719504,
+      "rev_date": "2024-12-09T15:59:59Z",
+      "scrape_date": "2024-12-11T03:49:32Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "0.26.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/npczwwd0z4zrk2nvkx1jcgnr3dfyzgac-opensc-0.26.0"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "opensc",
+      "broken": false,
+      "derivation": "/nix/store/0i0qjiplpc0jz1rz6p923fabjlhnb9ja-opensc-0.26.0.drv",
+      "description": "Set of libraries and utilities to access smart cards",
+      "install_id": "opensc",
+      "license": "LGPL-2.1-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "name": "opensc-0.26.0",
+      "pname": "opensc",
+      "rev": "a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "rev_count": 719504,
+      "rev_date": "2024-12-09T15:59:59Z",
+      "scrape_date": "2024-12-11T03:49:32Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "0.26.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/r2izd80kxxslhj7139nvwvvws9fccf8d-opensc-0.26.0"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "opensc",
+      "broken": false,
+      "derivation": "/nix/store/31bpgcax1nzja9gf8bfqjfqxak29sm05-opensc-0.26.0.drv",
+      "description": "Set of libraries and utilities to access smart cards",
+      "install_id": "opensc",
+      "license": "LGPL-2.1-or-later",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "name": "opensc-0.26.0",
+      "pname": "opensc",
+      "rev": "a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "rev_count": 719504,
+      "rev_date": "2024-12-09T15:59:59Z",
+      "scrape_date": "2024-12-11T03:49:32Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "0.26.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/7bl2k36rcrdlp681km9pa0abwm0kngid-opensc-0.26.0"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "openssh",
+      "broken": false,
+      "derivation": "/nix/store/i7i3j94zfxxzvlq8vx7bfkbkzyb8mb7g-openssh-9.9p1.drv",
+      "description": "Implementation of the SSH protocol",
+      "install_id": "openssh",
+      "license": "BSD-2-Clause",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "name": "openssh-9.9p1",
+      "pname": "openssh",
+      "rev": "a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "rev_count": 719504,
+      "rev_date": "2024-12-09T15:59:59Z",
+      "scrape_date": "2024-12-11T03:49:32Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "9.9p1",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/gp4v3ymsap4afgin74514iy9ahdhikvv-openssh-9.9p1"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "openssh",
+      "broken": false,
+      "derivation": "/nix/store/yfzpvb963ri17xv9a3q1k8f9w83cwryv-openssh-9.9p1.drv",
+      "description": "Implementation of the SSH protocol",
+      "install_id": "openssh",
+      "license": "BSD-2-Clause",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "name": "openssh-9.9p1",
+      "pname": "openssh",
+      "rev": "a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "rev_count": 719504,
+      "rev_date": "2024-12-09T15:59:59Z",
+      "scrape_date": "2024-12-11T03:49:32Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "9.9p1",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/z8jmjg32hz3mnk8972pwxhmrk66l7iw1-openssh-9.9p1"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "openssh",
+      "broken": false,
+      "derivation": "/nix/store/874wlfkc8lzxx9s2cv1nhi47csy7xf1z-openssh-9.9p1.drv",
+      "description": "Implementation of the SSH protocol",
+      "install_id": "openssh",
+      "license": "BSD-2-Clause",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "name": "openssh-9.9p1",
+      "pname": "openssh",
+      "rev": "a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "rev_count": 719504,
+      "rev_date": "2024-12-09T15:59:59Z",
+      "scrape_date": "2024-12-11T03:49:32Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "9.9p1",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/nfjjkzr25i7qj2r0vslb242jbadb1k4j-openssh-9.9p1"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "openssl",
+      "broken": false,
+      "derivation": "/nix/store/qvpdz81vfhcxpnjj7z8y6d1cp1mzpc3s-openssl-3.3.2.drv",
+      "description": "Cryptographic library that implements the SSL and TLS protocols",
+      "install_id": "openssl",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "name": "openssl-3.3.2",
+      "pname": "openssl",
+      "rev": "a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "rev_count": 719504,
+      "rev_date": "2024-12-09T15:59:59Z",
+      "scrape_date": "2024-12-11T03:49:32Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "3.3.2",
+      "outputs_to_install": [
+        "bin",
+        "man"
+      ],
+      "outputs": {
+        "bin": "/nix/store/s8658ydj8hh9zph3qv0wvh1l4dnbnppf-openssl-3.3.2-bin",
+        "dev": "/nix/store/y940g0f3as2crh7frkb4p9f99wxzyzkm-openssl-3.3.2-dev",
+        "doc": "/nix/store/l0haqhhy4znj6ai1l5s97dgp2ym4s8y9-openssl-3.3.2-doc",
+        "man": "/nix/store/jphbigzqmgrqlgp0q9kp7bkv3s98pf1v-openssl-3.3.2-man",
+        "out": "/nix/store/1a4j0c5xn6xl53z77sifkncg3fing1qj-openssl-3.3.2"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "openssl",
+      "broken": false,
+      "derivation": "/nix/store/58ah9y8753mmfd74haqj355f86lmikg3-openssl-3.3.2.drv",
+      "description": "Cryptographic library that implements the SSL and TLS protocols",
+      "install_id": "openssl",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "name": "openssl-3.3.2",
+      "pname": "openssl",
+      "rev": "a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "rev_count": 719504,
+      "rev_date": "2024-12-09T15:59:59Z",
+      "scrape_date": "2024-12-11T03:49:32Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "3.3.2",
+      "outputs_to_install": [
+        "bin",
+        "man"
+      ],
+      "outputs": {
+        "bin": "/nix/store/7gilxnffzjw1dim84zykl57r6s4sdd3f-openssl-3.3.2-bin",
+        "debug": "/nix/store/7b3mfxng1mvff237f8s4jzcwg2rkzng3-openssl-3.3.2-debug",
+        "dev": "/nix/store/hpksal430jqy06wv1995997xn4awphmz-openssl-3.3.2-dev",
+        "doc": "/nix/store/w051v8i95mavrqj6vipqxpgz3c42jlys-openssl-3.3.2-doc",
+        "man": "/nix/store/77ci1qql4nvx2kf74lc4k8451hki6q4q-openssl-3.3.2-man",
+        "out": "/nix/store/nkqswrdmrjh6xivshz5qwda323k88ypb-openssl-3.3.2"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "openssl",
+      "broken": false,
+      "derivation": "/nix/store/jqlxd6n4368nhkcm68sfcz3waqy7c1ds-openssl-3.3.2.drv",
+      "description": "Cryptographic library that implements the SSL and TLS protocols",
+      "install_id": "openssl",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "name": "openssl-3.3.2",
+      "pname": "openssl",
+      "rev": "a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "rev_count": 719504,
+      "rev_date": "2024-12-09T15:59:59Z",
+      "scrape_date": "2024-12-11T03:49:32Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "3.3.2",
+      "outputs_to_install": [
+        "bin",
+        "man"
+      ],
+      "outputs": {
+        "bin": "/nix/store/l6b0m26ck97ajyapz7nkwvyxqqhxmhbp-openssl-3.3.2-bin",
+        "debug": "/nix/store/5xkxhpiichy2gcaiqik027izxkg9655n-openssl-3.3.2-debug",
+        "dev": "/nix/store/73cqf7hqf4mwc3pbmgkpyl473bahn3s4-openssl-3.3.2-dev",
+        "doc": "/nix/store/3n0x9g2cvrrx7kjrx2kwjg48cfppzx8a-openssl-3.3.2-doc",
+        "man": "/nix/store/g0dp8b03mwr3f67xskd1hq67dkhkh75c-openssl-3.3.2-man",
+        "out": "/nix/store/k1dsk0zyq43pvi7f76is2rx6l4aphm5z-openssl-3.3.2"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "pkcs11-provider",
+      "broken": false,
+      "derivation": "/nix/store/3919gsby3jckndmxm08rc5gnah28zask-pkcs11-provider-0.5.drv",
+      "description": "OpenSSL 3.x provider to access hardware or software tokens using the PKCS#11 Cryptographic Token Interface",
+      "install_id": "pkcs11-provider",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "name": "pkcs11-provider-0.5",
+      "pname": "pkcs11-provider",
+      "rev": "a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "rev_count": 719504,
+      "rev_date": "2024-12-09T15:59:59Z",
+      "scrape_date": "2024-12-11T03:49:32Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "0.5",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/s20kxii79flasz0746gbvkcwd8r7l1yh-pkcs11-provider-0.5"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "pkcs11-provider",
+      "broken": false,
+      "derivation": "/nix/store/l6vy5k4pw7f8n80fbbljfzh2nssafjs7-pkcs11-provider-0.5.drv",
+      "description": "OpenSSL 3.x provider to access hardware or software tokens using the PKCS#11 Cryptographic Token Interface",
+      "install_id": "pkcs11-provider",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "name": "pkcs11-provider-0.5",
+      "pname": "pkcs11-provider",
+      "rev": "a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "rev_count": 719504,
+      "rev_date": "2024-12-09T15:59:59Z",
+      "scrape_date": "2024-12-11T03:49:32Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "0.5",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/3c4abqb9004nmp5j5ajlh30466mimry3-pkcs11-provider-0.5"
+      },
+      "system": "aarch64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "pkcs11-provider",
+      "broken": false,
+      "derivation": "/nix/store/436rrgvmiimryb0qrpq44c1vinlmr0ss-pkcs11-provider-0.5.drv",
+      "description": "OpenSSL 3.x provider to access hardware or software tokens using the PKCS#11 Cryptographic Token Interface",
+      "install_id": "pkcs11-provider",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "name": "pkcs11-provider-0.5",
+      "pname": "pkcs11-provider",
+      "rev": "a73246e2eef4c6ed172979932bc80e1404ba2d56",
+      "rev_count": 719504,
+      "rev_date": "2024-12-09T15:59:59Z",
+      "scrape_date": "2024-12-11T03:49:32Z",
+      "stabilities": [
+        "staging",
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "0.5",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/7f64znyhgwlj45y5pxinwm8ap81r0k9z-pkcs11-provider-0.5"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    }
+  ]
+}

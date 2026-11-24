@@ -54,7 +54,7 @@ Use these unless something better turns up while implementing; record any change
 | Pairing code | Base32 (RFC 4648, no padding) of the first 40 bits of the client key fingerprint, shown as `XXXX-XXXX` |
 | Relay authentication | Every authenticated HTTP call carries `X-Relay-Key` (fingerprint), `X-Relay-Time`, `X-Relay-Signature` over `relay-auth/v1 \|\| 0x00 \|\| method \|\| 0x00 \|\| path \|\| 0x00 \|\| time \|\| 0x00 \|\| SHA-256(body)`; the relay rejects a skew over 60 s and replays within the window |
 | Clock skew tolerance | 60 s, configurable |
-| Provider config | TOML at `$RELAY_PKCS11_CONFIG`, fields as in the spec's provider configuration table |
+| Provider config | TOML at `$RELAY_PKCS11_CONFIG`; when unset, the first of the XDG and Application Support paths (milestone 7, `docs/milestone-7.md` "Config file lookup"). Fields as in the spec's provider configuration table |
 | Slots | One slot per `token` in the manifest; slot IDs stable across restarts (ordered by token name) |
 
 Things that must stay exactly as the spec says: one role per key, roles and labels from the manifest only, the five-step response verification order, the Failure handling table's return codes, and context-string domain separation on every signature.

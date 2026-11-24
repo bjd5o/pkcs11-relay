@@ -181,8 +181,16 @@ pub unsafe extern "C" fn C_Initialize(pInitArgs: CK_VOID_PTR) -> CK_RV {
         }
         // No threads, sockets or files before this point; config and key files are read now.
         let provider = match Config::from_env() {
-            Ok(cfg) => {
+            Ok((cfg, found)) => {
                 log::init(cfg.log_level.as_deref(), cfg.log_path.as_deref());
+                log::info(&format!("configuration from {}", found.path.display()));
+                for p in &found.shadowed {
+                    log::warn(&format!(
+                        "ignoring {}: {} is read instead, and config files are never merged",
+                        p.display(),
+                        found.path.display()
+                    ));
+                }
                 match Provider::new(cfg) {
                     Ok(p) => Some(Arc::new(p)),
                     Err(e) => {

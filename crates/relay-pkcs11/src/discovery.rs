@@ -309,15 +309,16 @@ pub fn host_name(cfg: &Config) -> String {
     if let Some(h) = &cfg.host {
         return h.clone();
     }
-    for p in ["/proc/sys/kernel/hostname", "/etc/hostname"] {
-        if let Ok(h) = std::fs::read_to_string(p) {
-            let h = h.trim();
-            if !h.is_empty() {
-                return h.chars().take(255).collect();
-            }
-        }
-    }
-    std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
+    let system = gethostname::gethostname();
+    let files = ["/proc/sys/kernel/hostname", "/etc/hostname"]
+        .into_iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok());
+    std::iter::once(system.to_string_lossy().into_owned())
+        .chain(files)
+        .chain(std::env::var("HOSTNAME").ok())
+        .map(|h| h.trim().chars().take(255).collect::<String>())
+        .find(|h| !h.is_empty())
+        .unwrap_or_else(|| "unknown".into())
 }
 
 #[cfg(test)]
@@ -325,6 +326,30 @@ mod tests {
     use super::*;
     use relay_core::manifest::{DraftKey, ManifestDraft};
     use relay_core::signing::SoftwareKey;
+
+    fn config(host: Option<&str>) -> Config {
+        let mut text = String::from(
+            "relay_url = \"https://relay.test\"\nmanifest_url = \"file:///m.json\"\n\
+             manifest_signer = \"/s.asc\"\nmanifest_cache = \"/c\"\nclient_id = \"c1\"\n\
+             client_key = \"/k.pem\"\n",
+        );
+        if let Some(h) = host {
+            text.push_str(&format!("host = \"{h}\"\n"));
+        }
+        toml::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn the_host_name_comes_from_the_system() {
+        let h = host_name(&config(None));
+        assert!(!h.is_empty() && h != "unknown", "got {h:?}");
+        assert!(h.len() <= 255);
+    }
+
+    #[test]
+    fn the_configured_host_name_wins() {
+        assert_eq!(host_name(&config(Some("build-01"))), "build-01");
+    }
 
     /// Failure handling: "This client's own key is in the manifest's revoked_clients" → slots
     /// without keys.
