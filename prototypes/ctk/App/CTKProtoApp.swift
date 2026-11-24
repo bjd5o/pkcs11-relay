@@ -54,6 +54,10 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
     }
 
     func refresh() {
+        #if os(iOS)
+        // Nothing else may query tokens while an NFC session is open.
+        if nfcSession != nil || nfcStarting { return }
+        #endif
         pending = Store.pending()
         if settings.appNotifies == true { notifyNew() }
         log = Log.read()
@@ -304,7 +308,7 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
             Task { @MainActor in
                 self.nfcSession = session
                 self.nfcStarting = false
-                guard let session else { return }
+                guard let session else { self.refresh(); return }
                 let slotName = session.slotName
                 Log.write("app", "nfc: slot name \(slotName == nil ? "none" : "given"), new slots \(Set(mgr.slotNames).subtracting(names).count)")
                 var slot: TKSmartCardSlot?
@@ -325,6 +329,9 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
                     default: now = slot == nil ? "no slot" : "other"
                     }
                     if now != last { Log.write("app", "nfc: slot \(now) after \(i) s"); last = now }
+                    if now == "missing" { Log.write("app", "nfc: the system removed the slot"); break }
+                    // Only ask for tokens once there is a card, or at the end.
+                    guard now == "valid card" || i == 40 else { continue }
                     let new = Set(self.cardTokens).subtracting(before)
                     if !new.isEmpty || i == 40 {
                         self.justRead = Array(new)
