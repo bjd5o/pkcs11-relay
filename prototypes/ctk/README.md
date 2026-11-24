@@ -63,10 +63,13 @@ Mode `biometric`. Sign from CTKCaller, on the Mac and on the iPhone.
 
 ### P9 (optional, Brian runs it; touches the YubiKey): iOS 26 NFC smart cards
 iOS 26 added `TKSmartCardSlotManager.createNFCSlot(message:)` and `TKSmartCardTokenRegistrationManager`: a registered card stays in the keychain, and the system opens an NFC slot itself when an operation needs it. If that works with the system's PIV token, the system could drive NFC and the PIN prompt on iPhone, which reopens the inverted hand-off and the system PIN prompt (`docs/cryptotokenkit.md`, "Still open").
-1. CTKProto, section "iOS 26 NFC smart card": **Create NFC slot**, tap the YubiKey. Record the log line and the token ids that appear.
-2. **Register** the YubiKey's token id (not `…ctk-proto…`).
-3. In CTKCaller, **Find token keys**: record which of the card's keys appear (the system PIV token lists slots that hold certificates).
-4. Only if a key in slots 85–89 is listed: sign with it from CTKCaller and record whether the system asks for the card over NFC and for the PIN itself. Any operation that needs the PIN is Brian's to run; one PIN attempt, no retries.
+Reading only, at first. Every step is Brian's; a spare YubiKey without important keys is best. No step here signs or uses the PIN: **if iOS ever asks for a PIN, cancel**.
+1. **Create NFC slot and read the card**, hold the YubiKey until the sheet closes (the app ends the session itself within 10 s).
+2. **List the card's keys**: attributes only, no key references. Record labels and sizes, not token ids.
+3. Optional: **Register the card just read**, then step 2 again with the card away from the phone.
+4. **Unregister what this prototype registered** when done; the log must say 0 of this prototype's cards still registered. Cards other apps registered are left alone.
+
+Signing with a card key is out of scope until decided separately.
 
 ### P6b: one request held open, with a pinned certificate
 `./make-longpoll-cert.sh <LAN address>`, `xcodegen`, rebuild CTKProto, `./longpoll-server.py <LAN address>`. In CTKProto set the address and tap **Copy long-poll root and test from the app** (this asks for local network access, if the system does). Mode `longpoll`, Wait 90 s. Sign from CTKCaller: in front, in the background, and locked.

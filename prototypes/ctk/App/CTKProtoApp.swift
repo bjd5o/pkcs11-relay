@@ -284,23 +284,93 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
     // MARK: iOS 26 NFC smart card (optional; Brian runs it)
 
     #if os(iOS)
+    /// Held so it can be ended: the system UI stays up otherwise.
+    private var nfcSession: Any?
+
     @available(iOS 26.0, *)
     func createNFCSlot() {
-        guard let mgr = TKSmartCardSlotManager.default else { Log.write("app", "no slot manager"); return }
-        Log.write("app", "NFC supported: \(mgr.isNFCSupported())")
-        mgr.createNFCSlot(message: "Hold your YubiKey to the iPhone") { session, error in
-            Log.write("app", "createNFCSlot: session=\(session?.slotName ?? "-") error=\(error.map { "\($0)" } ?? "-")")
-            Task { @MainActor in self.refresh() }
+        guard let mgr = TKSmartCardSlotManager.default else { Log.write("app", "nfc: no slot manager"); return }
+        guard mgr.isNFCSupported() else { Log.write("app", "nfc: not supported here"); return }
+        Log.write("app", "nfc: creating slot")
+        mgr.createNFCSlot(message: "Hold your YubiKey to the iPhone (read only)") { session, error in
+            Log.write("app", "nfc: session=\(session == nil ? "none" : "ok") error=\(error.map { "\($0)" } ?? "-")")
+            Task { @MainActor in
+                self.nfcSession = session
+                // Long enough for the card's token to appear, then always end the session.
+                for i in 1...10 {
+                    try? await Task.sleep(for: .seconds(1))
+                    let n = self.cardTokens.count
+                    if n > 0 || i == 10 { Log.write("app", "nfc: \(n) card token(s) after \(i) s"); break }
+                }
+                self.endNFCSlot()
+            }
         }
     }
 
     @available(iOS 26.0, *)
+    func endNFCSlot() {
+        (nfcSession as? TKSmartCardSlotNFCSession)?.end()
+        nfcSession = nil
+        Log.write("app", "nfc: session ended")
+        refresh()
+    }
+
+    /// Tokens that aren't the prototype's own or the system's.
+    var cardTokens: [String] {
+        TKTokenWatcher().tokenIDs.filter { !$0.contains("ctk-proto") && !$0.contains("setoken") && !$0.contains("ctkcard") }
+    }
+
+    @available(iOS 26.0, *)
+    var registered: [String] { TKSmartCardTokenRegistrationManager.default.registeredSmartCardTokens }
+
+    @available(iOS 26.0, *)
     func register(_ tokenID: String) {
+        // One another app registered is left alone, here and when undoing.
+        guard !registered.contains(tokenID) else { Log.write("app", "nfc: already registered, not by this button; left alone"); return }
         do {
+            UserDefaults.standard.set(mine + [tokenID], forKey: "nfc-registered")
             try TKSmartCardTokenRegistrationManager.default.registerSmartCard(tokenID: tokenID, promptMessage: "Hold your YubiKey to the iPhone (prototype)")
-            Log.write("app", "registered \(tokenID); registered now: \(TKSmartCardTokenRegistrationManager.default.registeredSmartCardTokens)")
+            Log.write("app", "nfc: registered; \(registered.count) card(s) registered now")
         } catch {
-            Log.write("app", "register \(tokenID) failed: \(error)")
+            Log.write("app", "nfc: register failed: \(error)")
+        }
+        refresh()
+    }
+
+    /// Cards this prototype registered.
+    private var mine: [String] { UserDefaults.standard.stringArray(forKey: "nfc-registered") ?? [] }
+
+    @available(iOS 26.0, *)
+    func unregisterMine() {
+        for t in mine where registered.contains(t) {
+            do { try TKSmartCardTokenRegistrationManager.default.unregisterSmartCard(tokenID: t) } catch {
+                Log.write("app", "nfc: unregister failed: \(error)")
+            }
+        }
+        let left = mine.filter { registered.contains($0) }
+        UserDefaults.standard.set(left, forKey: "nfc-registered")
+        Log.write("app", "nfc: \(left.count) of this prototype's cards still registered, \(registered.count) in all")
+        refresh()
+    }
+
+    /// Attributes of card keys and certificates only: no references, so nothing can be used.
+    /// Token ids are left out of the log: they identify the card.
+    func listCardKeys() {
+        for (name, cls) in [("keys", kSecClassKey), ("certificates", kSecClassCertificate)] {
+            let q: [String: Any] = [
+                kSecClass as String: cls,
+                kSecAttrAccessGroup as String: kSecAttrAccessGroupToken,
+                kSecMatchLimit as String: kSecMatchLimitAll,
+                kSecReturnAttributes as String: true,
+            ]
+            var out: CFTypeRef?
+            let st = SecItemCopyMatching(q as CFDictionary, &out)
+            let items = ((out as? [[String: Any]]) ?? []).filter {
+                let t = $0[kSecAttrTokenID as String] as? String ?? ""
+                return !t.isEmpty && !t.contains("ctk-proto") && !t.contains("setoken") && !t.contains("ctkcard")
+            }
+            let lines = items.map { "\($0[kSecAttrLabel as String] as? String ?? "?") \($0[kSecAttrKeySizeInBits as String] ?? "")" }
+            Log.write("app", "nfc: card \(name): status \(st), \(items.count): \(lines)")
         }
     }
     #endif
@@ -358,11 +428,14 @@ struct ContentView: View {
                 }
                 #if os(iOS)
                 if #available(iOS 26.0, *) {
-                    Section("iOS 26 NFC smart card (optional, run by Brian)") {
-                        Button("Create NFC slot (tap the YubiKey)") { model.createNFCSlot() }
-                        ForEach(model.tokenIDs, id: \.self) { t in
-                            Button("Register \(t)") { model.register(t) }.font(.caption)
+                    Section("iOS 26 NFC smart card (reads a YubiKey; Brian runs it)") {
+                        Button("1. Create NFC slot and read the card") { model.createNFCSlot() }
+                        Button("2. List the card's keys (no card needed)") { model.listCardKeys() }
+                        ForEach(model.cardTokens, id: \.self) { t in
+                            Button("3. Register the card just read") { model.register(t) }
                         }
+                        Button("End NFC session") { model.endNFCSlot() }
+                        Button("4. Unregister what this prototype registered", role: .destructive) { model.unregisterMine() }
                     }
                 }
                 #endif
