@@ -136,6 +136,13 @@ Found during the gates; out of scope for the MVP.
 - **Resolved by client grants (2026-11-20):** Adding a device after clients are paired (iPad, 2026-11-18): each approver only answers clients it approved itself (the relay isn't trusted to say which clients exist), so a new device rejects every request from existing clients as "unpaired client" until the client is revoked and paired again with the new device approving. Needs a way to bring a paired client to a new device without trusting the relay, for example a pairing approval signed by an existing device, or re-pairing that doesn't need a revoke; the app should also say why a request failed its checks.
 - **Client grants, Clients and Approvers screens:** built and gated (`docs/client-grants.md`; see "Client grants" below), covering the two items above and the rejection reasons.
 
+## CryptoTokenKit extension (design `docs/cryptotokenkit.md`; a phase after milestone 7)
+
+- [x] Design and Brian's decisions (2026-11-20, 2026-11-23)
+- [x] Prototype (`prototypes/ctk`, results in its README), stopped by Brian on 2026-11-23. On the iPhone the hand-off, a locked phone, a held relay connection, the Secure Enclave client key and keys without certificates work; on the Mac the hand-off, `ssh-keygen` signing and Mail work. Not tested: the iPad, an `ssh` login, key exchange, the Mac's locked-screen, network and biometric checks. iOS Mail offered no certificate and iOS 26 NFC never reached a card, both for unknown reasons
+- [ ] Spec and wire-format text, for Brian's approval, after milestone 7 merges
+- [ ] Implementation
+
 ## Client grants (design `docs/client-grants.md`, approved 2026-11-18)
 
 - [x] Manifest: required `max_client_grant_window_secs` (60–31 536 000, default 30 days in new drafts), optional sorted `revoked_clients` and `revoked_devices` (at most 1 024 each); fixtures re-signed. Existing manifests without the new field no longer verify and must be re-signed (the `gate-m5` manifest included)
