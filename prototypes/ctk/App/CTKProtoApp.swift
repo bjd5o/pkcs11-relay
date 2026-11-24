@@ -286,21 +286,30 @@ final class Model: NSObject, ObservableObject, UNUserNotificationCenterDelegate 
     #if os(iOS)
     /// Held so it can be ended: the system UI stays up otherwise.
     private var nfcSession: Any?
+    /// Tokens that appeared during the last read: the only ones offered for registering.
+    @Published var justRead: [String] = []
 
     @available(iOS 26.0, *)
     func createNFCSlot() {
         guard let mgr = TKSmartCardSlotManager.default else { Log.write("app", "nfc: no slot manager"); return }
         guard mgr.isNFCSupported() else { Log.write("app", "nfc: not supported here"); return }
-        Log.write("app", "nfc: creating slot")
+        let before = Set(cardTokens)
+        Log.write("app", "nfc: creating slot; \(before.count) other token(s) already present")
         mgr.createNFCSlot(message: "Hold your YubiKey to the iPhone (read only)") { session, error in
             Log.write("app", "nfc: session=\(session == nil ? "none" : "ok") error=\(error.map { "\($0)" } ?? "-")")
             Task { @MainActor in
                 self.nfcSession = session
-                // Long enough for the card's token to appear, then always end the session.
-                for i in 1...10 {
+                guard session != nil else { return }
+                // Until a token appears that wasn't there before, or 40 s.
+                for i in 1...40 {
                     try? await Task.sleep(for: .seconds(1))
-                    let n = self.cardTokens.count
-                    if n > 0 || i == 10 { Log.write("app", "nfc: \(n) card token(s) after \(i) s"); break }
+                    guard self.nfcSession != nil else { return }
+                    let new = Set(self.cardTokens).subtracting(before)
+                    if !new.isEmpty || i == 40 {
+                        self.justRead = Array(new)
+                        Log.write("app", "nfc: \(new.count) new card token(s) after \(i) s")
+                        break
+                    }
                 }
                 self.endNFCSlot()
             }
@@ -431,7 +440,7 @@ struct ContentView: View {
                     Section("iOS 26 NFC smart card (reads a YubiKey; Brian runs it)") {
                         Button("1. Create NFC slot and read the card") { model.createNFCSlot() }
                         Button("2. List the card's keys (no card needed)") { model.listCardKeys() }
-                        ForEach(model.cardTokens, id: \.self) { t in
+                        ForEach(model.justRead, id: \.self) { t in
                             Button("3. Register the card just read") { model.register(t) }
                         }
                         Button("End NFC session") { model.endNFCSlot() }
